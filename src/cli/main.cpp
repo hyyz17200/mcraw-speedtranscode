@@ -43,6 +43,9 @@
 #if MCRAW_HAS_FFMPEG
 #include <mcraw/output/ffmpeg_writer.hpp>
 #endif
+#if MCRAW_HAS_VULKAN
+#include <mcraw/vulkan/vulkan_runtime.hpp>
+#endif
 
 namespace {
 
@@ -296,8 +299,61 @@ int command_inspect(const Arguments& args) {
     return 0;
 }
 
+#if MCRAW_HAS_VULKAN
+nlohmann::json vulkan_device_json(const mcraw::VulkanDeviceInfo& device) {
+    nlohmann::json queues = nlohmann::json::array();
+    for (const auto& family : device.queue_families) {
+        queues.push_back({
+            {"index", family.index}, {"count", family.queue_count},
+            {"flags", family.flags},
+            {"compute", (family.flags & VK_QUEUE_COMPUTE_BIT) != 0U},
+            {"graphics", (family.flags & VK_QUEUE_GRAPHICS_BIT) != 0U},
+            {"transfer", (family.flags & VK_QUEUE_TRANSFER_BIT) != 0U}
+        });
+    }
+    return {
+        {"index", device.enumeration_index}, {"name", device.name},
+        {"type", mcraw::vulkan_device_type_name(device.type)},
+        {"vendor_id", device.vendor_id}, {"device_id", device.device_id},
+        {"uuid", device.uuid},
+        {"api_version", {
+            {"major", VK_VERSION_MAJOR(device.api_version)},
+            {"minor", VK_VERSION_MINOR(device.api_version)},
+            {"patch", VK_VERSION_PATCH(device.api_version)}
+        }},
+        {"driver_version_raw", device.driver_version},
+        {"driver_name", device.driver_name}, {"driver_info", device.driver_info},
+        {"software", device.software}, {"queue_families", std::move(queues)}
+    };
+}
+
+nlohmann::json vulkan_runtime_report() {
+    nlohmann::json devices = nlohmann::json::array();
+    try {
+        for (const auto& device : mcraw::VulkanRuntime::enumerate_devices()) {
+            devices.push_back(vulkan_device_json(device));
+        }
+        mcraw::VulkanRuntime runtime;
+        return {
+            {"available", true}, {"selected", vulkan_device_json(runtime.device())},
+            {"compute_queue_family", runtime.compute_queue_family()},
+            {"compute_queue_count", runtime.compute_queue_count()},
+            {"instance_extensions", runtime.instance_extensions()},
+            {"device_extensions", runtime.device_extensions()},
+            {"devices", std::move(devices)}
+        };
+    } catch (const std::exception& error) {
+        return {{"available", false}, {"reason", error.what()}, {"devices", std::move(devices)}};
+    }
+}
+#endif
+
 int command_list_capabilities() {
     const auto capabilities = mcraw::probe_backend_capabilities();
+    nlohmann::json vulkan_runtime = {{"available", false}, {"reason", "not compiled"}};
+#if MCRAW_HAS_VULKAN
+    vulkan_runtime = vulkan_runtime_report();
+#endif
     nlohmann::json result = {
         {"version", "0.1.0"}, {"license", "GPL-3.0-or-later"},
         {"platforms", {"Windows 10/11", "Linux (build-compatible, not yet validated)"}},
@@ -308,7 +364,8 @@ int command_list_capabilities() {
                 {"available", capabilities.vulkan_backend_available},
                 {"encoder_available", capabilities.prores_ks_vulkan_available},
                 {"encoder", "prores_ks_vulkan"},
-                {"reason", capabilities.vulkan_unavailable_reason}
+                {"reason", capabilities.vulkan_unavailable_reason},
+                {"runtime", std::move(vulkan_runtime)}
             }}
         }}, {"cfa", {"rggb", "bggr", "grbg", "gbrg"}},
         {"demosaic", {"rcd", "amaze", "igv", "dcb", "lmmse"}},
@@ -324,6 +381,32 @@ int command_list_capabilities() {
     };
     std::cout << result.dump(2) << '\n';
     return 0;
+}
+
+int command_vulkan_smoke(const Arguments& args) {
+#if !MCRAW_HAS_VULKAN
+    static_cast<void>(args);
+    throw Error(ErrorCode::unsupported_format, "this build has no Vulkan support");
+#else
+    const auto iterations = parse_size(args.option("--iterations").value_or("1"), "--iterations");
+    if (iterations == 0U || iterations > 10'000U) {
+        throw Error(ErrorCode::invalid_argument, "--iterations must be between 1 and 10000");
+    }
+    const std::string selector(args.option("--gpu").value_or("auto"));
+    const auto start = std::chrono::steady_clock::now();
+    nlohmann::json selected;
+    for (std::size_t iteration = 0; iteration < iterations; ++iteration) {
+        mcraw::VulkanRuntime runtime({selector, args.flag("--validation")});
+        if (iteration == 0U) selected = vulkan_device_json(runtime.device());
+    }
+    const auto wall_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - start).count();
+    std::cout << nlohmann::json{
+        {"ok", true}, {"iterations", iterations}, {"wall_ms", wall_ms},
+        {"mean_ms", wall_ms / static_cast<double>(iterations)},
+        {"selected", std::move(selected)}}.dump(2) << '\n';
+    return 0;
+#endif
 }
 
 int command_print_effective_config(const Arguments& args) {
@@ -707,7 +790,8 @@ void print_help() {
         "  mcraw-transcoder validate <input.mcraw> [--frame N] [--compare-fused] [--config file.json]\n"
         "  mcraw-transcoder benchmark <input.mcraw> [--frames N] [--config file.json]\n"
         "  mcraw-transcoder print-effective-config [--config file.json]\n"
-        "  mcraw-transcoder list-capabilities\n";
+        "  mcraw-transcoder list-capabilities\n"
+        "  mcraw-transcoder vulkan-smoke [--gpu SELECTOR] [--iterations N] [--validation]\n";
 }
 
 } // namespace
@@ -727,6 +811,7 @@ int main(int argc, char** argv) {
         if (command == "benchmark") return command_benchmark(args);
         if (command == "print-effective-config") return command_print_effective_config(args);
         if (command == "list-capabilities") return command_list_capabilities();
+        if (command == "vulkan-smoke") return command_vulkan_smoke(args);
         throw Error(ErrorCode::invalid_argument, "unknown command: " + std::string(command));
     } catch (const Error& error) {
         std::cerr << "error: " << error.what() << '\n';
