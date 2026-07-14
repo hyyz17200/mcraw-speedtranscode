@@ -12,6 +12,7 @@
 extern "C" {
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
+#include <libavutil/buffer.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -44,6 +45,27 @@ std::int64_t pts_from_ns(std::int64_t timestamp_ns,
         throw Error(ErrorCode::encode_failed, "timestamp precedes the output timeline origin");
     }
     return av_rescale_q(timestamp_ns - origin_ns, AVRational{1, 1'000'000'000}, time_base);
+}
+
+void free_vector_plane(void* opaque, std::uint8_t*) {
+    delete static_cast<std::vector<std::uint16_t>*>(opaque);
+}
+
+void attach_vector_plane(AVFrame* frame,
+                         int plane,
+                         std::vector<std::uint16_t>&& samples,
+                         std::uint32_t width) {
+    auto* owner = new std::vector<std::uint16_t>(std::move(samples));
+    auto* buffer = av_buffer_create(
+        reinterpret_cast<std::uint8_t*>(owner->data()),
+        owner->size() * sizeof(std::uint16_t), free_vector_plane, owner, 0);
+    if (buffer == nullptr) {
+        delete owner;
+        throw Error(ErrorCode::encode_failed, "cannot wrap YUV plane for FFmpeg");
+    }
+    frame->buf[plane] = buffer;
+    frame->data[plane] = buffer->data;
+    frame->linesize[plane] = static_cast<int>(width * sizeof(std::uint16_t));
 }
 
 } // namespace
@@ -116,16 +138,6 @@ public:
         video_stream->time_base = video_codec->time_base;
         require_ffmpeg(avcodec_parameters_from_context(video_stream->codecpar, video_codec),
                        "copy video codec parameters");
-        video_frame = av_frame_alloc();
-        if (video_frame == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate video frame");
-        video_frame->format = video_codec->pix_fmt;
-        video_frame->width = video_codec->width;
-        video_frame->height = video_codec->height;
-        video_frame->color_range = video_codec->color_range;
-        video_frame->colorspace = video_codec->colorspace;
-        video_frame->color_primaries = video_codec->color_primaries;
-        video_frame->color_trc = video_codec->color_trc;
-        require_ffmpeg(av_frame_get_buffer(video_frame, 64), "allocate video frame planes");
     }
 
     void create_audio(int sample_rate, int channels) {
@@ -184,35 +196,47 @@ public:
         av_packet_free(&packet);
     }
 
-    void write_video(const Yuv422P10& input, std::int64_t timestamp_ns) {
+    void write_video(Yuv422P10 input, std::int64_t timestamp_ns) {
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
         input.validate();
         if (input.width != static_cast<std::uint32_t>(video_codec->width) ||
             input.height != static_cast<std::uint32_t>(video_codec->height)) {
             throw Error(ErrorCode::invalid_argument, "video frame dimensions changed during encode");
         }
-        require_ffmpeg(av_frame_make_writable(video_frame), "make video frame writable");
-        auto copy_plane = [](std::uint8_t* destination, int stride,
-                             const std::uint16_t* source, std::uint32_t width, std::uint32_t height) {
-            for (std::uint32_t row = 0; row < height; ++row) {
-                std::memcpy(destination + static_cast<std::ptrdiff_t>(row) * stride,
-                            source + static_cast<std::size_t>(row) * width,
-                            static_cast<std::size_t>(width) * sizeof(std::uint16_t));
-            }
-        };
-        copy_plane(video_frame->data[0], video_frame->linesize[0], input.y.data(), input.width, input.height);
-        copy_plane(video_frame->data[1], video_frame->linesize[1], input.cb.data(), input.width / 2U, input.height);
-        copy_plane(video_frame->data[2], video_frame->linesize[2], input.cr.data(), input.width / 2U, input.height);
+        AVFrame* frame = av_frame_alloc();
+        if (frame == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate video frame");
+        frame->format = video_codec->pix_fmt;
+        frame->width = video_codec->width;
+        frame->height = video_codec->height;
+        frame->color_range = video_codec->color_range;
+        frame->colorspace = video_codec->colorspace;
+        frame->color_primaries = video_codec->color_primaries;
+        frame->color_trc = video_codec->color_trc;
+        try {
+            attach_vector_plane(frame, 0, std::move(input.y), input.width);
+            attach_vector_plane(frame, 1, std::move(input.cb), input.width / 2U);
+            attach_vector_plane(frame, 2, std::move(input.cr), input.width / 2U);
+        } catch (...) {
+            av_frame_free(&frame);
+            throw;
+        }
         const auto pts = pts_from_ns(timestamp_ns, origin_ns, video_codec->time_base);
         if (pts <= last_video_pts) {
+            av_frame_free(&frame);
             throw Error(ErrorCode::encode_failed, "video timestamps are not strictly increasing after rescale");
         }
-        video_frame->pts = pts;
-        video_frame->duration = last_video_pts == AV_NOPTS_VALUE
+        frame->pts = pts;
+        frame->duration = last_video_pts == AV_NOPTS_VALUE
             ? av_rescale_q(1, av_inv_q(video_codec->framerate), video_codec->time_base)
             : pts - last_video_pts;
         last_video_pts = pts;
-        write_packet(video_codec, video_stream, video_frame);
+        try {
+            write_packet(video_codec, video_stream, frame);
+        } catch (...) {
+            av_frame_free(&frame);
+            throw;
+        }
+        av_frame_free(&frame);
     }
 
     void write_audio(const AudioChunk& chunk) {
@@ -263,7 +287,6 @@ public:
         if (format != nullptr && header_written && !finished) {
             av_write_trailer(format);
         }
-        av_frame_free(&video_frame);
         avcodec_free_context(&video_codec);
         avcodec_free_context(&audio_codec);
         if (format != nullptr) {
@@ -280,7 +303,6 @@ public:
     AVCodecContext* audio_codec{};
     AVStream* video_stream{};
     AVStream* audio_stream{};
-    AVFrame* video_frame{};
     std::deque<std::int64_t> pending_video_durations;
     std::int64_t last_video_pts{AV_NOPTS_VALUE};
     std::int64_t next_audio_pts{};
@@ -300,7 +322,9 @@ FfmpegWriter::FfmpegWriter(const std::filesystem::path& output,
 FfmpegWriter::~FfmpegWriter() = default;
 FfmpegWriter::FfmpegWriter(FfmpegWriter&&) noexcept = default;
 FfmpegWriter& FfmpegWriter::operator=(FfmpegWriter&&) noexcept = default;
-void FfmpegWriter::write_video(const Yuv422P10& frame, std::int64_t timestamp_ns) { impl_->write_video(frame, timestamp_ns); }
+void FfmpegWriter::write_video(Yuv422P10 frame, std::int64_t timestamp_ns) {
+    impl_->write_video(std::move(frame), timestamp_ns);
+}
 void FfmpegWriter::write_audio(const AudioChunk& chunk) { impl_->write_audio(chunk); }
 void FfmpegWriter::finish() { impl_->finish(); }
 

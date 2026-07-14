@@ -608,7 +608,7 @@ int command_convert(const Arguments& args) {
                             processed.metadata.warnings.end());
             {
                 mcraw::StageTimer timer(timings, "prores_encode_mux");
-                writer.write_video(processed.packed.image, processed.timestamp_ns);
+                writer.write_video(std::move(processed.packed.image), processed.timestamp_ns);
             }
             if (frames_completed == 0U) first_solution = processed.color_solution;
             ++frames_completed;

@@ -23,7 +23,7 @@ public:
     FfmpegWriter(const FfmpegWriter&) = delete;
     FfmpegWriter& operator=(const FfmpegWriter&) = delete;
 
-    void write_video(const Yuv422P10& frame, std::int64_t timestamp_ns);
+    void write_video(Yuv422P10 frame, std::int64_t timestamp_ns);
     void write_audio(const AudioChunk& chunk);
     void finish();
 
@@ -33,4 +33,3 @@ private:
 };
 
 } // namespace mcraw
-
