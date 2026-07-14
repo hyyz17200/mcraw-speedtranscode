@@ -4,6 +4,7 @@
 #include <cstring>
 #include <fstream>
 #include <limits>
+#include <memory>
 #include <mutex>
 #include <string_view>
 #include <utility>
@@ -34,10 +35,45 @@ void validate_index_count(std::int32_t count, std::uintmax_t file_size) {
 class McrawReader::Impl {
 public:
     explicit Impl(std::filesystem::path input)
-        : path(std::move(input)), decoder(path.string()) {
-        container_metadata_value = decoder.getContainerMetadata();
+        : path(std::move(input)),
+          primary_decoder(std::make_unique<motioncam::Decoder>(path.string())) {
+        container_metadata_value = primary_decoder->getContainerMetadata();
         parse_index();
+        idle_decoders.push_back(std::move(primary_decoder));
     }
+
+    // Official decoders keep per-instance file handles and scratch buffers,
+    // so concurrent frames each lease their own instance instead of
+    // serializing every decode behind one shared decoder.
+    class DecoderLease {
+    public:
+        explicit DecoderLease(Impl& owner) : owner_(owner) {
+            {
+                std::scoped_lock lock(owner_.decoder_pool_mutex);
+                if (!owner_.idle_decoders.empty()) {
+                    decoder_ = std::move(owner_.idle_decoders.back());
+                    owner_.idle_decoders.pop_back();
+                }
+            }
+            if (decoder_ == nullptr) {
+                decoder_ = std::make_unique<motioncam::Decoder>(owner_.path.string());
+            }
+        }
+
+        ~DecoderLease() {
+            std::scoped_lock lock(owner_.decoder_pool_mutex);
+            owner_.idle_decoders.push_back(std::move(decoder_));
+        }
+
+        DecoderLease(const DecoderLease&) = delete;
+        DecoderLease& operator=(const DecoderLease&) = delete;
+
+        [[nodiscard]] motioncam::Decoder& get() noexcept { return *decoder_; }
+
+    private:
+        Impl& owner_;
+        std::unique_ptr<motioncam::Decoder> decoder_;
+    };
 
     void parse_index() {
         std::ifstream stream(path, std::ios::binary);
@@ -93,7 +129,7 @@ public:
             records.push_back({i, offsets[i].timestamp, offsets[i].offset});
         }
 
-        if (decoder.getFrames().size() != records.size()) {
+        if (primary_decoder->getFrames().size() != records.size()) {
             throw Error(ErrorCode::invalid_container, "official decoder and independent index disagree on frame count");
         }
     }
@@ -106,11 +142,12 @@ public:
     }
 
     std::filesystem::path path;
-    motioncam::Decoder decoder;
+    std::unique_ptr<motioncam::Decoder> primary_decoder;
     nlohmann::json container_metadata_value;
     std::uint8_t version{};
     std::vector<FrameRecord> records;
-    mutable std::mutex decoder_mutex;
+    mutable std::mutex decoder_pool_mutex;
+    mutable std::vector<std::unique_ptr<motioncam::Decoder>> idle_decoders;
 };
 
 McrawReader::McrawReader(const std::filesystem::path& path) : impl_(std::make_unique<Impl>(path)) {}
@@ -130,8 +167,8 @@ nlohmann::json McrawReader::frame_metadata(std::size_t index) const {
     const auto& record = impl_->checked_frame(index);
     nlohmann::json result;
     std::vector<std::uint16_t> ignored_pixels;
-    std::scoped_lock lock(impl_->decoder_mutex);
-    impl_->decoder.loadFrame(record.timestamp_ns, ignored_pixels, result);
+    Impl::DecoderLease lease(*impl_);
+    lease.get().loadFrame(record.timestamp_ns, ignored_pixels, result);
     return result;
 }
 
@@ -170,8 +207,8 @@ DecodedRawFrame McrawReader::load_reference_frame_with_metadata(std::size_t inde
     std::vector<std::uint16_t> decoded;
     nlohmann::json frame_metadata;
     {
-        std::scoped_lock lock(impl_->decoder_mutex);
-        impl_->decoder.loadFrame(record.timestamp_ns, decoded, frame_metadata);
+        Impl::DecoderLease lease(*impl_);
+        lease.get().loadFrame(record.timestamp_ns, decoded, frame_metadata);
     }
     const auto metadata = normalize_metadata(container_metadata(), frame_metadata);
     const auto pixels = static_cast<std::size_t>(metadata.width) * metadata.height;
