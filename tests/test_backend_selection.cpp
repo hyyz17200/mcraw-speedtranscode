@@ -2,6 +2,8 @@
 
 #include <nlohmann/json.hpp>
 
+#include <string_view>
+
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/error.hpp>
 #include <mcraw/output/backend_selection.hpp>
@@ -51,4 +53,9 @@ TEST_CASE("GPU backend configuration is serialized without changing CPU defaults
     CHECK(json.at("async_depth") == 8);
     CHECK(json.at("fallback") == "prores_ks");
     CHECK(json.at("precision") == "fp32");
+}
+
+TEST_CASE("device loss has a stable machine-readable error taxonomy") {
+    CHECK(std::string_view(mcraw::error_code_name(mcraw::ErrorCode::device_lost)) ==
+          "device_lost");
 }

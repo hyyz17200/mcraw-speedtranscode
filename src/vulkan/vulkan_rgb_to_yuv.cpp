@@ -20,7 +20,8 @@ namespace {
 
 void require_vulkan(VkResult result, const char* operation) {
     if (result != VK_SUCCESS) {
-        throw Error(ErrorCode::processing_failed,
+        throw Error(result == VK_ERROR_DEVICE_LOST ? ErrorCode::device_lost
+                                                   : ErrorCode::processing_failed,
                     std::string(operation) + " failed with VkResult " +
                     std::to_string(static_cast<int>(result)));
     }

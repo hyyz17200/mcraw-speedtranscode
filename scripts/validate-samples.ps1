@@ -5,7 +5,7 @@ param(
     [int]$ConversionFrames = 30,
     [string]$OutputDirectory = ".\test-output\sample-validation",
     [string]$CpuConfig = ".\config\default.json",
-    [string]$VulkanConfig = ".\config\vulkan-upload-bridge.json"
+    [string]$VulkanConfig = ".\config\vulkan-gpu-pipeline.json"
 )
 
 $ErrorActionPreference = "Stop"
@@ -56,9 +56,9 @@ foreach ($sample in $samples) {
         $selectedFrames = [Math]::Min($ConversionFrames, [int]$inspection.frame_count)
         $baseName = [IO.Path]::GetFileNameWithoutExtension($sample.Name)
         $cpuOutput = Join-Path $OutputDirectory "$baseName-cpu.mov"
-        $gpuOutput = Join-Path $OutputDirectory "$baseName-vulkan-upload.mov"
+        $gpuOutput = Join-Path $OutputDirectory "$baseName-vulkan-direct.mov"
 
-        Write-Host "Encoding $selectedFrames CPU and Vulkan-upload frames for $($sample.Name)"
+        Write-Host "Encoding $selectedFrames CPU and direct Vulkan frames for $($sample.Name)"
         $cpuResult = ((& $Executable convert $sample.FullName $cpuOutput --config $CpuConfig `
             --frames $selectedFrames --overwrite) | Out-String) | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $cpuResult.pipeline.backend -ne "prores_ks") {
@@ -67,13 +67,14 @@ foreach ($sample in $samples) {
         $gpuResult = ((& $Executable convert $sample.FullName $gpuOutput --config $VulkanConfig `
             --frames $selectedFrames --overwrite) | Out-String) | ConvertFrom-Json
         if ($LASTEXITCODE -ne 0 -or $gpuResult.pipeline.backend -ne "prores_ks_vulkan") {
-            throw "Vulkan upload-bridge conversion failed for $($sample.FullName)"
+            throw "direct Vulkan conversion failed for $($sample.FullName)"
         }
-        if ($gpuResult.pipeline.gpu_resident -or
-            $gpuResult.pipeline.upload_frames -ne $selectedFrames -or
+        if (-not $gpuResult.pipeline.gpu_resident -or
+            $gpuResult.pipeline.direct_frames -ne $selectedFrames -or
+            $gpuResult.pipeline.upload_frames -ne 0 -or
             $gpuResult.pipeline.readback_frames -ne 0 -or
             $gpuResult.pipeline.video_packets -ne $selectedFrames) {
-            throw "Vulkan upload-bridge telemetry invariant failed for $($sample.FullName)"
+            throw "direct Vulkan telemetry invariant failed for $($sample.FullName)"
         }
 
         foreach ($movie in @($cpuOutput, $gpuOutput)) {
@@ -96,7 +97,23 @@ foreach ($sample in $samples) {
         $failureConfig = Join-Path $OutputDirectory "$baseName-invalid-device.json"
         $failureOutput = Join-Path $OutputDirectory "$baseName-invalid-device.mov"
         $invalid = Get-Content -LiteralPath $VulkanConfig -Raw | ConvertFrom-Json
+
+        $fallbackConfig = Join-Path $OutputDirectory "$baseName-auto-fallback.json"
+        $fallbackOutput = Join-Path $OutputDirectory "$baseName-auto-fallback.mov"
+        $invalid.backend = "auto"
+        $invalid.fallback = "prores_ks"
         $invalid.gpu_selector = "name:this-device-must-not-exist"
+        $invalid | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $fallbackConfig -Encoding utf8
+        $fallbackResult = ((& $Executable convert $sample.FullName $fallbackOutput `
+            --config $fallbackConfig --frames 1 --overwrite) | Out-String) | ConvertFrom-Json
+        if ($LASTEXITCODE -ne 0 -or $fallbackResult.pipeline.backend -ne "prores_ks" -or
+            -not $fallbackResult.pipeline.used_fallback -or
+            [string]::IsNullOrWhiteSpace($fallbackResult.pipeline.fallback_reason)) {
+            throw "automatic Vulkan failure did not report a CPU fallback for $($sample.FullName)"
+        }
+
+        $invalid.backend = "vulkan"
+        $invalid.fallback = "none"
         $invalid | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $failureConfig -Encoding utf8
         $null = & $Executable convert $sample.FullName $failureOutput --config $failureConfig `
             --frames 1 --overwrite 2>&1

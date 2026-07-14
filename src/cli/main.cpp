@@ -636,7 +636,9 @@ int command_convert(const Arguments& args) {
         : mcraw::probe_backend_capabilities(
             config.gpu_selector, static_cast<int>(first_metadata.width),
             static_cast<int>(first_metadata.height),
-            std::clamp<std::size_t>(config.async_depth + 2U, 4U, 64U));
+            std::clamp<std::size_t>(config.async_depth * 2U + 4U, 8U, 64U),
+            config.chroma_filter, config.deterministic_dither,
+            config.precision);
     const auto backend = mcraw::select_backend(config, capabilities);
     const auto frame_limit = std::min(reader.frames().size(), config.max_frames == 0U
         ? reader.frames().size() : config.max_frames);
@@ -855,7 +857,8 @@ int main(int argc, char** argv) {
         if (command == "vulkan-smoke") return command_vulkan_smoke(args);
         throw Error(ErrorCode::invalid_argument, "unknown command: " + std::string(command));
     } catch (const Error& error) {
-        std::cerr << "error: " << error.what() << '\n';
+        std::cerr << "error[" << mcraw::error_code_name(error.code()) << "]: "
+                  << error.what() << '\n';
         return 1;
     } catch (const std::exception& error) {
         std::cerr << "fatal: " << error.what() << '\n';

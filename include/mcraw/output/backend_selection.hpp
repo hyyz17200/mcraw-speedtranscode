@@ -28,7 +28,13 @@ struct BackendSelection {
 // Vulkan fields with runtime device and linked-libavcodec probes.
 [[nodiscard]] BackendCapabilities probe_backend_capabilities();
 [[nodiscard]] BackendCapabilities probe_backend_capabilities(
-    std::string_view gpu_selector, int width, int height, std::size_t pool_size);
+    std::string_view gpu_selector,
+    int width,
+    int height,
+    std::size_t pool_size,
+    ChromaFilter chroma_filter = ChromaFilter::quality,
+    bool deterministic_dither = true,
+    GpuPrecision precision = GpuPrecision::fp32);
 [[nodiscard]] BackendSelection select_backend(const EffectiveConfig& config,
                                                const BackendCapabilities& capabilities);
 
