@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <cmath>
+#include <utility>
 
 #include <mcraw/processing/color.hpp>
 #include <mcraw/processing/log_curve.hpp>
@@ -127,15 +128,15 @@ TEST_CASE("split TargetLog RGB path preserves fused color and sharpening codes")
     constexpr double exposure = 0.25;
     constexpr double sharpening = 0.4;
     constexpr double threshold = 0.002;
-    const auto linear = mcraw::camera_to_dwg(
-        camera, solution, exposure, 1.0 / 65535.0);
-    const auto sharpened = mcraw::sharpen_target_linear(
-        linear, sharpening, threshold);
-    const auto target_log = mcraw::encode_davinci_intermediate(
-        sharpened, mcraw::NegativePolicy::preserve_by_curve);
+    auto linear = mcraw::camera_to_dwg(
+        camera, solution, exposure, 1.0 / 65535.0, 4);
+    linear = mcraw::sharpen_target_linear(
+        std::move(linear), sharpening, threshold, 4);
+    const mcraw::DaVinciIntermediateLut curve;
+    const auto target_log = mcraw::encode_davinci_intermediate_lut(
+        std::move(linear), mcraw::NegativePolicy::preserve_by_curve, curve, 4);
     const auto split = mcraw::pack_dwg_log_to_yuv422p10(
         target_log, mcraw::ChromaFilter::quality, true, 27);
-    const mcraw::DaVinciIntermediateLut curve;
     const auto fused = mcraw::pack_camera_to_dwg_di_yuv422p10(
         camera, solution, exposure, mcraw::NegativePolicy::preserve_by_curve,
         curve, mcraw::ChromaFilter::quality, true, 27, 4,

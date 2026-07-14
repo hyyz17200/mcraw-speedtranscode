@@ -1,6 +1,7 @@
 #include <mcraw/processing/log_curve.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <mcraw/core/error.hpp>
@@ -68,6 +69,38 @@ TargetLogRgbF32 encode_davinci_intermediate(const TargetLinearRgbF32& input,
         }
     }
     return output;
+}
+
+TargetLogRgbF32 encode_davinci_intermediate_lut(
+    TargetLinearRgbF32 input,
+    NegativePolicy policy,
+    const DaVinciIntermediateLut& curve,
+    std::size_t worker_threads) {
+    input.validate();
+    const int thread_count = static_cast<int>(
+        std::clamp<std::size_t>(worker_threads, 1U, 256U));
+    const auto plane_size = input.planes[0].size();
+    const auto total = static_cast<std::int64_t>(plane_size * input.planes.size());
+    std::atomic_bool rejected_negative{false};
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t raw_index = 0; raw_index < total; ++raw_index) {
+        const auto index = static_cast<std::size_t>(raw_index);
+        auto& value = input.planes[index / plane_size][index % plane_size];
+        if (value < 0.0F) {
+            if (policy == NegativePolicy::clamp_zero) value = 0.0F;
+            if (policy == NegativePolicy::error) {
+                rejected_negative.store(true, std::memory_order_relaxed);
+                value = 0.0F;
+            }
+        }
+        value = curve.encode(value);
+    }
+    if (rejected_negative.load(std::memory_order_relaxed)) {
+        throw Error(ErrorCode::processing_failed,
+                    "negative target-linear value rejected by policy");
+    }
+    input.validate();
+    return input;
 }
 
 } // namespace mcraw

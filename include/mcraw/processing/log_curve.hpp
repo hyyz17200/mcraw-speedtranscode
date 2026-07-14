@@ -71,4 +71,12 @@ private:
     const TargetLinearRgbF32& input,
     NegativePolicy policy);
 
+// Production split-pipeline path: consumes the target-linear storage, applies
+// the cached curve in parallel, and returns the same planes as TargetLog RGB.
+[[nodiscard]] TargetLogRgbF32 encode_davinci_intermediate_lut(
+    TargetLinearRgbF32 input,
+    NegativePolicy policy,
+    const DaVinciIntermediateLut& curve,
+    std::size_t worker_threads = 1);
+
 } // namespace mcraw

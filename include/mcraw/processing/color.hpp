@@ -41,11 +41,13 @@ struct CameraColorSolution {
     const CameraRgbF32& input,
     const CameraColorSolution& solution,
     double exposure_offset_stops = 0.0,
-    double input_scale = 1.0);
+    double input_scale = 1.0,
+    std::size_t worker_threads = 1);
 
 [[nodiscard]] TargetLinearRgbF32 sharpen_target_linear(
-    const TargetLinearRgbF32& input,
+    TargetLinearRgbF32 input,
     double amount,
-    double threshold);
+    double threshold,
+    std::size_t worker_threads = 1);
 
 } // namespace mcraw

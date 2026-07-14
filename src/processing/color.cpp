@@ -282,7 +282,8 @@ CameraColorSolution build_camera_color_solution(const NormalizedCameraMetadata& 
 TargetLinearRgbF32 camera_to_dwg(const CameraRgbF32& input,
                                  const CameraColorSolution& solution,
                                  double exposure_offset_stops,
-                                 double input_scale) {
+                                 double input_scale,
+                                 std::size_t worker_threads) {
     input.validate();
     if (!std::isfinite(input_scale) || input_scale <= 0.0) {
         throw Error(ErrorCode::invalid_argument,
@@ -291,7 +292,12 @@ TargetLinearRgbF32 camera_to_dwg(const CameraRgbF32& input,
     TargetLinearRgbF32 output{input.width, input.height, {}};
     for (auto& plane : output.planes) plane.resize(input.planes[0].size());
     const double exposure = std::exp2(exposure_offset_stops) * input_scale;
-    for (std::size_t i = 0; i < input.planes[0].size(); ++i) {
+    const int thread_count = static_cast<int>(
+        std::clamp<std::size_t>(worker_threads, 1U, 256U));
+    const auto pixels = static_cast<std::int64_t>(input.planes[0].size());
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t raw_index = 0; raw_index < pixels; ++raw_index) {
+        const auto i = static_cast<std::size_t>(raw_index);
         const auto transformed = solution.camera_to_target * std::array<double, 3>{
             input.planes[0][i], input.planes[1][i], input.planes[2][i]
         };
@@ -302,9 +308,10 @@ TargetLinearRgbF32 camera_to_dwg(const CameraRgbF32& input,
     return output;
 }
 
-TargetLinearRgbF32 sharpen_target_linear(const TargetLinearRgbF32& input,
+TargetLinearRgbF32 sharpen_target_linear(TargetLinearRgbF32 input,
                                          double amount,
-                                         double threshold) {
+                                         double threshold,
+                                         std::size_t worker_threads) {
     input.validate();
     if (!std::isfinite(amount) || amount < 0.0 ||
         !std::isfinite(threshold) || threshold < 0.0) {
@@ -312,16 +319,28 @@ TargetLinearRgbF32 sharpen_target_linear(const TargetLinearRgbF32& input,
                     "target-linear sharpening parameters must be finite and non-negative");
     }
     if (amount <= 0.0) return input;
-    TargetLinearRgbF32 output = input;
     constexpr double kr = 0.2627;
     constexpr double kb = 0.0593;
     constexpr double kg = 1.0 - kr - kb;
+    const int thread_count = static_cast<int>(
+        std::clamp<std::size_t>(worker_threads, 1U, 256U));
+    const auto pixel_count = static_cast<std::size_t>(input.width) * input.height;
+    std::vector<float> luma(pixel_count);
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t raw_pixel = 0;
+         raw_pixel < static_cast<std::int64_t>(pixel_count); ++raw_pixel) {
+        const auto pixel = static_cast<std::size_t>(raw_pixel);
+        luma[pixel] = static_cast<float>(
+            kr * input.planes[0][pixel] + kg * input.planes[1][pixel] +
+            kb * input.planes[2][pixel]);
+    }
     const auto luma_at = [&](std::uint32_t x, std::uint32_t y) {
-        const auto pixel = static_cast<std::size_t>(y) * input.width + x;
-        return kr * input.planes[0][pixel] + kg * input.planes[1][pixel] +
-               kb * input.planes[2][pixel];
+        return luma[static_cast<std::size_t>(y) * input.width + x];
     };
-    for (std::uint32_t y = 0; y < input.height; ++y) {
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t raw_y = 0;
+         raw_y < static_cast<std::int64_t>(input.height); ++raw_y) {
+        const auto y = static_cast<std::uint32_t>(raw_y);
         for (std::uint32_t x = 0; x < input.width; ++x) {
             const auto left = x == 0U ? 0U : x - 1U;
             const auto right = std::min(x + 1U, input.width - 1U);
@@ -334,11 +353,11 @@ TargetLinearRgbF32 sharpen_target_linear(const TargetLinearRgbF32& input,
             const auto pixel = static_cast<std::size_t>(y) * input.width + x;
             const float delta = static_cast<float>(amount * std::copysign(
                 std::abs(detail) - threshold, detail));
-            for (auto& plane : output.planes) plane[pixel] += delta;
+            for (auto& plane : input.planes) plane[pixel] += delta;
         }
     }
-    output.validate();
-    return output;
+    input.validate();
+    return input;
 }
 
 } // namespace mcraw

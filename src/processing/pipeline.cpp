@@ -50,14 +50,15 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
     }
     if (output_target_log_) {
         StageTimer timer(timings, "camera_to_dwg_di_rgb");
-        const auto target_linear = camera_to_dwg(
+        auto target_linear = camera_to_dwg(
             camera_rgb, result.color_solution, config_.exposure_offset_stops,
-            1.0 / 65535.0);
-        const auto sharpened = sharpen_target_linear(
-            target_linear, config_.capture_sharpening,
-            config_.capture_sharpening_threshold);
-        result.target_log = encode_davinci_intermediate(
-            sharpened, config_.negative_policy);
+            1.0 / 65535.0, worker_threads_);
+        target_linear = sharpen_target_linear(
+            std::move(target_linear), config_.capture_sharpening,
+            config_.capture_sharpening_threshold, worker_threads_);
+        result.target_log = encode_davinci_intermediate_lut(
+            std::move(target_linear), config_.negative_policy,
+            di_curve_, worker_threads_);
     } else {
         StageTimer timer(timings, "fused_camera_to_dwg_di_yuv422p10");
         result.packed = pack_camera_to_dwg_di_yuv422p10(
