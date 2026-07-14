@@ -32,6 +32,7 @@
 #include <mcraw/core/timing.hpp>
 #include <mcraw/io/mcraw_reader.hpp>
 #include <mcraw/output/sidecar.hpp>
+#include <mcraw/output/backend_selection.hpp>
 #include <mcraw/processing/calibration.hpp>
 #include <mcraw/processing/color.hpp>
 #include <mcraw/processing/demosaic.hpp>
@@ -296,10 +297,20 @@ int command_inspect(const Arguments& args) {
 }
 
 int command_list_capabilities() {
+    const auto capabilities = mcraw::probe_backend_capabilities();
     nlohmann::json result = {
         {"version", "0.1.0"}, {"license", "GPL-3.0-or-later"},
         {"platforms", {"Windows 10/11", "Linux (build-compatible, not yet validated)"}},
-        {"backends", {"cpu_reference"}}, {"cfa", {"rggb", "bggr", "grbg", "gbrg"}},
+        {"backends", {
+            {"cpu", {{"available", capabilities.cpu_available}, {"encoder", "prores_ks"}}},
+            {"vulkan", {
+                {"compiled", capabilities.vulkan_compiled},
+                {"available", capabilities.vulkan_backend_available},
+                {"encoder_available", capabilities.prores_ks_vulkan_available},
+                {"encoder", "prores_ks_vulkan"},
+                {"reason", capabilities.vulkan_unavailable_reason}
+            }}
+        }}, {"cfa", {"rggb", "bggr", "grbg", "gbrg"}},
         {"demosaic", {"rcd", "amaze", "igv", "dcb", "lmmse"}},
         {"optional_processing", {"capture_sharpening"}},
         {"color_profiles", {"DaVinciIntermediate_DWG"}},
@@ -547,6 +558,7 @@ int command_convert(const Arguments& args) {
     mcraw::McrawReader reader(input);
     if (reader.frames().empty()) throw Error(ErrorCode::invalid_container, "MCRAW contains no video frames");
     auto config = effective_config(args);
+    const auto backend = mcraw::select_backend(config, mcraw::probe_backend_capabilities());
     const auto frame_limit = std::min(reader.frames().size(), config.max_frames == 0U
         ? reader.frames().size() : config.max_frames);
     if (frame_limit == 0U) throw Error(ErrorCode::invalid_argument, "conversion selected zero frames");
@@ -555,6 +567,9 @@ int command_convert(const Arguments& args) {
     std::vector<std::string> warnings{
         "v0.1 BT.2020 NCL packing matrix and left chroma siting remain provisional until Resolve chart validation"
     };
+    if (backend.used_fallback) {
+        warnings.emplace_back("Vulkan backend unavailable; using CPU fallback: " + backend.reason);
+    }
     mcraw::AudioInfo audio;
     if (config.preserve_audio) audio = reader.load_audio();
     if (config.preserve_audio && (audio.channels == 0 || audio.chunks.empty())) {

@@ -40,6 +40,28 @@ ChromaFilter parse_enum(std::string_view value) {
     throw Error(ErrorCode::invalid_argument, "unknown chroma filter: " + std::string(value));
 }
 
+template <>
+VideoBackend parse_enum(std::string_view value) {
+    if (value == "auto") return VideoBackend::automatic;
+    if (value == "cpu") return VideoBackend::cpu;
+    if (value == "vulkan") return VideoBackend::vulkan;
+    throw Error(ErrorCode::invalid_argument, "unknown video backend: " + std::string(value));
+}
+
+template <>
+GpuFallback parse_enum(std::string_view value) {
+    if (value == "prores_ks") return GpuFallback::prores_ks;
+    if (value == "none") return GpuFallback::none;
+    throw Error(ErrorCode::invalid_argument, "unknown GPU fallback: " + std::string(value));
+}
+
+template <>
+GpuPrecision parse_enum(std::string_view value) {
+    if (value == "fp32") return GpuPrecision::fp32;
+    if (value == "fp16") return GpuPrecision::fp16;
+    throw Error(ErrorCode::invalid_argument, "unknown GPU precision: " + std::string(value));
+}
+
 } // namespace
 
 void EffectiveConfig::validate() const {
@@ -61,6 +83,12 @@ void EffectiveConfig::validate() const {
     if (max_parallel_frames > 64U) {
         throw Error(ErrorCode::invalid_argument,
                     "max_parallel_frames must be between 0 (auto) and 64");
+    }
+    if (gpu_selector.empty()) {
+        throw Error(ErrorCode::invalid_argument, "gpu_selector must not be empty");
+    }
+    if (async_depth == 0U || async_depth > 64U) {
+        throw Error(ErrorCode::invalid_argument, "async_depth must be between 1 and 64");
     }
     if (!std::isfinite(capture_sharpening) || capture_sharpening < 0.0 ||
         capture_sharpening > 2.0) {
@@ -89,7 +117,8 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
         "capture_sharpening_threshold", "deterministic_dither",
         "preserve_source_timestamps", "preserve_audio", "max_frames",
         "cpu_threads", "max_parallel_frames",
-        "target_profile", "prores_profile"
+        "target_profile", "prores_profile", "backend", "gpu_selector",
+        "async_depth", "fallback", "precision"
     };
     for (const auto& [key, ignored] : value.items()) {
         static_cast<void>(ignored);
@@ -114,6 +143,14 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
     config.max_parallel_frames = value.value("max_parallel_frames", config.max_parallel_frames);
     config.target_profile = value.value("target_profile", config.target_profile);
     config.prores_profile = value.value("prores_profile", config.prores_profile);
+    config.backend = parse_enum<VideoBackend>(value.value(
+        "backend", std::string(to_string(config.backend))));
+    config.gpu_selector = value.value("gpu_selector", config.gpu_selector);
+    config.async_depth = value.value("async_depth", config.async_depth);
+    config.fallback = parse_enum<GpuFallback>(value.value(
+        "fallback", std::string(to_string(config.fallback))));
+    config.precision = parse_enum<GpuPrecision>(value.value(
+        "precision", std::string(to_string(config.precision))));
     config.validate();
     return config;
 }
@@ -136,6 +173,11 @@ nlohmann::json config_to_json(const EffectiveConfig& config) {
         {"max_parallel_frames", config.max_parallel_frames},
         {"target_profile", config.target_profile},
         {"prores_profile", config.prores_profile},
+        {"backend", to_string(config.backend)},
+        {"gpu_selector", config.gpu_selector},
+        {"async_depth", config.async_depth},
+        {"fallback", to_string(config.fallback)},
+        {"precision", to_string(config.precision)},
         {"packing", {
             {"pixel_format", "yuv422p10le"},
             {"range", "video"},
@@ -169,6 +211,31 @@ std::string_view to_string(ChromaFilter value) noexcept {
     switch (value) {
     case ChromaFilter::fast: return "fast";
     case ChromaFilter::quality: return "quality";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(VideoBackend value) noexcept {
+    switch (value) {
+    case VideoBackend::automatic: return "auto";
+    case VideoBackend::cpu: return "cpu";
+    case VideoBackend::vulkan: return "vulkan";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(GpuFallback value) noexcept {
+    switch (value) {
+    case GpuFallback::prores_ks: return "prores_ks";
+    case GpuFallback::none: return "none";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(GpuPrecision value) noexcept {
+    switch (value) {
+    case GpuPrecision::fp32: return "fp32";
+    case GpuPrecision::fp16: return "fp16";
     }
     return "unknown";
 }

@@ -79,6 +79,7 @@ add_library(mcraw_core
   src/processing/pipeline.cpp
   src/processing/yuv.cpp
   src/output/sidecar.cpp
+  src/output/backend_selection.cpp
 )
 
 target_include_directories(mcraw_core
@@ -177,6 +178,7 @@ if(MCRAW_BUILD_TESTS)
     tests/test_metadata.cpp
     tests/test_timing.cpp
     tests/test_yuv.cpp
+    tests/test_backend_selection.cpp
   )
   target_link_libraries(mcraw_tests PRIVATE mcraw_core Catch2::Catch2WithMain)
   include(Catch)

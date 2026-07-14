@@ -13,6 +13,9 @@ namespace mcraw {
 enum class DemosaicAlgorithm { rcd, amaze, igv, dcb, lmmse };
 enum class NegativePolicy { preserve_by_curve, clamp_zero, error };
 enum class ChromaFilter { fast, quality };
+enum class VideoBackend { automatic, cpu, vulkan };
+enum class GpuFallback { prores_ks, none };
+enum class GpuPrecision { fp32, fp16 };
 
 struct EffectiveConfig {
     std::uint32_t schema_version{1};
@@ -32,6 +35,13 @@ struct EffectiveConfig {
     std::size_t max_parallel_frames{0};
     std::string target_profile{"DaVinciIntermediate_DWG"};
     std::string prores_profile{"hq"};
+    // Keep the proven CPU backend as the default until the GPU backend passes
+    // the compatibility and stability gates in the implementation guide.
+    VideoBackend backend{VideoBackend::cpu};
+    std::string gpu_selector{"auto"};
+    std::size_t async_depth{8};
+    GpuFallback fallback{GpuFallback::prores_ks};
+    GpuPrecision precision{GpuPrecision::fp32};
 
     void validate() const;
 };
@@ -41,5 +51,8 @@ struct EffectiveConfig {
 [[nodiscard]] std::string_view to_string(DemosaicAlgorithm value) noexcept;
 [[nodiscard]] std::string_view to_string(NegativePolicy value) noexcept;
 [[nodiscard]] std::string_view to_string(ChromaFilter value) noexcept;
+[[nodiscard]] std::string_view to_string(VideoBackend value) noexcept;
+[[nodiscard]] std::string_view to_string(GpuFallback value) noexcept;
+[[nodiscard]] std::string_view to_string(GpuPrecision value) noexcept;
 
 } // namespace mcraw

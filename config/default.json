@@ -13,5 +13,10 @@
   "cpu_threads": 0,
   "max_parallel_frames": 0,
   "target_profile": "DaVinciIntermediate_DWG",
-  "prores_profile": "hq"
+  "prores_profile": "hq",
+  "backend": "cpu",
+  "gpu_selector": "auto",
+  "async_depth": 8,
+  "fallback": "prores_ks",
+  "precision": "fp32"
 }
