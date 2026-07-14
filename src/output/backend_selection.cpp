@@ -2,14 +2,35 @@
 
 #include <mcraw/core/error.hpp>
 
+#if defined(MCRAW_HAS_FFMPEG) && MCRAW_HAS_FFMPEG
+extern "C" {
+#include <libavcodec/avcodec.h>
+#include <libavutil/avutil.h>
+}
+#endif
+
 namespace mcraw {
 
 BackendCapabilities probe_backend_capabilities() {
     BackendCapabilities result;
+#if defined(MCRAW_HAS_FFMPEG) && MCRAW_HAS_FFMPEG
+    result.cpu_available = avcodec_find_encoder_by_name("prores_ks") != nullptr;
+    result.prores_ks_vulkan_available =
+        avcodec_find_encoder_by_name("prores_ks_vulkan") != nullptr;
+    result.ffmpeg_version = av_version_info();
+    result.ffmpeg_configuration = avcodec_configuration();
+#else
+    result.cpu_available = false;
+#endif
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
     result.vulkan_compiled = true;
-    result.vulkan_unavailable_reason =
-        "Vulkan support is compiled but the runtime probe is not implemented yet";
+    if (!result.prores_ks_vulkan_available) {
+        result.vulkan_unavailable_reason =
+            "the linked FFmpeg libraries have no prores_ks_vulkan encoder";
+    } else {
+        result.vulkan_unavailable_reason =
+            "the Vulkan encoder is present but runtime integration is not implemented yet";
+    }
 #else
     result.vulkan_unavailable_reason = "Vulkan support is not compiled into this build";
 #endif

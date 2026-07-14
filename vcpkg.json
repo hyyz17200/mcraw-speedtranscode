@@ -9,7 +9,9 @@
     {
       "name": "ffmpeg",
       "default-features": false,
-      "features": ["avcodec", "avformat", "swresample", "swscale"]
-    }
+      "features": ["avcodec", "avformat", "swresample", "swscale", "vulkan"]
+    },
+    "vulkan-headers",
+    "vulkan-loader"
   ]
 }

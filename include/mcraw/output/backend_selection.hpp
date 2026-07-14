@@ -12,6 +12,8 @@ struct BackendCapabilities {
     bool vulkan_backend_available{};
     bool prores_ks_vulkan_available{};
     std::string vulkan_unavailable_reason;
+    std::string ffmpeg_version;
+    std::string ffmpeg_configuration;
 };
 
 struct BackendSelection {

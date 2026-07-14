@@ -315,7 +315,11 @@ int command_list_capabilities() {
         {"optional_processing", {"capture_sharpening"}},
         {"color_profiles", {"DaVinciIntermediate_DWG"}},
         {"packing", {"ProRes422HQ", "yuv422p10le", "video_range", "bt2020_ncl_provisional"}},
-        {"ffmpeg", static_cast<bool>(MCRAW_HAS_FFMPEG)},
+        {"ffmpeg", {
+            {"enabled", static_cast<bool>(MCRAW_HAS_FFMPEG)},
+            {"version", capabilities.ffmpeg_version},
+            {"configuration", capabilities.ffmpeg_configuration}
+        }},
         {"librtprocess", static_cast<bool>(MCRAW_HAS_RTPROCESS)}
     };
     std::cout << result.dump(2) << '\n';

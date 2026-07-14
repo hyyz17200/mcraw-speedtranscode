@@ -1,0 +1,30 @@
+{
+  "name": "ffmpeg",
+  "version": "8.1.2",
+  "description": "FFmpeg with the project-required Vulkan SPIR-V build tool dependency",
+  "homepage": "https://ffmpeg.org",
+  "license": null,
+  "dependencies": [
+    {"name": "ffmpeg-bin2c", "host": true},
+    {"name": "vcpkg-cmake-get-vars", "host": true},
+    {"name": "vcpkg-pkgconfig-get-modules", "host": true}
+  ],
+  "features": {
+    "avcodec": {"description": "Build libavcodec"},
+    "avformat": {
+      "description": "Build libavformat",
+      "dependencies": [
+        {"name": "ffmpeg", "default-features": false, "features": ["avcodec"]}
+      ]
+    },
+    "swresample": {"description": "Build libswresample"},
+    "swscale": {"description": "Build libswscale"},
+    "vulkan": {
+      "description": "Build Vulkan codecs, including prores_ks_vulkan",
+      "dependencies": [
+        "vulkan-headers",
+        {"name": "glslang", "host": true, "features": ["tools"]}
+      ]
+    }
+  }
+}

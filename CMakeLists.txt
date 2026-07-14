@@ -5,6 +5,7 @@ project(mcraw_transcoder VERSION 0.1.0 LANGUAGES CXX)
 option(MCRAW_BUILD_TESTS "Build unit and sample tests" ON)
 option(MCRAW_FETCH_DEPENDENCIES "Fetch MotionCam, librtprocess, and Catch2" ON)
 option(MCRAW_ENABLE_FFMPEG "Build ProRes/MOV output support" ON)
+option(MCRAW_ENABLE_VULKAN "Build the optional Vulkan video backend" ON)
 option(MCRAW_ENABLE_RTPROCESS "Build AMaZE/RCD/IGV support" ON)
 option(MCRAW_ENABLE_AVX2 "Build CPU processing targets for AVX2-capable processors" ON)
 
@@ -66,6 +67,14 @@ if(MCRAW_ENABLE_FFMPEG)
   find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swresample swscale)
 endif()
 
+if(MCRAW_ENABLE_VULKAN)
+  if(NOT MCRAW_ENABLE_FFMPEG)
+    message(FATAL_ERROR "MCRAW_ENABLE_VULKAN requires MCRAW_ENABLE_FFMPEG")
+  endif()
+  find_package(VulkanHeaders CONFIG REQUIRED)
+  find_package(VulkanLoader CONFIG REQUIRED)
+endif()
+
 add_library(mcraw_core
   src/core/config.cpp
   src/core/metadata.cpp
@@ -97,6 +106,7 @@ target_link_libraries(mcraw_core
 target_compile_definitions(mcraw_core PUBLIC
   MCRAW_HAS_RTPROCESS=$<BOOL:${MCRAW_ENABLE_RTPROCESS}>
   MCRAW_HAS_FFMPEG=$<BOOL:${MCRAW_ENABLE_FFMPEG}>
+  MCRAW_HAS_VULKAN=$<BOOL:${MCRAW_ENABLE_VULKAN}>
 )
 
 if(MCRAW_ENABLE_RTPROCESS)
@@ -162,6 +172,10 @@ if(MCRAW_ENABLE_FFMPEG)
     PUBLIC FFmpeg::avcodec FFmpeg::avutil
     PRIVATE FFmpeg::avformat FFmpeg::swresample FFmpeg::swscale
   )
+endif()
+
+if(MCRAW_ENABLE_VULKAN)
+  target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
 endif()
 
 add_executable(mcraw-transcoder src/cli/main.cpp)
