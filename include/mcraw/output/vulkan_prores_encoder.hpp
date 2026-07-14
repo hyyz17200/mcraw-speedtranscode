@@ -22,6 +22,7 @@ struct VulkanProResTelemetry {
     bool gpu_resident{};
     std::uint64_t upload_frames{};
     std::uint64_t readback_frames{};
+    std::uint64_t direct_frames{};
     std::uint64_t packets{};
 };
 

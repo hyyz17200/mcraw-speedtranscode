@@ -6,6 +6,7 @@
 
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/pixel_types.hpp>
+#include <mcraw/output/ffmpeg_vulkan_context.hpp>
 #include <mcraw/vulkan/vulkan_runtime.hpp>
 
 namespace mcraw {
@@ -40,6 +41,38 @@ public:
     [[nodiscard]] Yuv422P10 pack(const TargetLogRgbF32& input,
                                  std::size_t frame_index);
     [[nodiscard]] VulkanRgbToYuvTelemetry telemetry() const noexcept;
+
+private:
+    class Impl;
+    std::unique_ptr<Impl> impl_;
+};
+
+struct VulkanRgbToYuvFrameTelemetry {
+    std::uint64_t dispatches{};
+    std::uint64_t rgb_upload_bytes{};
+    std::uint64_t output_frames{};
+    std::uint64_t yuv_upload_frames{};
+    std::uint64_t yuv_readback_frames{};
+    double last_dispatch_ms{};
+};
+
+class VulkanRgbToYuvFrameWriter {
+public:
+    VulkanRgbToYuvFrameWriter(VulkanRuntime& runtime,
+                              FfmpegVulkanFrameContext& frames,
+                              VulkanRgbToYuvConfig config);
+    ~VulkanRgbToYuvFrameWriter();
+    VulkanRgbToYuvFrameWriter(VulkanRgbToYuvFrameWriter&&) noexcept;
+    VulkanRgbToYuvFrameWriter& operator=(VulkanRgbToYuvFrameWriter&&) noexcept;
+    VulkanRgbToYuvFrameWriter(const VulkanRgbToYuvFrameWriter&) = delete;
+    VulkanRgbToYuvFrameWriter& operator=(const VulkanRgbToYuvFrameWriter&) = delete;
+
+    // Returns the exact FFmpeg pool frame written by the compute shader. No
+    // uncompressed YUV upload or readback occurs on this production path.
+    [[nodiscard]] VulkanVideoFrame pack(const TargetLogRgbF32& input,
+                                        std::size_t frame_index,
+                                        FrameMetadata metadata);
+    [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const noexcept;
 
 private:
     class Impl;

@@ -1,6 +1,9 @@
 if(NOT DEFINED INPUT OR NOT DEFINED OUTPUT)
   message(FATAL_ERROR "embed-spirv.cmake requires INPUT and OUTPUT")
 endif()
+if(NOT DEFINED SYMBOL)
+  set(SYMBOL rgb_to_yuv_422_spv)
+endif()
 
 file(READ "${INPUT}" SPIRV_HEX HEX)
 string(LENGTH "${SPIRV_HEX}" HEX_LENGTH)
@@ -29,4 +32,4 @@ if(WORD_COUNT GREATER 0)
   endforeach()
 endif()
 
-file(WRITE "${OUTPUT}" "#pragma once\n#include <array>\n#include <cstdint>\nnamespace mcraw::generated {\ninline constexpr std::array<std::uint32_t, ${WORD_COUNT}> rgb_to_yuv_422_spv{{\n${WORDS}\n}};\n}\n")
+file(WRITE "${OUTPUT}" "#pragma once\n#include <array>\n#include <cstdint>\nnamespace mcraw::generated {\ninline constexpr std::array<std::uint32_t, ${WORD_COUNT}> ${SYMBOL}{{\n${WORDS}\n}};\n}\n")

@@ -9,6 +9,7 @@
 #include <string_view>
 
 #include <mcraw/core/error.hpp>
+#include <mcraw/output/ffmpeg_raii.hpp>
 #include <mcraw/processing/yuv.hpp>
 #include <mcraw/vulkan/vulkan_rgb_to_yuv.hpp>
 
@@ -153,6 +154,63 @@ TEST_CASE("Vulkan RGB-to-YUV rejects odd width and unvalidated FP16") {
     CHECK_THROWS_AS(mcraw::VulkanRgbToYuv422(
         runtime, {64, 32, mcraw::ChromaFilter::quality, true,
                   mcraw::GpuPrecision::fp16}), mcraw::Error);
+}
+
+TEST_CASE("Vulkan RGB-to-YUV writes the FFmpeg encoder frame pool directly") {
+    constexpr std::uint32_t width = 128;
+    constexpr std::uint32_t height = 36;
+    constexpr std::size_t frame_index = 23;
+    const auto input = golden_patterns(width, height);
+    const auto reference = mcraw::pack_dwg_log_to_yuv422p10(
+        input, mcraw::ChromaFilter::quality, true, frame_index).image;
+    mcraw::VulkanRuntime runtime;
+    mcraw::FfmpegVulkanFrameContext frames(runtime, {
+        static_cast<int>(width), static_cast<int>(height), 4});
+    mcraw::VulkanRgbToYuvFrameWriter writer(
+        runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
+                          mcraw::GpuPrecision::fp32});
+    mcraw::FrameMetadata metadata;
+    metadata.width = width;
+    metadata.height = height;
+    metadata.pts = 0;
+    metadata.duration = 3'000;
+    metadata.time_base = {1, 90'000};
+    metadata.range = AVCOL_RANGE_MPEG;
+    metadata.matrix = AVCOL_SPC_BT2020_NCL;
+    auto output = writer.pack(input, frame_index, metadata);
+    const auto allocation = frames.inspect_frame(*output.frame);
+    REQUIRE(allocation.image_count == 1U);
+    CHECK(allocation.layouts.front() == VK_IMAGE_LAYOUT_GENERAL);
+    CHECK(allocation.access.front() == VK_ACCESS_SHADER_WRITE_BIT);
+    CHECK(allocation.semaphore_values.front() == 1U);
+
+    auto software = mcraw::make_av_frame();
+    software->format = AV_PIX_FMT_YUV422P10LE;
+    software->width = width;
+    software->height = height;
+    mcraw::require_ffmpeg(av_frame_get_buffer(software.get(), 32),
+                          "allocate direct-frame golden readback");
+    mcraw::require_ffmpeg(av_hwframe_transfer_data(software.get(), output.frame.get(), 0),
+                          "read back direct-frame golden output");
+    const auto compare_readback = [&](int plane,
+                                      const std::vector<std::uint16_t>& expected,
+                                      std::uint32_t plane_width) {
+        std::vector<std::uint16_t> actual;
+        actual.reserve(expected.size());
+        for (std::uint32_t row = 0; row < height; ++row) {
+            const auto* source = reinterpret_cast<const std::uint16_t*>(
+                software->data[plane] + row * software->linesize[plane]);
+            actual.insert(actual.end(), source, source + plane_width);
+        }
+        return compare_plane(expected, actual);
+    };
+    CHECK(compare_readback(0, reference.y, width).maximum <= 1);
+    CHECK(compare_readback(1, reference.cb, width / 2U).maximum <= 1);
+    CHECK(compare_readback(2, reference.cr, width / 2U).maximum <= 1);
+    const auto telemetry = writer.telemetry();
+    CHECK(telemetry.output_frames == 1U);
+    CHECK(telemetry.yuv_upload_frames == 0U);
+    CHECK(telemetry.yuv_readback_frames == 0U);
 }
 
 TEST_CASE("Vulkan RGB-to-YUV packs the 4K sample dimensions") {

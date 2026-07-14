@@ -204,6 +204,10 @@ std::size_t FfmpegVulkanFrameContext::pool_size() const noexcept { return impl_-
 VkImageUsageFlags FfmpegVulkanFrameContext::image_usage() const noexcept {
     return impl_->image_usage;
 }
+bool FfmpegVulkanFrameContext::owns(const AVFrame& frame) const noexcept {
+    return frame.format == AV_PIX_FMT_VULKAN && frame.hw_frames_ctx != nullptr &&
+           frame.hw_frames_ctx->data == impl_->frames_context->data;
+}
 const std::vector<AVPixelFormat>& FfmpegVulkanFrameContext::valid_software_formats() const noexcept {
     return impl_->valid_software_formats;
 }

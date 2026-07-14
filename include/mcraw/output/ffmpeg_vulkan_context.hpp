@@ -46,6 +46,7 @@ public:
     [[nodiscard]] int height() const noexcept;
     [[nodiscard]] std::size_t pool_size() const noexcept;
     [[nodiscard]] VkImageUsageFlags image_usage() const noexcept;
+    [[nodiscard]] bool owns(const AVFrame& frame) const noexcept;
     [[nodiscard]] const std::vector<AVPixelFormat>& valid_software_formats() const noexcept;
     [[nodiscard]] const std::vector<VkFormat>& image_formats() const noexcept;
 

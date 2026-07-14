@@ -124,35 +124,54 @@ VulkanProResEncoder::VulkanProResEncoder(VulkanProResEncoder&&) noexcept = defau
 VulkanProResEncoder& VulkanProResEncoder::operator=(VulkanProResEncoder&&) noexcept = default;
 
 VideoEncoderCapabilities VulkanProResEncoder::capabilities() const {
-    return {"prores_ks_vulkan", FrameStorage::cpu, true, true, {}};
+    return {"prores_ks_vulkan", FrameStorage::vulkan, true, true, {}};
 }
 
 void VulkanProResEncoder::send(VideoFrame input) {
     if (impl_->flush_sent) {
         throw Error(ErrorCode::encode_failed, "cannot send Vulkan ProRes frame after flush");
     }
-    auto* software = std::get_if<CpuVideoFrame>(&input);
-    if (software == nullptr || !software->frame ||
-        software->format != AV_PIX_FMT_YUV422P10LE ||
-        software->frame->format != AV_PIX_FMT_YUV422P10LE ||
-        software->metadata.width != impl_->context->width ||
-        software->metadata.height != impl_->context->height ||
-        software->frame->width != impl_->context->width ||
-        software->frame->height != impl_->context->height ||
-        av_cmp_q(software->metadata.time_base, impl_->context->time_base) != 0) {
-        throw Error(ErrorCode::invalid_argument,
-                    "Vulkan upload bridge requires matching owned yuv422p10 CPU frames");
+    VulkanVideoFrame uploaded;
+    AVFrame* encoder_frame = nullptr;
+    if (auto* software = std::get_if<CpuVideoFrame>(&input)) {
+        if (!software->frame || software->format != AV_PIX_FMT_YUV422P10LE ||
+            software->frame->format != AV_PIX_FMT_YUV422P10LE ||
+            software->metadata.width != impl_->context->width ||
+            software->metadata.height != impl_->context->height ||
+            software->frame->width != impl_->context->width ||
+            software->frame->height != impl_->context->height ||
+            av_cmp_q(software->metadata.time_base, impl_->context->time_base) != 0) {
+            throw Error(ErrorCode::invalid_argument,
+                        "Vulkan upload bridge requires matching owned yuv422p10 CPU frames");
+        }
+        uploaded = impl_->frames.allocate_frame(software->metadata);
+        require_ffmpeg(av_hwframe_transfer_data(uploaded.frame.get(), software->frame.get(), 0),
+                       "upload CPU frame to Vulkan ProRes input");
+        ++impl_->counters.upload_frames;
+        encoder_frame = uploaded.frame.get();
+    } else if (auto* hardware = std::get_if<VulkanVideoFrame>(&input)) {
+        if (!hardware->frame || hardware->format != AV_PIX_FMT_VULKAN ||
+            hardware->software_format != AV_PIX_FMT_YUV422P10LE ||
+            hardware->metadata.width != impl_->context->width ||
+            hardware->metadata.height != impl_->context->height ||
+            av_cmp_q(hardware->metadata.time_base, impl_->context->time_base) != 0 ||
+            !impl_->frames.owns(*hardware->frame)) {
+            throw Error(ErrorCode::invalid_argument,
+                        "Vulkan ProRes requires a frame from its exact FFmpeg frame pool");
+        }
+        ++impl_->counters.direct_frames;
+        encoder_frame = hardware->frame.get();
     }
+    if (encoder_frame == nullptr) {
+        throw Error(ErrorCode::invalid_argument, "Vulkan ProRes received no usable frame");
+    }
+    impl_->counters.gpu_resident = impl_->counters.upload_frames == 0U &&
+                                   impl_->counters.direct_frames > 0U;
 
-    auto hardware = impl_->frames.allocate_frame(software->metadata);
-    require_ffmpeg(av_hwframe_transfer_data(hardware.frame.get(), software->frame.get(), 0),
-                   "upload CPU frame to Vulkan ProRes input");
-    ++impl_->counters.upload_frames;
-
-    int result = avcodec_send_frame(impl_->context.get(), hardware.frame.get());
+    int result = avcodec_send_frame(impl_->context.get(), encoder_frame);
     if (result == AVERROR(EAGAIN)) {
         append_packets(impl_->buffered, impl_->receive_available(false));
-        result = avcodec_send_frame(impl_->context.get(), hardware.frame.get());
+        result = avcodec_send_frame(impl_->context.get(), encoder_frame);
     }
     require_ffmpeg(result, "send Vulkan ProRes frame");
 }
