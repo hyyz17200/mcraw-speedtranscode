@@ -175,9 +175,36 @@ if(MCRAW_ENABLE_FFMPEG)
 endif()
 
 if(MCRAW_ENABLE_VULKAN)
+  find_program(MCRAW_GLSLANG_VALIDATOR
+    NAMES glslangValidator
+    HINTS "${VCPKG_INSTALLED_DIR}/${VCPKG_TARGET_TRIPLET}/tools/glslang"
+    REQUIRED)
+  set(MCRAW_GENERATED_SHADER_DIR "${CMAKE_CURRENT_BINARY_DIR}/generated/mcraw/vulkan")
+  set(MCRAW_RGB_TO_YUV_SPV "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422.comp.spv")
+  set(MCRAW_RGB_TO_YUV_HEADER "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422_spv.hpp")
+  add_custom_command(
+    OUTPUT "${MCRAW_RGB_TO_YUV_SPV}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
+    COMMAND "${MCRAW_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+            -o "${MCRAW_RGB_TO_YUV_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/rgb_to_yuv_422.comp.glsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/rgb_to_yuv_422.comp.glsl"
+    VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_RGB_TO_YUV_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${MCRAW_RGB_TO_YUV_SPV}"
+            "-DOUTPUT=${MCRAW_RGB_TO_YUV_HEADER}"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    DEPENDS "${MCRAW_RGB_TO_YUV_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    VERBATIM)
+  add_custom_target(mcraw_vulkan_shaders DEPENDS "${MCRAW_RGB_TO_YUV_HEADER}")
+  add_dependencies(mcraw_core mcraw_vulkan_shaders)
+  target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_sources(mcraw_core PRIVATE
     src/output/ffmpeg_vulkan_context.cpp
     src/output/vulkan_prores_encoder.cpp
+    src/vulkan/vulkan_rgb_to_yuv.cpp
     src/vulkan/vulkan_runtime.cpp
   )
   target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
@@ -215,6 +242,7 @@ if(MCRAW_BUILD_TESTS)
       tests/test_ffmpeg_vulkan_context.cpp
       tests/test_vulkan_prores_e2e.cpp
       tests/test_vulkan_prores_encoder.cpp
+      tests/test_vulkan_rgb_to_yuv.cpp
       tests/test_vulkan_runtime.cpp
     )
   endif()
