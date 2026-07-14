@@ -41,7 +41,10 @@ std::uint16_t quantize(double value,
     if (value < minimum) ++low;
     if (value > maximum) ++high;
     const double clipped = std::clamp(value, minimum, maximum);
-    return static_cast<std::uint16_t>(std::clamp(std::llround(clipped + noise), 0LL, 1023LL));
+    // All legal-range code values are positive and noise is in [-0.5, 0.5).
+    // Adding 0.5 before the integer conversion is therefore exactly equivalent
+    // to llround, without an external CRT call in the per-sample hot path.
+    return static_cast<std::uint16_t>(clipped + noise + 0.5);
 }
 
 std::size_t clamped_x(int x, std::uint32_t width) {
