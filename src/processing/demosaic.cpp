@@ -41,7 +41,8 @@ CameraRgbF32 demosaic_scaled_buffer(std::uint32_t width,
                                    CfaPattern cfa_pattern,
                                    const std::vector<float>& scaled_input,
                                    DemosaicAlgorithm algorithm,
-                                   std::size_t worker_threads) {
+                                   std::size_t worker_threads,
+                                   bool normalize_output) {
 #if !MCRAW_HAS_RTPROCESS
     static_cast<void>(algorithm);
     throw Error(ErrorCode::unsupported_format, "this build has no librtprocess support");
@@ -99,10 +100,12 @@ CameraRgbF32 demosaic_scaled_buffer(std::uint32_t width,
         throw Error(ErrorCode::processing_failed, "librtprocess demosaic failed with code " +
                                                 std::to_string(static_cast<int>(status)));
     }
-    for (auto& plane : output.planes) {
+    if (normalize_output) {
+        for (auto& plane : output.planes) {
 #pragma omp parallel for schedule(static) num_threads(thread_count)
-        for (std::int64_t i = 0; i < static_cast<std::int64_t>(plane.size()); ++i) {
-            plane[static_cast<std::size_t>(i)] /= 65535.0F;
+            for (std::int64_t i = 0; i < static_cast<std::int64_t>(plane.size()); ++i) {
+                plane[static_cast<std::size_t>(i)] /= 65535.0F;
+            }
         }
     }
     output.validate();
@@ -126,7 +129,7 @@ CameraRgbF32 demosaic(const RawNormalizedF32& input,
             input.pixels[static_cast<std::size_t>(i)] * 65535.0F;
     }
     return demosaic_scaled_buffer(input.width, input.height, input.cfa,
-                                  scaled_input, algorithm, worker_threads);
+                                  scaled_input, algorithm, worker_threads, true);
 }
 
 CameraRgbF32 demosaic(const RawDemosaicF32& input,
@@ -134,7 +137,15 @@ CameraRgbF32 demosaic(const RawDemosaicF32& input,
                       std::size_t worker_threads) {
     input.validate();
     return demosaic_scaled_buffer(input.width, input.height, input.cfa,
-                                  input.pixels, algorithm, worker_threads);
+                                  input.pixels, algorithm, worker_threads, true);
+}
+
+CameraRgbF32 demosaic_unnormalized(const RawDemosaicF32& input,
+                                   DemosaicAlgorithm algorithm,
+                                   std::size_t worker_threads) {
+    input.validate();
+    return demosaic_scaled_buffer(input.width, input.height, input.cfa,
+                                  input.pixels, algorithm, worker_threads, false);
 }
 
 } // namespace mcraw

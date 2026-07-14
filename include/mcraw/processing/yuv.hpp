@@ -28,6 +28,9 @@ struct PackedYuvResult {
 
 // Fused production path. The sensor matrix remains per-frame while the 1D
 // transfer-curve table is cached by the owning conversion pipeline.
+// input_scale maps the camera RGB planes to the normalized [0,1] domain
+// (1/65535 for demosaic_unnormalized output); it folds into the per-frame
+// matrix, so the recorded color solution stays unscaled.
 [[nodiscard]] PackedYuvResult pack_camera_to_dwg_di_yuv422p10(
     const CameraRgbF32& input,
     const CameraColorSolution& solution,
@@ -39,6 +42,7 @@ struct PackedYuvResult {
     std::size_t frame_index,
     std::size_t worker_threads,
     double capture_sharpening = 0.0,
-    double capture_sharpening_threshold = 0.002);
+    double capture_sharpening_threshold = 0.002,
+    double input_scale = 1.0);
 
 } // namespace mcraw

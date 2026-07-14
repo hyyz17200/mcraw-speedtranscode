@@ -35,7 +35,10 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         }
         {
             StageTimer timer(timings, "demosaic");
-            camera_rgb = demosaic(calibrated, config_.demosaic, worker_threads_);
+            // Planes stay in the 0..65535 librtprocess domain; the 1/65535
+            // scale folds into the per-frame matrix inside the fused pack.
+            camera_rgb = demosaic_unnormalized(calibrated, config_.demosaic,
+                                               worker_threads_);
         }
     }
     {
@@ -48,7 +51,8 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
             camera_rgb, result.color_solution, config_.exposure_offset_stops,
             config_.negative_policy, di_curve_, config_.chroma_filter,
             config_.deterministic_dither, frame_index, worker_threads_,
-            config_.capture_sharpening, config_.capture_sharpening_threshold);
+            config_.capture_sharpening, config_.capture_sharpening_threshold,
+            1.0 / 65535.0);
     }
     return result;
 }
