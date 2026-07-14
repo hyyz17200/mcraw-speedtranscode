@@ -32,6 +32,12 @@ DaVinciIntermediateLut::DaVinciIntermediateLut(std::size_t entries_per_segment) 
     }
     low_segment_.resize(entries_per_segment);
     high_segment_.resize(entries_per_segment);
+    cut_ = static_cast<float>(log_curve_detail::di_linear_cut);
+    slope_ = static_cast<float>(log_curve_detail::di_m);
+    const auto steps = static_cast<float>(entries_per_segment - 1U);
+    low_scale_ = steps / (1.0F - cut_);
+    high_scale_ = steps / 99.0F;
+    last_index_ = entries_per_segment - 2U;
     const auto populate = [](std::vector<float>& values, double minimum, double maximum) {
         const double denominator = static_cast<double>(values.size() - 1U);
         for (std::size_t i = 0; i < values.size(); ++i) {

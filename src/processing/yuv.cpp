@@ -67,13 +67,13 @@ double filtered_chroma(const std::vector<double>& row,
 }
 
 template <ChromaFilter Filter>
-double filtered_chroma_fixed(const std::vector<double>& row,
-                             std::uint32_t x,
-                             std::uint32_t width) {
+float filtered_chroma_fixed(const std::vector<float>& row,
+                            std::uint32_t x,
+                            std::uint32_t width) {
     if constexpr (Filter == ChromaFilter::fast) return row[x];
-    static constexpr std::array<double, 5> taps{-1.0 / 16.0, 4.0 / 16.0, 10.0 / 16.0,
-                                                 4.0 / 16.0, -1.0 / 16.0};
-    double result = 0.0;
+    static constexpr std::array<float, 5> taps{-1.0F / 16.0F, 4.0F / 16.0F, 10.0F / 16.0F,
+                                                4.0F / 16.0F, -1.0F / 16.0F};
+    float result = 0.0F;
     if (x >= 2U && x + 2U < width) {
         const auto base = static_cast<std::size_t>(x - 2U);
         for (std::size_t i = 0; i < taps.size(); ++i) result += taps[i] * row[base + i];
@@ -85,6 +85,26 @@ double filtered_chroma_fixed(const std::vector<double>& row,
     }
     return result;
 }
+
+// Row-sized scratch planes for the fused path. Splitting the per-pixel work
+// into separate row passes keeps every arithmetic loop free of branches and
+// loop-carried state so the compiler can vectorize it; only the LUT encode
+// and dither-noise passes stay scalar.
+struct PackRowScratch {
+    explicit PackRowScratch(std::size_t width)
+        : linear_r(width), linear_g(width), linear_b(width),
+          encoded_r(width), encoded_g(width), encoded_b(width),
+          cb(width), cr(width), luma_noise(width) {}
+    std::vector<float> linear_r;
+    std::vector<float> linear_g;
+    std::vector<float> linear_b;
+    std::vector<float> encoded_r;
+    std::vector<float> encoded_g;
+    std::vector<float> encoded_b;
+    std::vector<float> cb;
+    std::vector<float> cr;
+    std::vector<float> luma_noise;
+};
 
 int current_thread_index() noexcept {
 #ifdef _OPENMP
@@ -117,137 +137,195 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
 
     const auto bounded_threads = std::clamp<std::size_t>(worker_threads, 1U, 256U);
     const int thread_count = static_cast<int>(bounded_threads);
-    std::vector<std::vector<double>> cb_scratch(
-        bounded_threads, std::vector<double>(input.width));
-    std::vector<std::vector<double>> cr_scratch(
-        bounded_threads, std::vector<double>(input.width));
     std::vector<PackingStats> thread_stats(bounded_threads);
     std::atomic_bool non_finite{false};
     std::atomic_bool rejected_negative{false};
     const double exposure = std::exp2(exposure_offset_stops);
-    const bool unit_exposure = exposure_offset_stops == 0.0;
     const auto& matrix = solution.camera_to_target.v;
-    const std::array<double, 3> camera_to_luma{
-        kr * matrix[0] + kg * matrix[3] + kb * matrix[6],
-        kr * matrix[1] + kg * matrix[4] + kb * matrix[7],
-        kr * matrix[2] + kg * matrix[5] + kb * matrix[8]
+    // Exposure is a per-frame scalar, so it folds into the matrix and the
+    // sharpening luma weights instead of multiplying every pixel.
+    std::array<float, 9> m{};
+    for (std::size_t i = 0; i < m.size(); ++i) {
+        m[i] = static_cast<float>(matrix[i] * exposure);
+    }
+    const std::array<float, 3> luma_weights{
+        static_cast<float>((kr * matrix[0] + kg * matrix[3] + kb * matrix[6]) * exposure),
+        static_cast<float>((kr * matrix[1] + kg * matrix[4] + kb * matrix[7]) * exposure),
+        static_cast<float>((kr * matrix[2] + kg * matrix[5] + kb * matrix[8]) * exposure)
     };
+    const auto krf = static_cast<float>(kr);
+    const auto kgf = static_cast<float>(kg);
+    const auto kbf = static_cast<float>(kb);
+    const auto cb_scale = static_cast<float>(1.0 / (2.0 * (1.0 - kb)));
+    const auto cr_scale = static_cast<float>(1.0 / (2.0 * (1.0 - kr)));
+    const auto sharpen_amount = static_cast<float>(capture_sharpening);
+    const auto sharpen_threshold = static_cast<float>(capture_sharpening_threshold);
+    const auto width = input.width;
 
     const auto pack_row = [&](std::uint32_t y,
-                              std::size_t thread,
-                              [[maybe_unused]] const double* previous_luma,
-                              [[maybe_unused]] const double* current_luma,
-                              [[maybe_unused]] const double* next_luma) {
-        auto& cb_row = cb_scratch[thread];
-        auto& cr_row = cr_scratch[thread];
-        auto& stats = thread_stats[thread];
-        for (std::uint32_t x = 0; x < input.width; ++x) {
-            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
-            const double camera_r = input.planes[0][pixel];
-            const double camera_g = input.planes[1][pixel];
-            const double camera_b = input.planes[2][pixel];
-            std::array<double, 3> linear{
-                matrix[0] * camera_r + matrix[1] * camera_g + matrix[2] * camera_b,
-                matrix[3] * camera_r + matrix[4] * camera_g + matrix[5] * camera_b,
-                matrix[6] * camera_r + matrix[7] * camera_g + matrix[8] * camera_b
-            };
-            if (!unit_exposure) {
-                for (double& channel : linear) channel *= exposure;
-            }
-            if constexpr (Sharpen) {
-                const auto left = x == 0U ? 0U : x - 1U;
-                const auto right = std::min(x + 1U, input.width - 1U);
-                const double center_luma = kr * linear[0] + kg * linear[1] + kb * linear[2];
-                const double neighbor_luma = 0.25 * (
+                              PackRowScratch& scratch,
+                              PackingStats& stats,
+                              bool& non_finite_local,
+                              [[maybe_unused]] bool& rejected_local,
+                              [[maybe_unused]] const float* previous_luma,
+                              [[maybe_unused]] const float* current_luma,
+                              [[maybe_unused]] const float* next_luma) {
+        const auto row_offset = static_cast<std::size_t>(y) * width;
+        const float* __restrict camera_r = input.planes[0].data() + row_offset;
+        const float* __restrict camera_g = input.planes[1].data() + row_offset;
+        const float* __restrict camera_b = input.planes[2].data() + row_offset;
+        float* __restrict linear_r = scratch.linear_r.data();
+        float* __restrict linear_g = scratch.linear_g.data();
+        float* __restrict linear_b = scratch.linear_b.data();
+        // Camera RGB -> exposed target linear (vectorizable).
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const float r = camera_r[x];
+            const float g = camera_g[x];
+            const float b = camera_b[x];
+            linear_r[x] = m[0] * r + m[1] * g + m[2] * b;
+            linear_g[x] = m[3] * r + m[4] * g + m[5] * b;
+            linear_b[x] = m[6] * r + m[7] * g + m[8] * b;
+        }
+        if constexpr (Sharpen) {
+            // Neutral detail from the cached luma rows (vectorizable interior).
+            const auto sharpen_at = [&](std::uint32_t x, std::uint32_t left, std::uint32_t right) {
+                const float detail = current_luma[x] - 0.25F * (
                     current_luma[left] + current_luma[right] +
                     previous_luma[x] + next_luma[x]);
-                const double detail = center_luma - neighbor_luma;
-                const double magnitude = std::abs(detail);
-                if (magnitude > capture_sharpening_threshold) {
-                    const double delta = capture_sharpening * std::copysign(
-                        magnitude - capture_sharpening_threshold, detail);
-                    for (double& channel : linear) channel += delta;
-                }
-            }
-            std::array<float, 3> encoded{};
-            for (std::size_t channel = 0; channel < encoded.size(); ++channel) {
-                if (!std::isfinite(linear[channel])) {
-                    non_finite.store(true, std::memory_order_relaxed);
-                    linear[channel] = 0.0;
+                const float over = std::abs(detail) - sharpen_threshold;
+                const float delta = over > 0.0F
+                    ? std::copysign(sharpen_amount * over, detail) : 0.0F;
+                linear_r[x] += delta;
+                linear_g[x] += delta;
+                linear_b[x] += delta;
+            };
+            sharpen_at(0U, 0U, std::min(1U, width - 1U));
+            for (std::uint32_t x = 1; x + 1U < width; ++x) sharpen_at(x, x - 1U, x + 1U);
+            if (width > 1U) sharpen_at(width - 1U, width - 2U, width - 1U);
+        }
+        // Input guard, negative policy, and log encode (scalar LUT pass).
+        const auto encode_plane = [&](const float* __restrict linear,
+                                      float* __restrict encoded) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                float value = linear[x];
+                if (!std::isfinite(value)) {
+                    non_finite_local = true;
+                    value = 0.0F;
                 }
                 if constexpr (Policy == NegativePolicy::clamp_zero) {
-                    linear[channel] = std::max(0.0, linear[channel]);
+                    value = std::max(0.0F, value);
                 } else if constexpr (Policy == NegativePolicy::error) {
-                    if (linear[channel] < 0.0) {
-                        rejected_negative.store(true, std::memory_order_relaxed);
-                        linear[channel] = 0.0;
+                    if (value < 0.0F) {
+                        rejected_local = true;
+                        value = 0.0F;
                     }
                 }
-                encoded[channel] = curve.encode(static_cast<float>(linear[channel]));
+                encoded[x] = curve.encode(value);
             }
-            const double r = encoded[0];
-            const double g = encoded[1];
-            const double b = encoded[2];
-            const double luma = kr * r + kg * g + kb * b;
-            cb_row[x] = (b - luma) / (2.0 * (1.0 - kb));
-            cr_row[x] = (r - luma) / (2.0 * (1.0 - kr));
-            const double noise = Dither ? deterministic_noise(frame_index, 0, pixel) : 0.0;
-            result.image.y[pixel] = quantize(64.0 + 876.0 * luma, 64.0, 940.0, noise,
-                                             stats.luma_clipped_low, stats.luma_clipped_high);
+        };
+        encode_plane(linear_r, scratch.encoded_r.data());
+        encode_plane(linear_g, scratch.encoded_g.data());
+        encode_plane(linear_b, scratch.encoded_b.data());
+        if constexpr (Dither) {
+            for (std::uint32_t x = 0; x < width; ++x) {
+                scratch.luma_noise[x] = static_cast<float>(
+                    deterministic_noise(frame_index, 0, row_offset + x));
+            }
         }
-        for (std::uint32_t x = 0; x < input.width; x += 2U) {
-            const auto chroma = static_cast<std::size_t>(y) * (input.width / 2U) + x / 2U;
-            std::size_t cb_low = 0;
-            std::size_t cb_high = 0;
-            std::size_t cr_low = 0;
-            std::size_t cr_high = 0;
-            const double cb_noise = Dither ? deterministic_noise(frame_index, 1, chroma) : 0.0;
-            const double cr_noise = Dither ? deterministic_noise(frame_index, 2, chroma) : 0.0;
-            result.image.cb[chroma] = quantize(
-                512.0 + 896.0 * filtered_chroma_fixed<Filter>(cb_row, x, input.width),
-                64.0, 960.0, cb_noise, cb_low, cb_high);
-            result.image.cr[chroma] = quantize(
-                512.0 + 896.0 * filtered_chroma_fixed<Filter>(cr_row, x, input.width),
-                64.0, 960.0, cr_noise, cr_low, cr_high);
-            stats.chroma_clipped += cb_low + cb_high + cr_low + cr_high;
+        // Encoded RGB -> Y'CbCr rows and legal-range luma codes (vectorizable).
+        const float* __restrict encoded_r = scratch.encoded_r.data();
+        const float* __restrict encoded_g = scratch.encoded_g.data();
+        const float* __restrict encoded_b = scratch.encoded_b.data();
+        float* __restrict cb_row = scratch.cb.data();
+        float* __restrict cr_row = scratch.cr.data();
+        std::uint16_t* __restrict y_out = result.image.y.data() + row_offset;
+        std::size_t luma_low = 0;
+        std::size_t luma_high = 0;
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const float r = encoded_r[x];
+            const float g = encoded_g[x];
+            const float b = encoded_b[x];
+            const float luma = krf * r + kgf * g + kbf * b;
+            cb_row[x] = (b - luma) * cb_scale;
+            cr_row[x] = (r - luma) * cr_scale;
+            const float value = 64.0F + 876.0F * luma;
+            luma_low += value < 64.0F ? 1U : 0U;
+            luma_high += value > 940.0F ? 1U : 0U;
+            const float clipped = std::clamp(value, 64.0F, 940.0F);
+            const float noise = Dither ? scratch.luma_noise[x] : 0.0F;
+            // Legal-range codes are positive and noise is in [-0.5, 0.5), so
+            // adding 0.5 before truncation is exactly llround.
+            y_out[x] = static_cast<std::uint16_t>(clipped + noise + 0.5F);
+        }
+        stats.luma_clipped_low += luma_low;
+        stats.luma_clipped_high += luma_high;
+        const auto chroma_offset = static_cast<std::size_t>(y) * (width / 2U);
+        std::uint16_t* cb_out = result.image.cb.data() + chroma_offset;
+        std::uint16_t* cr_out = result.image.cr.data() + chroma_offset;
+        std::size_t chroma_clipped = 0;
+        for (std::uint32_t x = 0; x < width; x += 2U) {
+            const float filtered_cb = filtered_chroma_fixed<Filter>(scratch.cb, x, width);
+            const float filtered_cr = filtered_chroma_fixed<Filter>(scratch.cr, x, width);
+            const float cb_noise = Dither ? static_cast<float>(
+                deterministic_noise(frame_index, 1, chroma_offset + x / 2U)) : 0.0F;
+            const float cr_noise = Dither ? static_cast<float>(
+                deterministic_noise(frame_index, 2, chroma_offset + x / 2U)) : 0.0F;
+            const float cb_value = 512.0F + 896.0F * filtered_cb;
+            const float cr_value = 512.0F + 896.0F * filtered_cr;
+            chroma_clipped += cb_value < 64.0F ? 1U : 0U;
+            chroma_clipped += cb_value > 960.0F ? 1U : 0U;
+            chroma_clipped += cr_value < 64.0F ? 1U : 0U;
+            chroma_clipped += cr_value > 960.0F ? 1U : 0U;
+            cb_out[x / 2U] = static_cast<std::uint16_t>(
+                std::clamp(cb_value, 64.0F, 960.0F) + cb_noise + 0.5F);
+            cr_out[x / 2U] = static_cast<std::uint16_t>(
+                std::clamp(cr_value, 64.0F, 960.0F) + cr_noise + 0.5F);
+        }
+        stats.chroma_clipped += chroma_clipped;
+    };
+
+    const auto fill_luma_row = [&](std::vector<float>& row_values, std::uint32_t y) {
+        const auto row_offset = static_cast<std::size_t>(y) * width;
+        const float* __restrict camera_r = input.planes[0].data() + row_offset;
+        const float* __restrict camera_g = input.planes[1].data() + row_offset;
+        const float* __restrict camera_b = input.planes[2].data() + row_offset;
+        float* __restrict values = row_values.data();
+        for (std::uint32_t x = 0; x < width; ++x) {
+            values[x] = luma_weights[0] * camera_r[x] +
+                        luma_weights[1] * camera_g[x] +
+                        luma_weights[2] * camera_b[x];
         }
     };
 
-    if constexpr (Sharpen) {
-        const auto fill_luma_row = [&](std::vector<double>& row_values, std::uint32_t y) {
-            const auto row_offset = static_cast<std::size_t>(y) * input.width;
-            for (std::uint32_t x = 0; x < input.width; ++x) {
-                const auto sample = row_offset + x;
-                const double value =
-                    camera_to_luma[0] * input.planes[0][sample] +
-                    camera_to_luma[1] * input.planes[1][sample] +
-                    camera_to_luma[2] * input.planes[2][sample];
-                row_values[x] = unit_exposure ? value : exposure * value;
-            }
-        };
 #pragma omp parallel num_threads(thread_count)
-        {
-            const auto thread = static_cast<std::size_t>(current_thread_index());
+    {
+        const auto thread = static_cast<std::size_t>(current_thread_index());
 #ifdef _OPENMP
-            const auto active_threads = static_cast<std::size_t>(omp_get_num_threads());
+        const auto active_threads = static_cast<std::size_t>(omp_get_num_threads());
 #else
-            constexpr std::size_t active_threads = 1U;
+        constexpr std::size_t active_threads = 1U;
 #endif
-            const auto begin = static_cast<std::uint32_t>(
-                static_cast<std::size_t>(input.height) * thread / active_threads);
-            const auto end = static_cast<std::uint32_t>(
-                static_cast<std::size_t>(input.height) * (thread + 1U) / active_threads);
-            if (begin < end) {
-                std::vector<double> previous(input.width);
-                std::vector<double> current(input.width);
-                std::vector<double> next(input.width);
+        const auto begin = static_cast<std::uint32_t>(
+            static_cast<std::size_t>(input.height) * thread / active_threads);
+        const auto end = static_cast<std::uint32_t>(
+            static_cast<std::size_t>(input.height) * (thread + 1U) / active_threads);
+        if (begin < end && thread < bounded_threads) {
+            PackRowScratch scratch(width);
+            auto& stats = thread_stats[thread];
+            bool non_finite_local = false;
+            bool rejected_local = false;
+            if constexpr (Sharpen) {
+                std::vector<float> previous(width);
+                std::vector<float> current(width);
+                std::vector<float> next(width);
                 fill_luma_row(current, begin);
                 if (begin == 0U) previous = current;
                 else fill_luma_row(previous, begin - 1U);
                 if (begin + 1U < input.height) fill_luma_row(next, begin + 1U);
                 else next = current;
                 for (auto y = begin; y < end; ++y) {
-                    pack_row(y, thread, previous.data(), current.data(), next.data());
+                    pack_row(y, scratch, stats, non_finite_local, rejected_local,
+                             previous.data(), current.data(), next.data());
                     if (y + 1U < end) {
                         previous.swap(current);
                         current.swap(next);
@@ -255,13 +333,14 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                         else next = current;
                     }
                 }
+            } else {
+                for (auto y = begin; y < end; ++y) {
+                    pack_row(y, scratch, stats, non_finite_local, rejected_local,
+                             nullptr, nullptr, nullptr);
+                }
             }
-        }
-    } else {
-#pragma omp parallel for schedule(static) num_threads(thread_count)
-        for (std::int64_t row = 0; row < static_cast<std::int64_t>(input.height); ++row) {
-            pack_row(static_cast<std::uint32_t>(row),
-                     static_cast<std::size_t>(current_thread_index()), nullptr, nullptr, nullptr);
+            if (non_finite_local) non_finite.store(true, std::memory_order_relaxed);
+            if (rejected_local) rejected_negative.store(true, std::memory_order_relaxed);
         }
     }
     if (non_finite.load(std::memory_order_relaxed)) {

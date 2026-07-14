@@ -33,14 +33,13 @@ public:
 
     [[nodiscard]] inline float encode(float linear) const noexcept {
         if (!std::isfinite(linear)) return std::numeric_limits<float>::quiet_NaN();
-        if (linear <= static_cast<float>(log_curve_detail::di_linear_cut)) {
-            return linear * static_cast<float>(log_curve_detail::di_m);
-        }
+        if (linear <= cut_) return linear * slope_;
         if (linear <= 1.0F) {
-            return interpolate(low_segment_, linear,
-                               static_cast<float>(log_curve_detail::di_linear_cut), 1.0F);
+            return interpolate(low_segment_.data(), (linear - cut_) * low_scale_);
         }
-        if (linear <= 100.0F) return interpolate(high_segment_, linear, 1.0F, 100.0F);
+        if (linear <= 100.0F) {
+            return interpolate(high_segment_.data(), (linear - 1.0F) * high_scale_);
+        }
         return static_cast<float>(davinci_intermediate_oetf(static_cast<double>(linear)));
     }
 
@@ -49,20 +48,23 @@ public:
     }
 
 private:
-    [[nodiscard]] inline float interpolate(const std::vector<float>& values,
-                                           float value,
-                                           float minimum,
-                                           float maximum) const noexcept {
-        const float scaled = (value - minimum) * static_cast<float>(values.size() - 1U) /
-                             (maximum - minimum);
-        const auto index = static_cast<std::size_t>(scaled);
-        if (index + 1U >= values.size()) return values.back();
+    // The per-sample hot path avoids divisions, size loads, and std::lerp
+    // edge-case branches: segment scales are precomputed and the clamped
+    // index guarantees index + 1 stays inside the table.
+    [[nodiscard]] inline float interpolate(const float* values, float scaled) const noexcept {
+        const auto index = std::min(static_cast<std::size_t>(scaled), last_index_);
         const float fraction = scaled - static_cast<float>(index);
-        return std::lerp(values[index], values[index + 1U], fraction);
+        const float base = values[index];
+        return base + fraction * (values[index + 1U] - base);
     }
 
     std::vector<float> low_segment_;
     std::vector<float> high_segment_;
+    float cut_{};
+    float slope_{};
+    float low_scale_{};
+    float high_scale_{};
+    std::size_t last_index_{};
 };
 
 [[nodiscard]] TargetLogRgbF32 encode_davinci_intermediate(
