@@ -28,6 +28,7 @@ YUV packing 和 MOV 输出；生产 CPU 路径融合颜色、曲线与 packing �
 ## 环境
 
 - Windows 10 或 11
+- 支持 AVX2 的 x86-64 CPU（默认构建以 AVX2 为最低 CPU 基线）
 - Visual Studio 2022 C++ workload
 - CMake 3.25+
 - Git
