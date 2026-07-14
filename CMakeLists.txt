@@ -152,8 +152,16 @@ if(MCRAW_ENABLE_AVX2)
 endif()
 
 if(MCRAW_ENABLE_FFMPEG)
-  target_sources(mcraw_core PRIVATE src/output/ffmpeg_writer.cpp)
-  target_link_libraries(mcraw_core PRIVATE FFmpeg::avcodec FFmpeg::avformat FFmpeg::avutil FFmpeg::swresample FFmpeg::swscale)
+  target_sources(mcraw_core PRIVATE
+    src/output/cpu_prores_encoder.cpp
+    src/output/ffmpeg_raii.cpp
+    src/output/ffmpeg_writer.cpp
+    src/output/vulkan_prores_encoder_stub.cpp
+  )
+  target_link_libraries(mcraw_core
+    PUBLIC FFmpeg::avcodec FFmpeg::avutil
+    PRIVATE FFmpeg::avformat FFmpeg::swresample FFmpeg::swscale
+  )
 endif()
 
 add_executable(mcraw-transcoder src/cli/main.cpp)
@@ -180,6 +188,9 @@ if(MCRAW_BUILD_TESTS)
     tests/test_yuv.cpp
     tests/test_backend_selection.cpp
   )
+  if(MCRAW_ENABLE_FFMPEG)
+    target_sources(mcraw_tests PRIVATE tests/test_video_encoder.cpp)
+  endif()
   target_link_libraries(mcraw_tests PRIVATE mcraw_core Catch2::Catch2WithMain)
   include(Catch)
   catch_discover_tests(mcraw_tests)
