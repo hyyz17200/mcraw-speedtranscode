@@ -76,7 +76,6 @@ add_library(mcraw_core
   src/processing/demosaic.cpp
   src/processing/log_curve.cpp
   src/processing/pipeline.cpp
-  src/processing/raw_chroma_denoise.cpp
   src/processing/yuv.cpp
   src/output/sidecar.cpp
 )
@@ -141,7 +140,6 @@ if(MCRAW_BUILD_TESTS)
     tests/test_demosaic.cpp
     tests/test_log_curve.cpp
     tests/test_metadata.cpp
-    tests/test_raw_chroma_denoise.cpp
     tests/test_timing.cpp
     tests/test_yuv.cpp
   )

@@ -20,10 +20,8 @@ struct EffectiveConfig {
     double exposure_offset_stops{0.0};
     NegativePolicy negative_policy{NegativePolicy::preserve_by_curve};
     ChromaFilter chroma_filter{ChromaFilter::quality};
-    // Zero disables each optional processing stage and preserves the v0.1 path.
-    double capture_sharpening{0.0};
+    double capture_sharpening{0.4};
     double capture_sharpening_threshold{0.002};
-    double raw_chroma_denoise{0.0};
     bool deterministic_dither{true};
     bool preserve_source_timestamps{true};
     bool preserve_audio{true};

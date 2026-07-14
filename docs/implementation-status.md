@@ -7,8 +7,7 @@
 - MotionCam 官方 CPU 解压适配
 - 元数据标准化和来源可见 warning
 - RAW 黑白场、RCD/AMaZE/IGV/DCB/LMMSE；RCD 保持默认
-- 可选的线性 DWG Capture Sharpening，以及 NoiseProfile 驱动、仅修改 Bayer
-  红/蓝色差残差的空间 RAW 色度降噪；两者默认关闭
+- 默认力度 `0.4` 的线性 DWG Capture Sharpening；转码器不做降噪
 - 双矩阵、ForwardMatrix、Bradford、DWG、DaVinci Intermediate
 - 每转换实例 DI LUT、融合 Camera→DWG→DI→YCbCr、quality 4:2:2、dither、legal range 量化
 - OpenMP 行并行、CPU/RAM 感知的有界多帧并行和有序 mux
@@ -18,7 +17,7 @@
 ## Windows 10 / MSVC 2022 验收结果
 
 - MSVC 2022 Release：主库、CLI、测试程序构建通过
-- 单元测试：21/21 通过
+- 单元测试：18/18 通过
 - `mcraw_sample/`：1 个样本完成 inspect、首末帧 RAW 解压与 hash
 - 样本音频：48 kHz、双声道、377 块及源时间戳全部读取
 - CPU compute benchmark：自动 16 线程/8 在途帧约 3.7～4.0 fps，平均整机 CPU 约 78.6%
@@ -48,9 +47,7 @@ compute-only 测量：
 | LMMSE（两轮平均，2 次迭代） | 3.086 | -31.1% | 1159.2 ms |
 
 在 RCD 上单独打开 Capture Sharpening `0.25`，测得 3.955 fps，较同轮 RCD
-下降约 11.1%。单独打开 RAW 色度降噪 `1.0`，测得 3.799 fps，较同轮 RCD
-下降约 14.6%；新增降噪阶段平均 335.4 ms/帧。多帧并行下各阶段计时有重叠，
-吞吐差是评估总体开销的主要指标。
+下降约 11.1%。多帧并行下各阶段计时有重叠，吞吐差是评估总体开销的主要指标。
 
 完整 240 帧对比输出均通过 FFmpeg 全流解码：AMaZE 为 2.217 fps，RCD +
 Capture Sharpening `0.25` 为 2.655 fps。两者均为 4096×3072 ProRes 422 HQ

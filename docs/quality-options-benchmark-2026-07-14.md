@@ -6,7 +6,8 @@
 - Raster: 4096 x 3072
 - Build: MSVC Release
 - Compute benchmark: 16 frames, 16 CPU threads, 8 in-flight frames, 2 threads/frame
-- Default processing remains RCD, with capture sharpening and RAW chroma denoise disabled
+- Demosaic default remains RCD. The benchmark was captured before capture sharpening
+  became a default at amount 0.4.
 
 ## Demosaic results
 
@@ -26,13 +27,6 @@ With concurrent frames, per-stage timings overlap; throughput is the primary tot
 |---|---:|---:|
 | Baseline | 4.450 fps | baseline |
 | Capture sharpening 0.25, threshold 0.002 | 3.955 fps | -11.1% |
-| RAW chroma denoise 1.0 | 3.799 fps | -14.6% |
-
-The RAW chroma stage averaged 335.4 ms/frame. It is a project-specific spatial
-filter driven by DNG `NoiseProfile` S/O values, not an algorithm standardized by
-the DNG specification. The tested file contains four per-CFA S/O pairs on every
-frame, so it requires no sidecar metadata. An enabled filter fails explicitly if
-another source has no usable profile.
 
 ## Full comparison transcodes
 

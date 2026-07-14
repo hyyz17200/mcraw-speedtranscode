@@ -18,7 +18,7 @@
 | 012 Determinism | CPU FP32 pixels、FP64 setup/reference、确定性 dither | 默认禁用隐藏近似；每阶段独立计时 |
 | 013 FCS removal | 不实现独立伪色抑制 | 当前全帧中值实现收益不足且占原耗时约 60%；依赖 demosaic 本身质量 |
 | 014 CPU execution | 总线程预算 + RAM 感知的有界多帧并行 | 默认 `0=auto`；有序收集后再按源时间戳 mux，避免乱序输出 |
-| 015 Optional detail processing | 可选线性 DWG Capture Sharpening；可选 NoiseProfile 驱动的 Bayer 色度空间降噪 | 两者默认关闭；Capture Sharpening 不替代 demosaic，RAW 降噪缺少逐帧 `noiseProfile` 时拒绝运行 |
+| 015 Detail processing boundary | 线性 DWG Capture Sharpening 默认 `0.4`；转码器不做降噪 | 锐化补偿采集与解码链路的细节损失；噪声处理留给后期调色 |
 
 ## MotionCam 缺失 illuminant 的兼容规则
 

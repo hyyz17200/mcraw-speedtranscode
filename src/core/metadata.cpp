@@ -71,26 +71,6 @@ std::array<double, 3> read_vector3(const nlohmann::json* value, std::string_view
     return result;
 }
 
-std::optional<std::array<NoiseModel, 4>> read_noise_profile(const nlohmann::json* value) {
-    if (value == nullptr || value->is_null()) return std::nullopt;
-    if (!value->is_array() || (value->size() != 2U && value->size() != 8U)) {
-        throw Error(ErrorCode::invalid_metadata,
-                    "noiseProfile must contain one or four S/O pairs");
-    }
-    std::array<NoiseModel, 4> result{};
-    for (std::size_t position = 0; position < result.size(); ++position) {
-        const std::size_t source = value->size() == 2U ? 0U : position * 2U;
-        const double scale = value->at(source).get<double>();
-        const double offset = value->at(source + 1U).get<double>();
-        if (!std::isfinite(scale) || !std::isfinite(offset) || scale <= 0.0 || offset < 0.0) {
-            throw Error(ErrorCode::invalid_metadata,
-                        "noiseProfile requires finite S > 0 and O >= 0 values");
-        }
-        result[position] = {scale, offset};
-    }
-    return result;
-}
-
 std::optional<MatrixMetadata> read_matrix(const nlohmann::json& frame,
                                           const nlohmann::json& container,
                                           std::string_view key) {
@@ -217,7 +197,6 @@ NormalizedCameraMetadata normalize_metadata(const nlohmann::json& container,
     result.black_level = read_levels(find_value(frame, container, "blackLevel"), "blackLevel", 0.0);
     result.white_level = read_levels(find_value(frame, container, "whiteLevel"), "whiteLevel", 0.0);
     result.camera_neutral = read_vector3(find_value(frame, container, "asShotNeutral"), "asShotNeutral");
-    result.noise_profile = read_noise_profile(find_value(frame, container, "noiseProfile"));
     result.compression_type = required_number<std::int32_t>(frame, container, "compressionType");
 
     result.color_matrix1 = read_matrix(frame, container, "colorMatrix1");
@@ -258,15 +237,6 @@ void NormalizedCameraMetadata::validate_for_raw() const {
             throw Error(ErrorCode::invalid_metadata, "white level must be finite and greater than black level");
         }
     }
-    if (noise_profile) {
-        for (const auto& model : *noise_profile) {
-            if (!std::isfinite(model.scale) || !std::isfinite(model.offset) ||
-                model.scale <= 0.0 || model.offset < 0.0) {
-                throw Error(ErrorCode::invalid_metadata,
-                            "noiseProfile requires finite S > 0 and O >= 0 values");
-            }
-        }
-    }
 }
 
 void NormalizedCameraMetadata::validate_for_color() const {
@@ -290,19 +260,11 @@ nlohmann::json metadata_to_json(const NormalizedCameraMetadata& metadata) {
         if (!matrix) return nullptr;
         return {{"values", matrix->values}, {"source", std::string(to_string(matrix->source))}};
     };
-    nlohmann::json noise_profile = nullptr;
-    if (metadata.noise_profile) {
-        noise_profile = nlohmann::json::array();
-        for (const auto& model : *metadata.noise_profile) {
-            noise_profile.push_back({model.scale, model.offset});
-        }
-    }
     return {
         {"width", metadata.width}, {"height", metadata.height},
         {"cfa", std::string(to_string(metadata.cfa))},
         {"black_level", metadata.black_level}, {"white_level", metadata.white_level},
         {"camera_neutral", metadata.camera_neutral},
-        {"noise_profile", noise_profile},
         {"compression_type", metadata.compression_type},
         {"color_matrix1", matrix_json(metadata.color_matrix1)},
         {"color_matrix2", matrix_json(metadata.color_matrix2)},

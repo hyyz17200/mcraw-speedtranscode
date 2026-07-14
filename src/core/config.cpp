@@ -72,11 +72,6 @@ void EffectiveConfig::validate() const {
         throw Error(ErrorCode::invalid_argument,
                     "capture_sharpening_threshold must be between 0 and 0.1");
     }
-    if (!std::isfinite(raw_chroma_denoise) || raw_chroma_denoise < 0.0 ||
-        raw_chroma_denoise > 2.0) {
-        throw Error(ErrorCode::invalid_argument,
-                    "raw_chroma_denoise must be between 0 and 2");
-    }
 }
 
 EffectiveConfig load_config(const std::filesystem::path& path) {
@@ -91,7 +86,7 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
     static const std::set<std::string, std::less<>> allowed{
         "schema_version", "demosaic", "exposure_offset_stops",
         "negative_policy", "chroma_filter", "capture_sharpening",
-        "capture_sharpening_threshold", "raw_chroma_denoise", "deterministic_dither",
+        "capture_sharpening_threshold", "deterministic_dither",
         "preserve_source_timestamps", "preserve_audio", "max_frames",
         "cpu_threads", "max_parallel_frames",
         "target_profile", "prores_profile"
@@ -111,7 +106,6 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
     config.capture_sharpening = value.value("capture_sharpening", config.capture_sharpening);
     config.capture_sharpening_threshold = value.value(
         "capture_sharpening_threshold", config.capture_sharpening_threshold);
-    config.raw_chroma_denoise = value.value("raw_chroma_denoise", config.raw_chroma_denoise);
     config.deterministic_dither = value.value("deterministic_dither", config.deterministic_dither);
     config.preserve_source_timestamps = value.value("preserve_source_timestamps", config.preserve_source_timestamps);
     config.preserve_audio = value.value("preserve_audio", config.preserve_audio);
@@ -134,7 +128,6 @@ nlohmann::json config_to_json(const EffectiveConfig& config) {
         {"chroma_filter", to_string(config.chroma_filter)},
         {"capture_sharpening", config.capture_sharpening},
         {"capture_sharpening_threshold", config.capture_sharpening_threshold},
-        {"raw_chroma_denoise", config.raw_chroma_denoise},
         {"deterministic_dither", config.deterministic_dither},
         {"preserve_source_timestamps", config.preserve_source_timestamps},
         {"preserve_audio", config.preserve_audio},

@@ -5,7 +5,6 @@
 
 #include <mcraw/processing/calibration.hpp>
 #include <mcraw/processing/demosaic.hpp>
-#include <mcraw/processing/raw_chroma_denoise.hpp>
 
 namespace mcraw {
 
@@ -32,11 +31,6 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         {
             StageTimer timer(timings, "black_white_calibration");
             normalized = calibrate_raw(decoded.raw, result.metadata, worker_threads_);
-        }
-        if (config_.raw_chroma_denoise > 0.0) {
-            StageTimer timer(timings, "raw_chroma_denoise");
-            normalized = denoise_raw_chroma(
-                normalized, result.metadata, config_.raw_chroma_denoise, worker_threads_);
         }
         {
             StageTimer timer(timings, "demosaic");

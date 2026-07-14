@@ -240,6 +240,40 @@ std::uint64_t fnv1a(const void* input, std::size_t size) {
     return hash;
 }
 
+mcraw::TargetLinearRgbF32 sharpen_target_linear_reference(
+    const mcraw::TargetLinearRgbF32& input,
+    double amount,
+    double threshold) {
+    if (amount <= 0.0) return input;
+    mcraw::TargetLinearRgbF32 output = input;
+    constexpr double kr = 0.2627;
+    constexpr double kb = 0.0593;
+    constexpr double kg = 1.0 - kr - kb;
+    const auto luma_at = [&](std::uint32_t x, std::uint32_t y) {
+        const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+        return kr * input.planes[0][pixel] + kg * input.planes[1][pixel] +
+               kb * input.planes[2][pixel];
+    };
+    for (std::uint32_t y = 0; y < input.height; ++y) {
+        for (std::uint32_t x = 0; x < input.width; ++x) {
+            const auto left = x == 0U ? 0U : x - 1U;
+            const auto right = std::min(x + 1U, input.width - 1U);
+            const auto up = y == 0U ? 0U : y - 1U;
+            const auto down = std::min(y + 1U, input.height - 1U);
+            const double detail = luma_at(x, y) - 0.25 * (
+                luma_at(left, y) + luma_at(right, y) +
+                luma_at(x, up) + luma_at(x, down));
+            if (std::abs(detail) <= threshold) continue;
+            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+            const float delta = static_cast<float>(amount * std::copysign(
+                std::abs(detail) - threshold, detail));
+            for (auto& plane : output.planes) plane[pixel] += delta;
+        }
+    }
+    output.validate();
+    return output;
+}
+
 int command_inspect(const Arguments& args) {
     mcraw::McrawReader reader(std::filesystem::path(std::string(args.at(2))));
     std::cout << inspect_document(reader, args.flag("--raw-json")).dump(2) << '\n';
@@ -252,7 +286,7 @@ int command_list_capabilities() {
         {"platforms", {"Windows 10/11", "Linux (build-compatible, not yet validated)"}},
         {"backends", {"cpu_reference"}}, {"cfa", {"rggb", "bggr", "grbg", "gbrg"}},
         {"demosaic", {"rcd", "amaze", "igv", "dcb", "lmmse"}},
-        {"optional_processing", {"capture_sharpening", "noise_profile_raw_chroma_denoise"}},
+        {"optional_processing", {"capture_sharpening"}},
         {"color_profiles", {"DaVinciIntermediate_DWG"}},
         {"packing", {"ProRes422HQ", "yuv422p10le", "video_range", "bt2020_ncl_provisional"}},
         {"ffmpeg", static_cast<bool>(MCRAW_HAS_FFMPEG)},
@@ -346,15 +380,14 @@ int command_validate(const Arguments& args) {
     };
     if (args.flag("--compare-fused")) {
         auto config = effective_config(args);
-        if (config.capture_sharpening > 0.0 || config.raw_chroma_denoise > 0.0) {
-            throw Error(ErrorCode::unsupported_format,
-                        "--compare-fused currently requires capture_sharpening=0 and raw_chroma_denoise=0");
-        }
         const auto execution = resolve_execution_plan(config, 1U);
         const auto camera = mcraw::demosaic(normalized, config.demosaic,
                                              execution.threads_per_frame);
-        const auto target_linear = mcraw::camera_to_dwg(
+        const auto unsharpened_target_linear = mcraw::camera_to_dwg(
             camera, solution, config.exposure_offset_stops);
+        const auto target_linear = sharpen_target_linear_reference(
+            unsharpened_target_linear, config.capture_sharpening,
+            config.capture_sharpening_threshold);
         const auto target_log = mcraw::encode_davinci_intermediate(
             target_linear, config.negative_policy);
         const auto reference = mcraw::pack_dwg_log_to_yuv422p10(
@@ -363,7 +396,8 @@ int command_validate(const Arguments& args) {
         const auto fused = mcraw::pack_camera_to_dwg_di_yuv422p10(
             camera, solution, config.exposure_offset_stops, config.negative_policy,
             curve, config.chroma_filter, config.deterministic_dither, frame,
-            execution.threads_per_frame);
+            execution.threads_per_frame, config.capture_sharpening,
+            config.capture_sharpening_threshold);
         std::size_t compared = 0;
         std::size_t differing = 0;
         int maximum_difference = 0;
