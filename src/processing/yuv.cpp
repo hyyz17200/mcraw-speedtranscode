@@ -133,24 +133,14 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
         kr * matrix[2] + kg * matrix[5] + kb * matrix[8]
     };
 
-#pragma omp parallel for schedule(static) num_threads(thread_count)
-    for (std::int64_t row = 0; row < static_cast<std::int64_t>(input.height); ++row) {
-        const auto y = static_cast<std::uint32_t>(row);
-        const auto thread = static_cast<std::size_t>(current_thread_index());
+    const auto pack_row = [&](std::uint32_t y,
+                              std::size_t thread,
+                              [[maybe_unused]] const double* previous_luma,
+                              [[maybe_unused]] const double* current_luma,
+                              [[maybe_unused]] const double* next_luma) {
         auto& cb_row = cb_scratch[thread];
         auto& cr_row = cr_scratch[thread];
         auto& stats = thread_stats[thread];
-        const auto luma_at = [&](std::uint32_t sample_x, std::uint32_t sample_y) {
-            const auto sample = static_cast<std::size_t>(sample_y) * input.width + sample_x;
-            const double value =
-                camera_to_luma[0] * input.planes[0][sample] +
-                camera_to_luma[1] * input.planes[1][sample] +
-                camera_to_luma[2] * input.planes[2][sample];
-            return unit_exposure ? value : exposure * value;
-        };
-        double previous_direct_luma = 0.0;
-        double current_direct_luma = 0.0;
-        if constexpr (Sharpen) current_direct_luma = luma_at(0U, y);
         for (std::uint32_t x = 0; x < input.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * input.width + x;
             const double camera_r = input.planes[0][pixel];
@@ -165,15 +155,12 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                 for (double& channel : linear) channel *= exposure;
             }
             if constexpr (Sharpen) {
-                const auto up = y == 0U ? 0U : y - 1U;
-                const auto down = std::min(y + 1U, input.height - 1U);
-                const double left_luma = x == 0U ? current_direct_luma : previous_direct_luma;
-                const double right_luma = x + 1U < input.width
-                    ? luma_at(x + 1U, y) : current_direct_luma;
+                const auto left = x == 0U ? 0U : x - 1U;
+                const auto right = std::min(x + 1U, input.width - 1U);
                 const double center_luma = kr * linear[0] + kg * linear[1] + kb * linear[2];
                 const double neighbor_luma = 0.25 * (
-                    left_luma + right_luma +
-                    luma_at(x, up) + luma_at(x, down));
+                    current_luma[left] + current_luma[right] +
+                    previous_luma[x] + next_luma[x]);
                 const double detail = center_luma - neighbor_luma;
                 const double magnitude = std::abs(detail);
                 if (magnitude > capture_sharpening_threshold) {
@@ -181,8 +168,6 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                         magnitude - capture_sharpening_threshold, detail);
                     for (double& channel : linear) channel += delta;
                 }
-                previous_direct_luma = current_direct_luma;
-                current_direct_luma = right_luma;
             }
             std::array<float, 3> encoded{};
             for (std::size_t channel = 0; channel < encoded.size(); ++channel) {
@@ -225,6 +210,58 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                 512.0 + 896.0 * filtered_chroma_fixed<Filter>(cr_row, x, input.width),
                 64.0, 960.0, cr_noise, cr_low, cr_high);
             stats.chroma_clipped += cb_low + cb_high + cr_low + cr_high;
+        }
+    };
+
+    if constexpr (Sharpen) {
+        const auto fill_luma_row = [&](std::vector<double>& row_values, std::uint32_t y) {
+            const auto row_offset = static_cast<std::size_t>(y) * input.width;
+            for (std::uint32_t x = 0; x < input.width; ++x) {
+                const auto sample = row_offset + x;
+                const double value =
+                    camera_to_luma[0] * input.planes[0][sample] +
+                    camera_to_luma[1] * input.planes[1][sample] +
+                    camera_to_luma[2] * input.planes[2][sample];
+                row_values[x] = unit_exposure ? value : exposure * value;
+            }
+        };
+#pragma omp parallel num_threads(thread_count)
+        {
+            const auto thread = static_cast<std::size_t>(current_thread_index());
+#ifdef _OPENMP
+            const auto active_threads = static_cast<std::size_t>(omp_get_num_threads());
+#else
+            constexpr std::size_t active_threads = 1U;
+#endif
+            const auto begin = static_cast<std::uint32_t>(
+                static_cast<std::size_t>(input.height) * thread / active_threads);
+            const auto end = static_cast<std::uint32_t>(
+                static_cast<std::size_t>(input.height) * (thread + 1U) / active_threads);
+            if (begin < end) {
+                std::vector<double> previous(input.width);
+                std::vector<double> current(input.width);
+                std::vector<double> next(input.width);
+                fill_luma_row(current, begin);
+                if (begin == 0U) previous = current;
+                else fill_luma_row(previous, begin - 1U);
+                if (begin + 1U < input.height) fill_luma_row(next, begin + 1U);
+                else next = current;
+                for (auto y = begin; y < end; ++y) {
+                    pack_row(y, thread, previous.data(), current.data(), next.data());
+                    if (y + 1U < end) {
+                        previous.swap(current);
+                        current.swap(next);
+                        if (y + 2U < input.height) fill_luma_row(next, y + 2U);
+                        else next = current;
+                    }
+                }
+            }
+        }
+    } else {
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+        for (std::int64_t row = 0; row < static_cast<std::int64_t>(input.height); ++row) {
+            pack_row(static_cast<std::uint32_t>(row),
+                     static_cast<std::size_t>(current_thread_index()), nullptr, nullptr, nullptr);
         }
     }
     if (non_finite.load(std::memory_order_relaxed)) {
