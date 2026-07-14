@@ -116,6 +116,24 @@ else()
   target_compile_options(mcraw_core PRIVATE -Wall -Wextra -Wpedantic -Wconversion)
 endif()
 
+# The analytic reference path keeps /fp:strict for reproducible truth values.
+# The production per-pixel loops are tolerance-validated against that path
+# (unit tests and validate --compare-fused), so they may trade strict IEEE
+# ordering for vectorization and FMA contraction.
+set(MCRAW_FAST_MATH_SOURCES
+  src/processing/calibration.cpp
+  src/processing/demosaic.cpp
+  src/processing/yuv.cpp
+)
+if(MSVC)
+  set_source_files_properties(${MCRAW_FAST_MATH_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "/fp:fast")
+else()
+  # -fno-finite-math-only keeps the pipeline's isfinite() input guards valid.
+  set_source_files_properties(${MCRAW_FAST_MATH_SOURCES} PROPERTIES
+    COMPILE_OPTIONS "-ffast-math;-fno-finite-math-only")
+endif()
+
 if(MCRAW_ENABLE_AVX2)
   if(MSVC)
     set(MCRAW_AVX2_COMPILE_OPTION /arch:AVX2)
