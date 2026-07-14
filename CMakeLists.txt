@@ -40,7 +40,9 @@ if(MCRAW_FETCH_DEPENDENCIES)
     add_library(rtprocess STATIC
       "${rtprocess_source_SOURCE_DIR}/src/demosaic/amaze.cc"
       "${rtprocess_source_SOURCE_DIR}/src/demosaic/border.cc"
+      "${rtprocess_source_SOURCE_DIR}/src/demosaic/dcb.cc"
       "${rtprocess_source_SOURCE_DIR}/src/demosaic/igv.cc"
+      "${rtprocess_source_SOURCE_DIR}/src/demosaic/lmmse.cc"
       "${rtprocess_source_SOURCE_DIR}/src/demosaic/rcd.cc"
     )
     add_library(rtprocess::rtprocess ALIAS rtprocess)
@@ -74,6 +76,7 @@ add_library(mcraw_core
   src/processing/demosaic.cpp
   src/processing/log_curve.cpp
   src/processing/pipeline.cpp
+  src/processing/raw_chroma_denoise.cpp
   src/processing/yuv.cpp
   src/output/sidecar.cpp
 )
@@ -135,8 +138,10 @@ if(MCRAW_BUILD_TESTS)
   add_executable(mcraw_tests
     tests/test_calibration.cpp
     tests/test_color.cpp
+    tests/test_demosaic.cpp
     tests/test_log_curve.cpp
     tests/test_metadata.cpp
+    tests/test_raw_chroma_denoise.cpp
     tests/test_timing.cpp
     tests/test_yuv.cpp
   )

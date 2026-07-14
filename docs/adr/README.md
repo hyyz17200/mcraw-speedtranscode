@@ -9,7 +9,7 @@
 | 003 GPU API | 后续主 GPU API 为 Vulkan；v0.1 不包含 GPU | 任何未来 GPU 解压必须逐像素 bit-exact |
 | 004 Color anchor | 相机 profile 与输出 profile 之间使用 XYZ D50 | ForwardMatrix 与无 ForwardMatrix 路径分开测试 |
 | 005 Dual illuminant | CameraNeutral→xy 迭代；矩阵按 inverse CCT 插值 | FP64、50 次上限、`1e-10` xy 收敛阈值 |
-| 006 Demosaic ABI | 高质量 demosaic 通过明确 enum/函数边界调用 librtprocess | RCD 默认；AMaZE/IGV 可替换；不附加独立 FCS |
+| 006 Demosaic ABI | 高质量 demosaic 通过明确 enum/函数边界调用 librtprocess | RCD 默认；AMaZE/IGV/DCB/LMMSE 可替换；不附加独立 FCS |
 | 007 Log | 解析公式是真值；生产路径由公式生成每转换实例 LUT | v0.1 只冻结 DaVinci Intermediate；最终 10-bit 输出与参考最大差异 1 LSB |
 | 008 ProRes | 使用 FFmpeg libavcodec/libavformat `prores_ks` | 不实现 ProRes 码流；输入为 yuv422p10le |
 | 009 Packing | video range、BT.2020 NCL、left siting、quality 5-tap | primaries/TRC 标 unspecified；Resolve 实测后再冻结产品默认 |
@@ -18,6 +18,7 @@
 | 012 Determinism | CPU FP32 pixels、FP64 setup/reference、确定性 dither | 默认禁用隐藏近似；每阶段独立计时 |
 | 013 FCS removal | 不实现独立伪色抑制 | 当前全帧中值实现收益不足且占原耗时约 60%；依赖 demosaic 本身质量 |
 | 014 CPU execution | 总线程预算 + RAM 感知的有界多帧并行 | 默认 `0=auto`；有序收集后再按源时间戳 mux，避免乱序输出 |
+| 015 Optional detail processing | 可选线性 DWG Capture Sharpening；可选 NoiseProfile 驱动的 Bayer 色度空间降噪 | 两者默认关闭；Capture Sharpening 不替代 demosaic，RAW 降噪缺少逐帧 `noiseProfile` 时拒绝运行 |
 
 ## MotionCam 缺失 illuminant 的兼容规则
 

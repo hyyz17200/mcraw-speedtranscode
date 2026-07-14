@@ -48,3 +48,12 @@ TEST_CASE("MotionCam named illuminants preserve their matrix ordering") {
     REQUIRE(value.illuminant1_cct == 2856.0);
     REQUIRE(value.illuminant2_cct == 6504.0);
 }
+
+TEST_CASE("per-CFA-position noise profile is normalized and retained") {
+    auto frame = frame_metadata();
+    frame["noiseProfile"] = {0.01, 0.001, 0.02, 0.002, 0.03, 0.003, 0.04, 0.004};
+    const auto value = mcraw::normalize_metadata(container_metadata(), frame);
+    REQUIRE(value.noise_profile.has_value());
+    REQUIRE(value.noise_profile->at(0).scale == 0.01);
+    REQUIRE(value.noise_profile->at(3).offset == 0.004);
+}

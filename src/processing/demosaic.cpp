@@ -92,6 +92,16 @@ CameraRgbF32 demosaic(const RawNormalizedF32& input,
                               raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                               cfa, progress);
         break;
+    case DemosaicAlgorithm::dcb:
+        status = dcb_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+                              raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
+                              cfa, progress, 2, false);
+        break;
+    case DemosaicAlgorithm::lmmse:
+        status = lmmse_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+                                raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
+                                cfa, progress, 2);
+        break;
     }
     if (status != RP_NO_ERROR) {
         throw Error(ErrorCode::processing_failed, "librtprocess demosaic failed with code " +

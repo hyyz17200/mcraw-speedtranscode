@@ -5,6 +5,7 @@
 
 #include <mcraw/processing/calibration.hpp>
 #include <mcraw/processing/demosaic.hpp>
+#include <mcraw/processing/raw_chroma_denoise.hpp>
 
 namespace mcraw {
 
@@ -32,6 +33,11 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
             StageTimer timer(timings, "black_white_calibration");
             normalized = calibrate_raw(decoded.raw, result.metadata, worker_threads_);
         }
+        if (config_.raw_chroma_denoise > 0.0) {
+            StageTimer timer(timings, "raw_chroma_denoise");
+            normalized = denoise_raw_chroma(
+                normalized, result.metadata, config_.raw_chroma_denoise, worker_threads_);
+        }
         {
             StageTimer timer(timings, "demosaic");
             camera_rgb = demosaic(normalized, config_.demosaic, worker_threads_);
@@ -46,7 +52,8 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         result.packed = pack_camera_to_dwg_di_yuv422p10(
             camera_rgb, result.color_solution, config_.exposure_offset_stops,
             config_.negative_policy, di_curve_, config_.chroma_filter,
-            config_.deterministic_dither, frame_index, worker_threads_);
+            config_.deterministic_dither, frame_index, worker_threads_,
+            config_.capture_sharpening, config_.capture_sharpening_threshold);
     }
     return result;
 }

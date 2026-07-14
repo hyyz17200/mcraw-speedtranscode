@@ -85,3 +85,28 @@ TEST_CASE("fused CPU packing is deterministic across thread counts") {
     REQUIRE(parallel.stats.luma_clipped_high == serial.stats.luma_clipped_high);
     REQUIRE(parallel.stats.chroma_clipped == serial.stats.chroma_clipped);
 }
+
+TEST_CASE("capture sharpening increases luma edge contrast without adding chroma") {
+    mcraw::CameraRgbF32 camera{8, 4, {}};
+    for (auto& plane : camera.planes) {
+        plane.resize(32);
+        for (std::uint32_t y = 0; y < 4; ++y) {
+            for (std::uint32_t x = 0; x < 8; ++x) {
+                plane[static_cast<std::size_t>(y) * 8U + x] = x < 4U ? 0.2F : 0.8F;
+            }
+        }
+    }
+    mcraw::CameraColorSolution solution;
+    solution.camera_to_target = mcraw::Matrix3d::identity();
+    const mcraw::DaVinciIntermediateLut curve;
+    const auto baseline = mcraw::pack_camera_to_dwg_di_yuv422p10(
+        camera, solution, 0.0, mcraw::NegativePolicy::preserve_by_curve,
+        curve, mcraw::ChromaFilter::quality, false, 0, 2);
+    const auto sharpened = mcraw::pack_camera_to_dwg_di_yuv422p10(
+        camera, solution, 0.0, mcraw::NegativePolicy::preserve_by_curve,
+        curve, mcraw::ChromaFilter::quality, false, 0, 2, 0.25, 0.0);
+    REQUIRE(sharpened.image.y[3] < baseline.image.y[3]);
+    REQUIRE(sharpened.image.y[4] > baseline.image.y[4]);
+    for (const auto value : sharpened.image.cb) REQUIRE(value == 512);
+    for (const auto value : sharpened.image.cr) REQUIRE(value == 512);
+}

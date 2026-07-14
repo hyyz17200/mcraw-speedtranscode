@@ -7,13 +7,16 @@
   "required": ["schema_version"],
   "properties": {
     "schema_version": {"const": 1},
-    "demosaic": {"enum": ["rcd", "amaze", "igv"], "default": "rcd"},
+    "demosaic": {"enum": ["rcd", "amaze", "igv", "dcb", "lmmse"], "default": "rcd"},
     "exposure_offset_stops": {"type": "number", "default": 0.0},
     "negative_policy": {
       "enum": ["preserve_by_curve", "clamp_zero", "error"],
       "default": "preserve_by_curve"
     },
     "chroma_filter": {"enum": ["fast", "quality"], "default": "quality"},
+    "capture_sharpening": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.0},
+    "capture_sharpening_threshold": {"type": "number", "minimum": 0.0, "maximum": 0.1, "default": 0.002},
+    "raw_chroma_denoise": {"type": "number", "minimum": 0.0, "maximum": 2.0, "default": 0.0},
     "deterministic_dither": {"type": "boolean", "default": true},
     "preserve_source_timestamps": {"const": true},
     "preserve_audio": {"type": "boolean", "default": true},

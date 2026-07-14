@@ -20,6 +20,11 @@ struct MatrixMetadata {
     MetadataSource source{MetadataSource::container};
 };
 
+struct NoiseModel {
+    double scale{};
+    double offset{};
+};
+
 struct NormalizedCameraMetadata {
     std::uint32_t width{};
     std::uint32_t height{};
@@ -27,6 +32,7 @@ struct NormalizedCameraMetadata {
     std::array<double, 4> black_level{};
     std::array<double, 4> white_level{};
     std::array<double, 3> camera_neutral{1.0, 1.0, 1.0};
+    std::optional<std::array<NoiseModel, 4>> noise_profile;
     std::optional<MatrixMetadata> color_matrix1;
     std::optional<MatrixMetadata> color_matrix2;
     std::optional<MatrixMetadata> calibration_matrix1;

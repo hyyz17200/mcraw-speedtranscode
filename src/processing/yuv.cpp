@@ -91,13 +91,15 @@ int current_thread_index() noexcept {
 #endif
 }
 
-template <NegativePolicy Policy, ChromaFilter Filter, bool Dither>
+template <NegativePolicy Policy, ChromaFilter Filter, bool Dither, bool Sharpen>
 PackedYuvResult pack_fused(const CameraRgbF32& input,
                            const CameraColorSolution& solution,
                            double exposure_offset_stops,
                            const DaVinciIntermediateLut& curve,
                            std::size_t frame_index,
-                           std::size_t worker_threads) {
+                           std::size_t worker_threads,
+                           double capture_sharpening,
+                           double capture_sharpening_threshold) {
     input.validate();
     if ((input.width & 1U) != 0U) {
         throw Error(ErrorCode::invalid_argument, "ProRes 422 requires an even frame width");
@@ -121,6 +123,11 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
     std::atomic_bool rejected_negative{false};
     const double exposure = std::exp2(exposure_offset_stops);
     const auto& matrix = solution.camera_to_target.v;
+    const std::array<double, 3> camera_to_luma{
+        kr * matrix[0] + kg * matrix[3] + kb * matrix[6],
+        kr * matrix[1] + kg * matrix[4] + kb * matrix[7],
+        kr * matrix[2] + kg * matrix[5] + kb * matrix[8]
+    };
 
 #pragma omp parallel for schedule(static) num_threads(thread_count)
     for (std::int64_t row = 0; row < static_cast<std::int64_t>(input.height); ++row) {
@@ -139,6 +146,30 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                 exposure * (matrix[3] * camera_r + matrix[4] * camera_g + matrix[5] * camera_b),
                 exposure * (matrix[6] * camera_r + matrix[7] * camera_g + matrix[8] * camera_b)
             };
+            if constexpr (Sharpen) {
+                const auto luma_at = [&](std::uint32_t sample_x, std::uint32_t sample_y) {
+                    const auto sample = static_cast<std::size_t>(sample_y) * input.width + sample_x;
+                    return exposure * (
+                        camera_to_luma[0] * input.planes[0][sample] +
+                        camera_to_luma[1] * input.planes[1][sample] +
+                        camera_to_luma[2] * input.planes[2][sample]);
+                };
+                const auto left = x == 0U ? 0U : x - 1U;
+                const auto right = std::min(x + 1U, input.width - 1U);
+                const auto up = y == 0U ? 0U : y - 1U;
+                const auto down = std::min(y + 1U, input.height - 1U);
+                const double center_luma = kr * linear[0] + kg * linear[1] + kb * linear[2];
+                const double neighbor_luma = 0.25 * (
+                    luma_at(left, y) + luma_at(right, y) +
+                    luma_at(x, up) + luma_at(x, down));
+                const double detail = center_luma - neighbor_luma;
+                const double magnitude = std::abs(detail);
+                if (magnitude > capture_sharpening_threshold) {
+                    const double delta = capture_sharpening * std::copysign(
+                        magnitude - capture_sharpening_threshold, detail);
+                    for (double& channel : linear) channel += delta;
+                }
+            }
             std::array<float, 3> encoded{};
             for (std::size_t channel = 0; channel < encoded.size(); ++channel) {
                 if (!std::isfinite(linear[channel])) {
@@ -197,6 +228,25 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
     return result;
 }
 
+template <NegativePolicy Policy, ChromaFilter Filter, bool Dither>
+PackedYuvResult dispatch_sharpening(const CameraRgbF32& input,
+                                    const CameraColorSolution& solution,
+                                    double exposure_offset_stops,
+                                    const DaVinciIntermediateLut& curve,
+                                    std::size_t frame_index,
+                                    std::size_t worker_threads,
+                                    double capture_sharpening,
+                                    double capture_sharpening_threshold) {
+    if (capture_sharpening > 0.0) {
+        return pack_fused<Policy, Filter, Dither, true>(
+            input, solution, exposure_offset_stops, curve, frame_index, worker_threads,
+            capture_sharpening, capture_sharpening_threshold);
+    }
+    return pack_fused<Policy, Filter, Dither, false>(
+        input, solution, exposure_offset_stops, curve, frame_index, worker_threads,
+        0.0, capture_sharpening_threshold);
+}
+
 template <NegativePolicy Policy, ChromaFilter Filter>
 PackedYuvResult dispatch_dither(const CameraRgbF32& input,
                                 const CameraColorSolution& solution,
@@ -204,13 +254,17 @@ PackedYuvResult dispatch_dither(const CameraRgbF32& input,
                                 const DaVinciIntermediateLut& curve,
                                 bool dither,
                                 std::size_t frame_index,
-                                std::size_t worker_threads) {
+                                std::size_t worker_threads,
+                                double capture_sharpening,
+                                double capture_sharpening_threshold) {
     if (dither) {
-        return pack_fused<Policy, Filter, true>(input, solution, exposure_offset_stops,
-                                                curve, frame_index, worker_threads);
+        return dispatch_sharpening<Policy, Filter, true>(
+            input, solution, exposure_offset_stops, curve, frame_index, worker_threads,
+            capture_sharpening, capture_sharpening_threshold);
     }
-    return pack_fused<Policy, Filter, false>(input, solution, exposure_offset_stops,
-                                             curve, frame_index, worker_threads);
+    return dispatch_sharpening<Policy, Filter, false>(
+        input, solution, exposure_offset_stops, curve, frame_index, worker_threads,
+        capture_sharpening, capture_sharpening_threshold);
 }
 
 template <NegativePolicy Policy>
@@ -221,13 +275,17 @@ PackedYuvResult dispatch_filter(const CameraRgbF32& input,
                                 ChromaFilter filter,
                                 bool dither,
                                 std::size_t frame_index,
-                                std::size_t worker_threads) {
+                                std::size_t worker_threads,
+                                double capture_sharpening,
+                                double capture_sharpening_threshold) {
     if (filter == ChromaFilter::fast) {
         return dispatch_dither<Policy, ChromaFilter::fast>(
-            input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads);
+            input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads,
+            capture_sharpening, capture_sharpening_threshold);
     }
     return dispatch_dither<Policy, ChromaFilter::quality>(
-        input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads);
+        input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads,
+        capture_sharpening, capture_sharpening_threshold);
 }
 
 } // namespace
@@ -293,20 +351,22 @@ PackedYuvResult pack_camera_to_dwg_di_yuv422p10(
     ChromaFilter filter,
     bool dither,
     std::size_t frame_index,
-    std::size_t worker_threads) {
+    std::size_t worker_threads,
+    double capture_sharpening,
+    double capture_sharpening_threshold) {
     switch (negative_policy) {
     case NegativePolicy::preserve_by_curve:
         return dispatch_filter<NegativePolicy::preserve_by_curve>(
             input, solution, exposure_offset_stops, curve, filter, dither,
-            frame_index, worker_threads);
+            frame_index, worker_threads, capture_sharpening, capture_sharpening_threshold);
     case NegativePolicy::clamp_zero:
         return dispatch_filter<NegativePolicy::clamp_zero>(
             input, solution, exposure_offset_stops, curve, filter, dither,
-            frame_index, worker_threads);
+            frame_index, worker_threads, capture_sharpening, capture_sharpening_threshold);
     case NegativePolicy::error:
         return dispatch_filter<NegativePolicy::error>(
             input, solution, exposure_offset_stops, curve, filter, dither,
-            frame_index, worker_threads);
+            frame_index, worker_threads, capture_sharpening, capture_sharpening_threshold);
     }
     throw Error(ErrorCode::invalid_argument, "unknown negative policy");
 }

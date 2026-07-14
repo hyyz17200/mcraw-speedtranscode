@@ -37,6 +37,8 @@ struct PackedYuvResult {
     ChromaFilter filter,
     bool dither,
     std::size_t frame_index,
-    std::size_t worker_threads);
+    std::size_t worker_threads,
+    double capture_sharpening = 0.0,
+    double capture_sharpening_threshold = 0.002);
 
 } // namespace mcraw

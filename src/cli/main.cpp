@@ -251,7 +251,8 @@ int command_list_capabilities() {
         {"version", "0.1.0"}, {"license", "GPL-3.0-or-later"},
         {"platforms", {"Windows 10/11", "Linux (build-compatible, not yet validated)"}},
         {"backends", {"cpu_reference"}}, {"cfa", {"rggb", "bggr", "grbg", "gbrg"}},
-        {"demosaic", {"rcd", "amaze", "igv"}},
+        {"demosaic", {"rcd", "amaze", "igv", "dcb", "lmmse"}},
+        {"optional_processing", {"capture_sharpening", "noise_profile_raw_chroma_denoise"}},
         {"color_profiles", {"DaVinciIntermediate_DWG"}},
         {"packing", {"ProRes422HQ", "yuv422p10le", "video_range", "bt2020_ncl_provisional"}},
         {"ffmpeg", static_cast<bool>(MCRAW_HAS_FFMPEG)},
@@ -345,6 +346,10 @@ int command_validate(const Arguments& args) {
     };
     if (args.flag("--compare-fused")) {
         auto config = effective_config(args);
+        if (config.capture_sharpening > 0.0 || config.raw_chroma_denoise > 0.0) {
+            throw Error(ErrorCode::unsupported_format,
+                        "--compare-fused currently requires capture_sharpening=0 and raw_chroma_denoise=0");
+        }
         const auto execution = resolve_execution_plan(config, 1U);
         const auto camera = mcraw::demosaic(normalized, config.demosaic,
                                              execution.threads_per_frame);

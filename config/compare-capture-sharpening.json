@@ -1,0 +1,6 @@
+{
+  "schema_version": 1,
+  "demosaic": "rcd",
+  "capture_sharpening": 0.25,
+  "capture_sharpening_threshold": 0.002
+}
