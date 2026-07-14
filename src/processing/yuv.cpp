@@ -125,6 +125,7 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
     std::atomic_bool non_finite{false};
     std::atomic_bool rejected_negative{false};
     const double exposure = std::exp2(exposure_offset_stops);
+    const bool unit_exposure = exposure_offset_stops == 0.0;
     const auto& matrix = solution.camera_to_target.v;
     const std::array<double, 3> camera_to_luma{
         kr * matrix[0] + kg * matrix[3] + kb * matrix[6],
@@ -139,31 +140,39 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
         auto& cb_row = cb_scratch[thread];
         auto& cr_row = cr_scratch[thread];
         auto& stats = thread_stats[thread];
+        const auto luma_at = [&](std::uint32_t sample_x, std::uint32_t sample_y) {
+            const auto sample = static_cast<std::size_t>(sample_y) * input.width + sample_x;
+            const double value =
+                camera_to_luma[0] * input.planes[0][sample] +
+                camera_to_luma[1] * input.planes[1][sample] +
+                camera_to_luma[2] * input.planes[2][sample];
+            return unit_exposure ? value : exposure * value;
+        };
+        double previous_direct_luma = 0.0;
+        double current_direct_luma = 0.0;
+        if constexpr (Sharpen) current_direct_luma = luma_at(0U, y);
         for (std::uint32_t x = 0; x < input.width; ++x) {
             const auto pixel = static_cast<std::size_t>(y) * input.width + x;
             const double camera_r = input.planes[0][pixel];
             const double camera_g = input.planes[1][pixel];
             const double camera_b = input.planes[2][pixel];
             std::array<double, 3> linear{
-                exposure * (matrix[0] * camera_r + matrix[1] * camera_g + matrix[2] * camera_b),
-                exposure * (matrix[3] * camera_r + matrix[4] * camera_g + matrix[5] * camera_b),
-                exposure * (matrix[6] * camera_r + matrix[7] * camera_g + matrix[8] * camera_b)
+                matrix[0] * camera_r + matrix[1] * camera_g + matrix[2] * camera_b,
+                matrix[3] * camera_r + matrix[4] * camera_g + matrix[5] * camera_b,
+                matrix[6] * camera_r + matrix[7] * camera_g + matrix[8] * camera_b
             };
+            if (!unit_exposure) {
+                for (double& channel : linear) channel *= exposure;
+            }
             if constexpr (Sharpen) {
-                const auto luma_at = [&](std::uint32_t sample_x, std::uint32_t sample_y) {
-                    const auto sample = static_cast<std::size_t>(sample_y) * input.width + sample_x;
-                    return exposure * (
-                        camera_to_luma[0] * input.planes[0][sample] +
-                        camera_to_luma[1] * input.planes[1][sample] +
-                        camera_to_luma[2] * input.planes[2][sample]);
-                };
-                const auto left = x == 0U ? 0U : x - 1U;
-                const auto right = std::min(x + 1U, input.width - 1U);
                 const auto up = y == 0U ? 0U : y - 1U;
                 const auto down = std::min(y + 1U, input.height - 1U);
+                const double left_luma = x == 0U ? current_direct_luma : previous_direct_luma;
+                const double right_luma = x + 1U < input.width
+                    ? luma_at(x + 1U, y) : current_direct_luma;
                 const double center_luma = kr * linear[0] + kg * linear[1] + kb * linear[2];
                 const double neighbor_luma = 0.25 * (
-                    luma_at(left, y) + luma_at(right, y) +
+                    left_luma + right_luma +
                     luma_at(x, up) + luma_at(x, down));
                 const double detail = center_luma - neighbor_luma;
                 const double magnitude = std::abs(detail);
@@ -172,6 +181,8 @@ PackedYuvResult pack_fused(const CameraRgbF32& input,
                         magnitude - capture_sharpening_threshold, detail);
                     for (double& channel : linear) channel += delta;
                 }
+                previous_direct_luma = current_direct_luma;
+                current_direct_luma = right_luma;
             }
             std::array<float, 3> encoded{};
             for (std::size_t channel = 0; channel < encoded.size(); ++channel) {
