@@ -177,6 +177,7 @@ endif()
 if(MCRAW_ENABLE_VULKAN)
   target_sources(mcraw_core PRIVATE
     src/output/ffmpeg_vulkan_context.cpp
+    src/output/vulkan_prores_encoder.cpp
     src/vulkan/vulkan_runtime.cpp
   )
   target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
@@ -212,10 +213,18 @@ if(MCRAW_BUILD_TESTS)
   if(MCRAW_ENABLE_VULKAN)
     target_sources(mcraw_tests PRIVATE
       tests/test_ffmpeg_vulkan_context.cpp
+      tests/test_vulkan_prores_e2e.cpp
+      tests/test_vulkan_prores_encoder.cpp
       tests/test_vulkan_runtime.cpp
     )
   endif()
   target_link_libraries(mcraw_tests PRIVATE mcraw_core Catch2::Catch2WithMain)
+  if(MCRAW_ENABLE_VULKAN)
+    target_link_libraries(mcraw_tests PRIVATE FFmpeg::avformat)
+    if(WIN32)
+      target_link_libraries(mcraw_tests PRIVATE Psapi)
+    endif()
+  endif()
   include(Catch)
   catch_discover_tests(mcraw_tests)
 endif()

@@ -368,7 +368,7 @@ nlohmann::json vulkan_runtime_report() {
 #endif
 
 int command_list_capabilities() {
-    const auto capabilities = mcraw::probe_backend_capabilities();
+    const auto capabilities = mcraw::probe_backend_capabilities("auto", 64, 32, 4);
     nlohmann::json vulkan_runtime = {{"available", false}, {"reason", "not compiled"}};
 #if MCRAW_HAS_VULKAN
     vulkan_runtime = vulkan_runtime_report();
@@ -664,7 +664,14 @@ int command_convert(const Arguments& args) {
     mcraw::McrawReader reader(input);
     if (reader.frames().empty()) throw Error(ErrorCode::invalid_container, "MCRAW contains no video frames");
     auto config = effective_config(args);
-    const auto backend = mcraw::select_backend(config, mcraw::probe_backend_capabilities());
+    const auto first_metadata = reader.normalized_metadata(0);
+    const auto capabilities = config.backend == mcraw::VideoBackend::cpu
+        ? mcraw::probe_backend_capabilities()
+        : mcraw::probe_backend_capabilities(
+            config.gpu_selector, static_cast<int>(first_metadata.width),
+            static_cast<int>(first_metadata.height),
+            std::clamp<std::size_t>(config.async_depth + 2U, 4U, 64U));
+    const auto backend = mcraw::select_backend(config, capabilities);
     const auto frame_limit = std::min(reader.frames().size(), config.max_frames == 0U
         ? reader.frames().size() : config.max_frames);
     if (frame_limit == 0U) throw Error(ErrorCode::invalid_argument, "conversion selected zero frames");
@@ -721,18 +728,21 @@ int command_convert(const Arguments& args) {
     std::filesystem::remove(partial, remove_error);
     mcraw::StageTimings timings;
     mcraw::CpuPipeline pipeline(config, execution.threads_per_frame);
-    const auto first_metadata = reader.normalized_metadata(0);
     auto first_solution = mcraw::build_camera_color_solution(first_metadata);
     const auto sync_report = av_sync_report(audio_chunks, audio.sample_rate, audio.channels,
         reader.frames().front().timestamp_ns, video_end_ns);
     std::size_t audio_index = 0;
+    mcraw::FfmpegWriterTelemetry writer_telemetry;
     const auto conversion_start = std::chrono::steady_clock::now();
     {
         mcraw::FfmpegWriter writer(partial, first_metadata.width, first_metadata.height, origin,
                                    audio.sample_rate, audio.channels,
                                    mcraw::VideoEncodeConcurrency{
                                        execution.encode_contexts,
-                                       static_cast<int>(execution.encode_threads_per_context)});
+                                       static_cast<int>(execution.encode_threads_per_context)},
+                                   mcraw::FfmpegVideoBackendConfig{
+                                       backend.backend, config.gpu_selector,
+                                       config.async_depth, args.flag("--validation")});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -768,7 +778,9 @@ int command_convert(const Arguments& args) {
             writer.write_audio(audio_chunks[audio_index++]);
         }
         writer.finish();
+        writer_telemetry = writer.telemetry();
     }
+    mcraw::validate_prores_mov(partial, frame_limit);
     const auto conversion_wall_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - conversion_start).count();
     timings.add("end_to_end", conversion_wall_ms);
@@ -780,13 +792,34 @@ int command_convert(const Arguments& args) {
     std::sort(warnings.begin(), warnings.end());
     warnings.erase(std::unique(warnings.begin(), warnings.end()), warnings.end());
     for (const auto& warning : warnings) std::cerr << "warning: " << warning << '\n';
+    const mcraw::PipelineBackendReport pipeline_report{
+        std::string(mcraw::to_string(config.backend)), writer_telemetry.backend,
+        config.async_depth, backend.used_fallback, backend.reason,
+        writer_telemetry.gpu_resident,
+        writer_telemetry.upload_frames, writer_telemetry.readback_frames,
+        writer_telemetry.video_packets, writer_telemetry.gpu_name,
+        writer_telemetry.gpu_uuid, writer_telemetry.gpu_driver,
+        capabilities.ffmpeg_version, capabilities.ffmpeg_configuration};
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
-                         timings, frame_limit, sync_report, warnings);
+                         timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
                                 {"sidecar", sidecar.string()}, {"frames", frame_limit},
                                 {"wall_ms", conversion_wall_ms},
                                 {"throughput_fps", static_cast<double>(frame_limit) *
                                     1000.0 / conversion_wall_ms},
+                                {"pipeline", {
+                                    {"backend", pipeline_report.backend},
+                                    {"requested_backend", pipeline_report.requested_backend},
+                                    {"async_depth", pipeline_report.async_depth},
+                                    {"used_fallback", pipeline_report.used_fallback},
+                                    {"fallback_reason", pipeline_report.fallback_reason},
+                                    {"gpu_resident", pipeline_report.gpu_resident},
+                                    {"upload_frames", pipeline_report.upload_frames},
+                                    {"readback_frames", pipeline_report.readback_frames},
+                                    {"video_packets", pipeline_report.video_packets},
+                                    {"gpu_name", pipeline_report.gpu_name},
+                                    {"gpu_uuid", pipeline_report.gpu_uuid}
+                                }},
                                 {"execution", {
                                     {"cpu_threads", execution.total_threads},
                                     {"parallel_frames", execution.parallel_frames},
@@ -804,7 +837,7 @@ void print_help() {
         "mcraw-transcoder 0.1.0\n"
         "Usage:\n"
         "  mcraw-transcoder inspect <input.mcraw> [--raw-json]\n"
-        "  mcraw-transcoder convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite]\n"
+        "  mcraw-transcoder convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite] [--validation]\n"
         "  mcraw-transcoder extract-frame <input.mcraw> --frame N --stage STAGE --output PATH\n"
         "  mcraw-transcoder validate <input.mcraw> [--frame N] [--compare-fused] [--config file.json]\n"
         "  mcraw-transcoder benchmark <input.mcraw> [--frames N] [--config file.json]\n"

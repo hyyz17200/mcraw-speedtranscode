@@ -1,6 +1,10 @@
 #include <mcraw/output/backend_selection.hpp>
 
 #include <mcraw/core/error.hpp>
+#if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
+#include <mcraw/output/ffmpeg_vulkan_context.hpp>
+#include <mcraw/vulkan/vulkan_runtime.hpp>
+#endif
 
 #if defined(MCRAW_HAS_FFMPEG) && MCRAW_HAS_FFMPEG
 extern "C" {
@@ -29,10 +33,35 @@ BackendCapabilities probe_backend_capabilities() {
             "the linked FFmpeg libraries have no prores_ks_vulkan encoder";
     } else {
         result.vulkan_unavailable_reason =
-            "the Vulkan encoder is present but runtime integration is not implemented yet";
+            "the Vulkan encoder is present but a device/frame-context preflight was not requested";
     }
 #else
     result.vulkan_unavailable_reason = "Vulkan support is not compiled into this build";
+#endif
+    return result;
+}
+
+BackendCapabilities probe_backend_capabilities(std::string_view gpu_selector,
+                                               int width,
+                                               int height,
+                                               std::size_t pool_size) {
+    auto result = probe_backend_capabilities();
+#if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
+    if (!result.prores_ks_vulkan_available) return result;
+    try {
+        VulkanRuntime runtime({std::string(gpu_selector), false});
+        FfmpegVulkanFrameContext frames(runtime, {width, height, pool_size});
+        static_cast<void>(frames);
+        result.vulkan_backend_available = true;
+        result.vulkan_unavailable_reason.clear();
+    } catch (const std::exception& error) {
+        result.vulkan_unavailable_reason = error.what();
+    }
+#else
+    static_cast<void>(gpu_selector);
+    static_cast<void>(width);
+    static_cast<void>(height);
+    static_cast<void>(pool_size);
 #endif
     return result;
 }

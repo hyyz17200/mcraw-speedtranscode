@@ -25,7 +25,13 @@ void write_sidecar(const std::filesystem::path& path,
                    const StageTimings& timings,
                    std::size_t frames_written,
                    const AvSyncReport& av_sync,
+                   const PipelineBackendReport& pipeline,
                    const std::vector<std::string>& runtime_warnings) {
+    if (pipeline.gpu_resident &&
+        (pipeline.upload_frames != 0U || pipeline.readback_frames != 0U)) {
+        throw Error(ErrorCode::invalid_argument,
+                    "GPU-resident telemetry cannot report CPU upload or readback frames");
+    }
     nlohmann::json document = {
         {"schema", "mcraw-transcoder-sidecar-v1"},
         {"application", {{"name", "mcraw-transcoder"}, {"version", "0.1.0"}}},
@@ -58,6 +64,26 @@ void write_sidecar(const std::filesystem::path& path,
             {"audio_chunks", av_sync.audio_chunks},
             {"audio_minus_video_start_ms", av_sync.start_delta_ms},
             {"audio_minus_video_end_ms", av_sync.end_delta_ms}
+        }},
+        {"pipeline", {
+            {"requested_backend", pipeline.requested_backend},
+            {"backend", pipeline.backend},
+            {"async_depth", pipeline.async_depth},
+            {"used_fallback", pipeline.used_fallback},
+            {"fallback_reason", pipeline.fallback_reason},
+            {"gpu_resident", pipeline.gpu_resident},
+            {"upload_frames", pipeline.upload_frames},
+            {"readback_frames", pipeline.readback_frames},
+            {"video_packets", pipeline.video_packets},
+            {"gpu", {
+                {"name", pipeline.gpu_name},
+                {"uuid", pipeline.gpu_uuid},
+                {"driver", pipeline.gpu_driver}
+            }},
+            {"ffmpeg", {
+                {"version", pipeline.ffmpeg_version},
+                {"configuration", pipeline.ffmpeg_configuration}
+            }}
         }},
         {"warnings", runtime_warnings}
     };
