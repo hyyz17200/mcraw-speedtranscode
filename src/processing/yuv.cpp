@@ -1,0 +1,314 @@
+#include <mcraw/processing/yuv.hpp>
+
+#include <algorithm>
+#include <array>
+#include <atomic>
+#include <cmath>
+#include <cstddef>
+#include <cstdint>
+
+#ifdef _OPENMP
+#include <omp.h>
+#endif
+
+#include <mcraw/core/error.hpp>
+
+namespace mcraw {
+namespace {
+
+constexpr double kr = 0.2627;
+constexpr double kb = 0.0593;
+constexpr double kg = 1.0 - kr - kb;
+
+double deterministic_noise(std::size_t frame, std::size_t plane, std::size_t sample) {
+    std::uint64_t state = static_cast<std::uint64_t>(sample) * 0x9E3779B185EBCA87ULL;
+    state ^= static_cast<std::uint64_t>(frame) * 0xC2B2AE3D27D4EB4FULL;
+    state ^= static_cast<std::uint64_t>(plane) * 0x165667B19E3779F9ULL;
+    state ^= state >> 30U;
+    state *= 0xBF58476D1CE4E5B9ULL;
+    state ^= state >> 27U;
+    state *= 0x94D049BB133111EBULL;
+    state ^= state >> 31U;
+    return static_cast<double>(state >> 11U) * (1.0 / 9007199254740992.0) - 0.5;
+}
+
+std::uint16_t quantize(double value,
+                       double minimum,
+                       double maximum,
+                       double noise,
+                       std::size_t& low,
+                       std::size_t& high) {
+    if (value < minimum) ++low;
+    if (value > maximum) ++high;
+    const double clipped = std::clamp(value, minimum, maximum);
+    return static_cast<std::uint16_t>(std::clamp(std::llround(clipped + noise), 0LL, 1023LL));
+}
+
+std::size_t clamped_x(int x, std::uint32_t width) {
+    return static_cast<std::size_t>(std::clamp(x, 0, static_cast<int>(width) - 1));
+}
+
+double filtered_chroma(const std::vector<double>& row,
+                       std::uint32_t x,
+                       std::uint32_t width,
+                       ChromaFilter filter) {
+    if (filter == ChromaFilter::fast) return row[x];
+    // Five-tap symmetric low-pass sampled at even/left chroma positions.
+    static constexpr std::array<double, 5> taps{-1.0 / 16.0, 4.0 / 16.0, 10.0 / 16.0,
+                                                 4.0 / 16.0, -1.0 / 16.0};
+    double result = 0.0;
+    for (int offset = -2; offset <= 2; ++offset) {
+        result += taps[static_cast<std::size_t>(offset + 2)] * row[clamped_x(static_cast<int>(x) + offset, width)];
+    }
+    return result;
+}
+
+template <ChromaFilter Filter>
+double filtered_chroma_fixed(const std::vector<double>& row,
+                             std::uint32_t x,
+                             std::uint32_t width) {
+    if constexpr (Filter == ChromaFilter::fast) return row[x];
+    static constexpr std::array<double, 5> taps{-1.0 / 16.0, 4.0 / 16.0, 10.0 / 16.0,
+                                                 4.0 / 16.0, -1.0 / 16.0};
+    double result = 0.0;
+    if (x >= 2U && x + 2U < width) {
+        const auto base = static_cast<std::size_t>(x - 2U);
+        for (std::size_t i = 0; i < taps.size(); ++i) result += taps[i] * row[base + i];
+        return result;
+    }
+    for (int offset = -2; offset <= 2; ++offset) {
+        result += taps[static_cast<std::size_t>(offset + 2)] *
+                  row[clamped_x(static_cast<int>(x) + offset, width)];
+    }
+    return result;
+}
+
+int current_thread_index() noexcept {
+#ifdef _OPENMP
+    return omp_get_thread_num();
+#else
+    return 0;
+#endif
+}
+
+template <NegativePolicy Policy, ChromaFilter Filter, bool Dither>
+PackedYuvResult pack_fused(const CameraRgbF32& input,
+                           const CameraColorSolution& solution,
+                           double exposure_offset_stops,
+                           const DaVinciIntermediateLut& curve,
+                           std::size_t frame_index,
+                           std::size_t worker_threads) {
+    input.validate();
+    if ((input.width & 1U) != 0U) {
+        throw Error(ErrorCode::invalid_argument, "ProRes 422 requires an even frame width");
+    }
+    PackedYuvResult result;
+    result.image.width = input.width;
+    result.image.height = input.height;
+    const auto pixels = static_cast<std::size_t>(input.width) * input.height;
+    result.image.y.resize(pixels);
+    result.image.cb.resize(pixels / 2U);
+    result.image.cr.resize(pixels / 2U);
+
+    const auto bounded_threads = std::clamp<std::size_t>(worker_threads, 1U, 256U);
+    const int thread_count = static_cast<int>(bounded_threads);
+    std::vector<std::vector<double>> cb_scratch(
+        bounded_threads, std::vector<double>(input.width));
+    std::vector<std::vector<double>> cr_scratch(
+        bounded_threads, std::vector<double>(input.width));
+    std::vector<PackingStats> thread_stats(bounded_threads);
+    std::atomic_bool non_finite{false};
+    std::atomic_bool rejected_negative{false};
+    const double exposure = std::exp2(exposure_offset_stops);
+    const auto& matrix = solution.camera_to_target.v;
+
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t row = 0; row < static_cast<std::int64_t>(input.height); ++row) {
+        const auto y = static_cast<std::uint32_t>(row);
+        const auto thread = static_cast<std::size_t>(current_thread_index());
+        auto& cb_row = cb_scratch[thread];
+        auto& cr_row = cr_scratch[thread];
+        auto& stats = thread_stats[thread];
+        for (std::uint32_t x = 0; x < input.width; ++x) {
+            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+            const double camera_r = input.planes[0][pixel];
+            const double camera_g = input.planes[1][pixel];
+            const double camera_b = input.planes[2][pixel];
+            std::array<double, 3> linear{
+                exposure * (matrix[0] * camera_r + matrix[1] * camera_g + matrix[2] * camera_b),
+                exposure * (matrix[3] * camera_r + matrix[4] * camera_g + matrix[5] * camera_b),
+                exposure * (matrix[6] * camera_r + matrix[7] * camera_g + matrix[8] * camera_b)
+            };
+            std::array<float, 3> encoded{};
+            for (std::size_t channel = 0; channel < encoded.size(); ++channel) {
+                if (!std::isfinite(linear[channel])) {
+                    non_finite.store(true, std::memory_order_relaxed);
+                    linear[channel] = 0.0;
+                }
+                if constexpr (Policy == NegativePolicy::clamp_zero) {
+                    linear[channel] = std::max(0.0, linear[channel]);
+                } else if constexpr (Policy == NegativePolicy::error) {
+                    if (linear[channel] < 0.0) {
+                        rejected_negative.store(true, std::memory_order_relaxed);
+                        linear[channel] = 0.0;
+                    }
+                }
+                encoded[channel] = curve.encode(static_cast<float>(linear[channel]));
+            }
+            const double r = encoded[0];
+            const double g = encoded[1];
+            const double b = encoded[2];
+            const double luma = kr * r + kg * g + kb * b;
+            cb_row[x] = (b - luma) / (2.0 * (1.0 - kb));
+            cr_row[x] = (r - luma) / (2.0 * (1.0 - kr));
+            const double noise = Dither ? deterministic_noise(frame_index, 0, pixel) : 0.0;
+            result.image.y[pixel] = quantize(64.0 + 876.0 * luma, 64.0, 940.0, noise,
+                                             stats.luma_clipped_low, stats.luma_clipped_high);
+        }
+        for (std::uint32_t x = 0; x < input.width; x += 2U) {
+            const auto chroma = static_cast<std::size_t>(y) * (input.width / 2U) + x / 2U;
+            std::size_t cb_low = 0;
+            std::size_t cb_high = 0;
+            std::size_t cr_low = 0;
+            std::size_t cr_high = 0;
+            const double cb_noise = Dither ? deterministic_noise(frame_index, 1, chroma) : 0.0;
+            const double cr_noise = Dither ? deterministic_noise(frame_index, 2, chroma) : 0.0;
+            result.image.cb[chroma] = quantize(
+                512.0 + 896.0 * filtered_chroma_fixed<Filter>(cb_row, x, input.width),
+                64.0, 960.0, cb_noise, cb_low, cb_high);
+            result.image.cr[chroma] = quantize(
+                512.0 + 896.0 * filtered_chroma_fixed<Filter>(cr_row, x, input.width),
+                64.0, 960.0, cr_noise, cr_low, cr_high);
+            stats.chroma_clipped += cb_low + cb_high + cr_low + cr_high;
+        }
+    }
+    if (non_finite.load(std::memory_order_relaxed)) {
+        throw Error(ErrorCode::processing_failed, "camera-to-DWG transform produced a non-finite value");
+    }
+    if (rejected_negative.load(std::memory_order_relaxed)) {
+        throw Error(ErrorCode::processing_failed, "negative target-linear value rejected by policy");
+    }
+    for (const auto& stats : thread_stats) {
+        result.stats.luma_clipped_low += stats.luma_clipped_low;
+        result.stats.luma_clipped_high += stats.luma_clipped_high;
+        result.stats.chroma_clipped += stats.chroma_clipped;
+    }
+    result.image.validate();
+    return result;
+}
+
+template <NegativePolicy Policy, ChromaFilter Filter>
+PackedYuvResult dispatch_dither(const CameraRgbF32& input,
+                                const CameraColorSolution& solution,
+                                double exposure_offset_stops,
+                                const DaVinciIntermediateLut& curve,
+                                bool dither,
+                                std::size_t frame_index,
+                                std::size_t worker_threads) {
+    if (dither) {
+        return pack_fused<Policy, Filter, true>(input, solution, exposure_offset_stops,
+                                                curve, frame_index, worker_threads);
+    }
+    return pack_fused<Policy, Filter, false>(input, solution, exposure_offset_stops,
+                                             curve, frame_index, worker_threads);
+}
+
+template <NegativePolicy Policy>
+PackedYuvResult dispatch_filter(const CameraRgbF32& input,
+                                const CameraColorSolution& solution,
+                                double exposure_offset_stops,
+                                const DaVinciIntermediateLut& curve,
+                                ChromaFilter filter,
+                                bool dither,
+                                std::size_t frame_index,
+                                std::size_t worker_threads) {
+    if (filter == ChromaFilter::fast) {
+        return dispatch_dither<Policy, ChromaFilter::fast>(
+            input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads);
+    }
+    return dispatch_dither<Policy, ChromaFilter::quality>(
+        input, solution, exposure_offset_stops, curve, dither, frame_index, worker_threads);
+}
+
+} // namespace
+
+PackedYuvResult pack_dwg_log_to_yuv422p10(const TargetLogRgbF32& input,
+                                          ChromaFilter filter,
+                                          bool dither,
+                                          std::size_t frame_index) {
+    input.validate();
+    if ((input.width & 1U) != 0U) {
+        throw Error(ErrorCode::invalid_argument, "ProRes 422 requires an even frame width");
+    }
+    PackedYuvResult result;
+    result.image.width = input.width;
+    result.image.height = input.height;
+    const auto pixels = static_cast<std::size_t>(input.width) * input.height;
+    result.image.y.resize(pixels);
+    result.image.cb.resize(pixels / 2U);
+    result.image.cr.resize(pixels / 2U);
+
+    std::vector<double> cb_row(input.width);
+    std::vector<double> cr_row(input.width);
+    for (std::uint32_t y = 0; y < input.height; ++y) {
+        for (std::uint32_t x = 0; x < input.width; ++x) {
+            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+            const double r = input.planes[0][pixel];
+            const double g = input.planes[1][pixel];
+            const double b = input.planes[2][pixel];
+            const double luma = kr * r + kg * g + kb * b;
+            cb_row[x] = (b - luma) / (2.0 * (1.0 - kb));
+            cr_row[x] = (r - luma) / (2.0 * (1.0 - kr));
+            result.image.y[pixel] = quantize(64.0 + 876.0 * luma, 64.0, 940.0,
+                                             dither ? deterministic_noise(frame_index, 0, pixel) : 0.0,
+                                             result.stats.luma_clipped_low, result.stats.luma_clipped_high);
+        }
+        for (std::uint32_t x = 0; x < input.width; x += 2U) {
+            const auto chroma = static_cast<std::size_t>(y) * (input.width / 2U) + x / 2U;
+            std::size_t cb_low = 0;
+            std::size_t cb_high = 0;
+            std::size_t cr_low = 0;
+            std::size_t cr_high = 0;
+            result.image.cb[chroma] = quantize(512.0 + 896.0 * filtered_chroma(cb_row, x, input.width, filter),
+                                               64.0, 960.0,
+                                               dither ? deterministic_noise(frame_index, 1, chroma) : 0.0,
+                                               cb_low, cb_high);
+            result.image.cr[chroma] = quantize(512.0 + 896.0 * filtered_chroma(cr_row, x, input.width, filter),
+                                               64.0, 960.0,
+                                               dither ? deterministic_noise(frame_index, 2, chroma) : 0.0,
+                                               cr_low, cr_high);
+            result.stats.chroma_clipped += cb_low + cb_high + cr_low + cr_high;
+        }
+    }
+    result.image.validate();
+    return result;
+}
+
+PackedYuvResult pack_camera_to_dwg_di_yuv422p10(
+    const CameraRgbF32& input,
+    const CameraColorSolution& solution,
+    double exposure_offset_stops,
+    NegativePolicy negative_policy,
+    const DaVinciIntermediateLut& curve,
+    ChromaFilter filter,
+    bool dither,
+    std::size_t frame_index,
+    std::size_t worker_threads) {
+    switch (negative_policy) {
+    case NegativePolicy::preserve_by_curve:
+        return dispatch_filter<NegativePolicy::preserve_by_curve>(
+            input, solution, exposure_offset_stops, curve, filter, dither,
+            frame_index, worker_threads);
+    case NegativePolicy::clamp_zero:
+        return dispatch_filter<NegativePolicy::clamp_zero>(
+            input, solution, exposure_offset_stops, curve, filter, dither,
+            frame_index, worker_threads);
+    case NegativePolicy::error:
+        return dispatch_filter<NegativePolicy::error>(
+            input, solution, exposure_offset_stops, curve, filter, dither,
+            frame_index, worker_threads);
+    }
+    throw Error(ErrorCode::invalid_argument, "unknown negative policy");
+}
+
+} // namespace mcraw

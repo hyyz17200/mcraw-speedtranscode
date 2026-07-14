@@ -1,0 +1,24 @@
+/build*/
+/out/
+/.vs/
+/.vscode/
+/CMakeUserPresets.json
+/vcpkg_installed/
+/.deps/
+*.user
+*.suo
+*.VC.db
+*.VC.VC.opendb
+*.mov
+*.wav
+*.dng
+*.raw
+*.pgm
+*.ppm
+*.exr
+*.tiff
+*.tif
+
+# Local recordings and generated validation artifacts are never committed.
+/mcraw_sample/
+/test-output/

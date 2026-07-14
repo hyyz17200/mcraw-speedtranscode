@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "demosaic": "rcd",
+  "exposure_offset_stops": 0.0,
+  "negative_policy": "preserve_by_curve",
+  "chroma_filter": "quality",
+  "deterministic_dither": true,
+  "preserve_source_timestamps": true,
+  "preserve_audio": true,
+  "max_frames": 0,
+  "cpu_threads": 0,
+  "max_parallel_frames": 0,
+  "target_profile": "DaVinciIntermediate_DWG",
+  "prores_profile": "hq"
+}

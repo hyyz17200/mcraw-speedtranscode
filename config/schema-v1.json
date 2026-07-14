@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://mcraw-transcoder.invalid/schema/config-v1.json",
+  "title": "mcraw-transcoder configuration v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "demosaic": {"enum": ["rcd", "amaze", "igv"], "default": "rcd"},
+    "exposure_offset_stops": {"type": "number", "default": 0.0},
+    "negative_policy": {
+      "enum": ["preserve_by_curve", "clamp_zero", "error"],
+      "default": "preserve_by_curve"
+    },
+    "chroma_filter": {"enum": ["fast", "quality"], "default": "quality"},
+    "deterministic_dither": {"type": "boolean", "default": true},
+    "preserve_source_timestamps": {"const": true},
+    "preserve_audio": {"type": "boolean", "default": true},
+    "max_frames": {"type": "integer", "minimum": 0, "default": 0},
+    "cpu_threads": {"type": "integer", "minimum": 0, "maximum": 256, "default": 0},
+    "max_parallel_frames": {"type": "integer", "minimum": 0, "maximum": 64, "default": 0},
+    "target_profile": {"const": "DaVinciIntermediate_DWG"},
+    "prores_profile": {"const": "hq"}
+  }
+}
