@@ -9,6 +9,15 @@
 
 namespace mcraw {
 
+// ProRes is intra-only, so independent frames can encode concurrently on
+// separate identically configured encoder contexts and mux in source order.
+// contexts scales the number of frames in flight; threads_per_context is the
+// FFmpeg slice-thread count inside each encode (0 lets FFmpeg decide).
+struct VideoEncodeConcurrency {
+    std::size_t contexts{1};
+    int threads_per_context{0};
+};
+
 class FfmpegWriter {
 public:
     FfmpegWriter(const std::filesystem::path& output,
@@ -16,7 +25,8 @@ public:
                  std::uint32_t height,
                  std::int64_t timeline_origin_ns,
                  int audio_sample_rate,
-                 int audio_channels);
+                 int audio_channels,
+                 VideoEncodeConcurrency video_concurrency = {});
     ~FfmpegWriter();
     FfmpegWriter(FfmpegWriter&&) noexcept;
     FfmpegWriter& operator=(FfmpegWriter&&) noexcept;

@@ -108,6 +108,8 @@ struct CpuExecutionPlan {
     std::size_t total_threads{};
     std::size_t parallel_frames{};
     std::size_t threads_per_frame{};
+    std::size_t encode_contexts{};
+    std::size_t encode_threads_per_context{};
 };
 
 std::uint64_t available_memory_bytes() noexcept {
@@ -149,9 +151,22 @@ CpuExecutionPlan resolve_execution_plan(mcraw::EffectiveConfig& config,
         requested_frames, selected_frames, total_threads
     }));
     const auto threads_per_frame = std::max<std::size_t>(1U, total_threads / parallel_frames);
+    // ProRes encoding overlaps with pipeline compute on a pool of
+    // single-threaded intra-frame encoder contexts. Frame-parallel contexts
+    // are the most CPU-efficient shape for prores_ks (its slice threading
+    // measured ~2x on 4 threads; a lone context therefore caps throughput),
+    // and a 12.6 MP HQ encode costs about as much CPU as the RAW pipeline
+    // itself. The context count scales with the thread budget instead of a
+    // fixed compute/encode split: on machines where compute dominates, idle
+    // encoder workers sleep without consuming cores, so the balance adapts
+    // to the CPU architecture without hand-tuned constants.
+    const auto encode_contexts = std::clamp<std::size_t>(
+        total_threads, 1U, 16U);
+    const auto encode_threads_per_context = std::size_t{1U};
     config.cpu_threads = total_threads;
     config.max_parallel_frames = parallel_frames;
-    return {total_threads, parallel_frames, threads_per_frame};
+    return {total_threads, parallel_frames, threads_per_frame,
+            encode_contexts, encode_threads_per_context};
 }
 
 struct FrameTaskResult {
@@ -461,7 +476,9 @@ int command_benchmark(const Arguments& args) {
                                 {"execution", {
                                     {"cpu_threads", execution.total_threads},
                                     {"parallel_frames", execution.parallel_frames},
-                                    {"threads_per_frame", execution.threads_per_frame}
+                                    {"threads_per_frame", execution.threads_per_frame},
+                                    {"encode_contexts", execution.encode_contexts},
+                                    {"encode_threads_per_context", execution.encode_threads_per_context}
                                 }},
                                 {"stages", timings.to_json()}}.dump(2) << '\n';
     return 0;
@@ -591,7 +608,10 @@ int command_convert(const Arguments& args) {
     const auto conversion_start = std::chrono::steady_clock::now();
     {
         mcraw::FfmpegWriter writer(partial, first_metadata.width, first_metadata.height, origin,
-                                   audio.sample_rate, audio.channels);
+                                   audio.sample_rate, audio.channels,
+                                   mcraw::VideoEncodeConcurrency{
+                                       execution.encode_contexts,
+                                       static_cast<int>(execution.encode_threads_per_context)});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -607,7 +627,10 @@ int command_convert(const Arguments& args) {
             warnings.insert(warnings.end(), processed.metadata.warnings.begin(),
                             processed.metadata.warnings.end());
             {
-                mcraw::StageTimer timer(timings, "prores_encode_mux");
+                // write_video now hands the frame to the encode pipeline; this
+                // measures submission plus any backpressure wait, not the
+                // encode itself, which overlaps with frame compute.
+                mcraw::StageTimer timer(timings, "prores_submit_wait");
                 writer.write_video(std::move(processed.packed.image), processed.timestamp_ns);
             }
             if (frames_completed == 0U) first_solution = processed.color_solution;
@@ -646,7 +669,9 @@ int command_convert(const Arguments& args) {
                                 {"execution", {
                                     {"cpu_threads", execution.total_threads},
                                     {"parallel_frames", execution.parallel_frames},
-                                    {"threads_per_frame", execution.threads_per_frame}
+                                    {"threads_per_frame", execution.threads_per_frame},
+                                    {"encode_contexts", execution.encode_contexts},
+                                    {"encode_threads_per_context", execution.encode_threads_per_context}
                                 }},
                                 {"timings", timings.to_json()}}.dump(2) << '\n';
     return 0;

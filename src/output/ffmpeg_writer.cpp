@@ -1,13 +1,19 @@
 #include <mcraw/output/ffmpeg_writer.hpp>
 
 #include <algorithm>
+#include <condition_variable>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <deque>
+#include <exception>
+#include <map>
+#include <mutex>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
+#include <vector>
 
 extern "C" {
 #include <libavcodec/avcodec.h>
@@ -68,6 +74,11 @@ void attach_vector_plane(AVFrame* frame,
     frame->linesize[plane] = static_cast<int>(width * sizeof(std::uint16_t));
 }
 
+void free_packets(std::vector<AVPacket*>& packets) noexcept {
+    for (auto& packet : packets) av_packet_free(&packet);
+    packets.clear();
+}
+
 } // namespace
 
 class FfmpegWriter::Impl {
@@ -77,7 +88,8 @@ public:
          std::uint32_t height,
          std::int64_t timeline_origin_ns,
          int audio_sample_rate,
-         int audio_channels)
+         int audio_channels,
+         VideoEncodeConcurrency video_concurrency)
         : origin_ns(timeline_origin_ns), output_path(output) {
         if (width == 0 || height == 0 || (width & 1U) != 0U) {
             throw Error(ErrorCode::invalid_argument, "invalid ProRes frame dimensions");
@@ -89,7 +101,7 @@ public:
         if (format == nullptr) throw Error(ErrorCode::encode_failed, "FFmpeg returned no MOV output context");
 
         try {
-            create_video(width, height);
+            create_video(width, height, video_concurrency);
             if (audio_sample_rate > 0 && audio_channels > 0) {
                 create_audio(audio_sample_rate, audio_channels);
             }
@@ -102,6 +114,7 @@ public:
             av_dict_free(&options);
             require_ffmpeg(header_result, "write MOV header");
             header_written = true;
+            start_workers();
         } catch (...) {
             cleanup();
             throw;
@@ -110,33 +123,47 @@ public:
 
     ~Impl() { cleanup(); }
 
-    void create_video(std::uint32_t width, std::uint32_t height) {
+    void create_video(std::uint32_t width,
+                      std::uint32_t height,
+                      const VideoEncodeConcurrency& concurrency) {
         const AVCodec* codec = avcodec_find_encoder_by_name("prores_ks");
         if (codec == nullptr) throw Error(ErrorCode::encode_failed, "FFmpeg build has no prores_ks encoder");
         video_stream = avformat_new_stream(format, nullptr);
         if (video_stream == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate video stream");
-        video_codec = avcodec_alloc_context3(codec);
-        if (video_codec == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate ProRes codec context");
-        video_codec->codec_type = AVMEDIA_TYPE_VIDEO;
-        video_codec->codec_id = codec->id;
-        video_codec->width = static_cast<int>(width);
-        video_codec->height = static_cast<int>(height);
-        video_codec->pix_fmt = AV_PIX_FMT_YUV422P10LE;
-        // 90 kHz preserves sub-frame source timing while remaining a broadly
-        // compatible MOV track timescale (including QuickTime readers).
-        video_codec->time_base = AVRational{1, 90'000};
-        video_codec->framerate = AVRational{30, 1};
-        video_codec->profile = AV_PROFILE_PRORES_HQ;
-        video_codec->color_range = AVCOL_RANGE_MPEG;
-        video_codec->colorspace = AVCOL_SPC_BT2020_NCL;
-        video_codec->color_primaries = AVCOL_PRI_UNSPECIFIED;
-        video_codec->color_trc = AVCOL_TRC_UNSPECIFIED;
-        video_codec->thread_count = 0;
-        if ((format->oformat->flags & AVFMT_GLOBALHEADER) != 0) video_codec->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-        require_ffmpeg(av_opt_set(video_codec->priv_data, "profile", "hq", 0), "select ProRes HQ profile");
-        require_ffmpeg(avcodec_open2(video_codec, codec, nullptr), "open prores_ks encoder");
-        video_stream->time_base = video_codec->time_base;
-        require_ffmpeg(avcodec_parameters_from_context(video_stream->codecpar, video_codec),
+        // ProRes is intra-only, so identically configured contexts can encode
+        // independent frames concurrently; packets mux in submission order.
+        const auto contexts = std::clamp<std::size_t>(concurrency.contexts, 1U, 16U);
+        max_jobs_in_flight = contexts + 2U;
+        video_codecs.resize(contexts, nullptr);
+        for (auto& context : video_codecs) {
+            context = avcodec_alloc_context3(codec);
+            if (context == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate ProRes codec context");
+            context->codec_type = AVMEDIA_TYPE_VIDEO;
+            context->codec_id = codec->id;
+            context->width = static_cast<int>(width);
+            context->height = static_cast<int>(height);
+            context->pix_fmt = AV_PIX_FMT_YUV422P10LE;
+            // 90 kHz preserves sub-frame source timing while remaining a broadly
+            // compatible MOV track timescale (including QuickTime readers).
+            context->time_base = AVRational{1, 90'000};
+            context->framerate = AVRational{30, 1};
+            context->profile = AV_PROFILE_PRORES_HQ;
+            context->color_range = AVCOL_RANGE_MPEG;
+            context->colorspace = AVCOL_SPC_BT2020_NCL;
+            context->color_primaries = AVCOL_PRI_UNSPECIFIED;
+            context->color_trc = AVCOL_TRC_UNSPECIFIED;
+            context->thread_count = std::max(concurrency.threads_per_context, 0);
+            // Slice threading only: frame threading would delay packets by
+            // thread_count-1 frames, breaking the one-packet-per-send contract
+            // the cross-context mux ordering relies on. Frame-level overlap
+            // already comes from the writer's own encoder contexts.
+            context->thread_type = FF_THREAD_SLICE;
+            if ((format->oformat->flags & AVFMT_GLOBALHEADER) != 0) context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+            require_ffmpeg(av_opt_set(context->priv_data, "profile", "hq", 0), "select ProRes HQ profile");
+            require_ffmpeg(avcodec_open2(context, codec, nullptr), "open prores_ks encoder");
+        }
+        video_stream->time_base = video_codecs.front()->time_base;
+        require_ffmpeg(avcodec_parameters_from_context(video_stream->codecpar, video_codecs.front()),
                        "copy video codec parameters");
     }
 
@@ -160,11 +187,9 @@ public:
                        "copy audio codec parameters");
     }
 
+    // Synchronous encode+mux used for audio frames and end-of-stream flushes.
     void write_packet(AVCodecContext* codec, AVStream* stream, AVFrame* frame) {
         const auto input_duration = frame != nullptr ? frame->duration : 0;
-        if (codec == video_codec && frame != nullptr) {
-            pending_video_durations.push_back(frame->duration);
-        }
         require_ffmpeg(avcodec_send_frame(codec, frame), frame == nullptr ? "flush encoder" : "send frame");
         AVPacket* packet = av_packet_alloc();
         if (packet == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate encoded packet");
@@ -176,17 +201,15 @@ public:
                 require_ffmpeg(result, "receive encoded packet");
             }
             av_packet_rescale_ts(packet, codec->time_base, stream->time_base);
-            if (codec == video_codec && !pending_video_durations.empty()) {
-                const auto duration = pending_video_durations.front();
-                pending_video_durations.pop_front();
-                if (packet->duration <= 0 && duration > 0) {
-                    packet->duration = av_rescale_q(duration, codec->time_base, stream->time_base);
-                }
-            } else if (packet->duration <= 0 && input_duration > 0) {
+            if (packet->duration <= 0 && input_duration > 0) {
                 packet->duration = av_rescale_q(input_duration, codec->time_base, stream->time_base);
             }
             packet->stream_index = stream->index;
-            const int write_result = av_interleaved_write_frame(format, packet);
+            int write_result;
+            {
+                std::scoped_lock lock(mux_mutex);
+                write_result = av_interleaved_write_frame(format, packet);
+            }
             av_packet_unref(packet);
             if (write_result < 0) {
                 av_packet_free(&packet);
@@ -198,50 +221,57 @@ public:
 
     void write_video(Yuv422P10 input, std::int64_t timestamp_ns) {
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
+        rethrow_pipeline_error();
         input.validate();
-        if (input.width != static_cast<std::uint32_t>(video_codec->width) ||
-            input.height != static_cast<std::uint32_t>(video_codec->height)) {
+        auto* front = video_codecs.front();
+        if (input.width != static_cast<std::uint32_t>(front->width) ||
+            input.height != static_cast<std::uint32_t>(front->height)) {
             throw Error(ErrorCode::invalid_argument, "video frame dimensions changed during encode");
         }
         AVFrame* frame = av_frame_alloc();
         if (frame == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate video frame");
-        frame->format = video_codec->pix_fmt;
-        frame->width = video_codec->width;
-        frame->height = video_codec->height;
-        frame->color_range = video_codec->color_range;
-        frame->colorspace = video_codec->colorspace;
-        frame->color_primaries = video_codec->color_primaries;
-        frame->color_trc = video_codec->color_trc;
+        frame->format = front->pix_fmt;
+        frame->width = front->width;
+        frame->height = front->height;
+        frame->color_range = front->color_range;
+        frame->colorspace = front->colorspace;
+        frame->color_primaries = front->color_primaries;
+        frame->color_trc = front->color_trc;
         try {
             attach_vector_plane(frame, 0, std::move(input.y), input.width);
             attach_vector_plane(frame, 1, std::move(input.cb), input.width / 2U);
             attach_vector_plane(frame, 2, std::move(input.cr), input.width / 2U);
+            const auto pts = pts_from_ns(timestamp_ns, origin_ns, front->time_base);
+            if (pts <= last_video_pts) {
+                throw Error(ErrorCode::encode_failed, "video timestamps are not strictly increasing after rescale");
+            }
+            frame->pts = pts;
+            frame->duration = last_video_pts == AV_NOPTS_VALUE
+                ? av_rescale_q(1, av_inv_q(front->framerate), front->time_base)
+                : pts - last_video_pts;
+            last_video_pts = pts;
+
+            std::unique_lock lock(pipe_mutex);
+            space_cv.wait(lock, [this] {
+                return pipeline_failed || jobs_in_flight < max_jobs_in_flight;
+            });
+            if (pipeline_failed) {
+                lock.unlock();
+                rethrow_pipeline_error();
+            }
+            job_queue.push_back({next_submit_sequence++, frame, frame->duration});
+            ++jobs_in_flight;
+            job_cv.notify_one();
         } catch (...) {
             av_frame_free(&frame);
             throw;
         }
-        const auto pts = pts_from_ns(timestamp_ns, origin_ns, video_codec->time_base);
-        if (pts <= last_video_pts) {
-            av_frame_free(&frame);
-            throw Error(ErrorCode::encode_failed, "video timestamps are not strictly increasing after rescale");
-        }
-        frame->pts = pts;
-        frame->duration = last_video_pts == AV_NOPTS_VALUE
-            ? av_rescale_q(1, av_inv_q(video_codec->framerate), video_codec->time_base)
-            : pts - last_video_pts;
-        last_video_pts = pts;
-        try {
-            write_packet(video_codec, video_stream, frame);
-        } catch (...) {
-            av_frame_free(&frame);
-            throw;
-        }
-        av_frame_free(&frame);
     }
 
     void write_audio(const AudioChunk& chunk) {
         if (audio_codec == nullptr) return;
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write audio after finish");
+        rethrow_pipeline_error();
         const auto channels = static_cast<std::size_t>(audio_codec->ch_layout.nb_channels);
         if (channels == 0U || chunk.interleaved_samples.size() % channels != 0U) {
             throw Error(ErrorCode::invalid_argument, "audio chunk is not channel-aligned");
@@ -277,17 +307,30 @@ public:
 
     void finish() {
         if (finished) return;
-        write_packet(video_codec, video_stream, nullptr);
+        {
+            std::unique_lock lock(pipe_mutex);
+            space_cv.wait(lock, [this] { return pipeline_failed || jobs_in_flight == 0U; });
+        }
+        rethrow_pipeline_error();
+        stop_worker_threads(false);
+        rethrow_pipeline_error();
+        for (auto* context : video_codecs) write_packet(context, video_stream, nullptr);
         if (audio_codec != nullptr) write_packet(audio_codec, audio_stream, nullptr);
         require_ffmpeg(av_write_trailer(format), "write MOV trailer");
         finished = true;
     }
 
     void cleanup() noexcept {
+        stop_worker_threads(true);
+        for (auto& job : job_queue) av_frame_free(&job.frame);
+        job_queue.clear();
+        for (auto& [sequence, packets] : completed) free_packets(packets);
+        completed.clear();
         if (format != nullptr && header_written && !finished) {
             av_write_trailer(format);
         }
-        avcodec_free_context(&video_codec);
+        for (auto& context : video_codecs) avcodec_free_context(&context);
+        video_codecs.clear();
         avcodec_free_context(&audio_codec);
         if (format != nullptr) {
             if ((format->oformat->flags & AVFMT_NOFILE) == 0 && format->pb != nullptr) avio_closep(&format->pb);
@@ -296,18 +339,170 @@ public:
         }
     }
 
+private:
+    struct EncodeJob {
+        std::uint64_t sequence{};
+        AVFrame* frame{};
+        std::int64_t duration{};
+    };
+
+    void start_workers() {
+        workers.reserve(video_codecs.size());
+        for (auto* context : video_codecs) {
+            workers.emplace_back([this, context] { worker_main(context); });
+        }
+    }
+
+    void stop_worker_threads(bool abort) noexcept {
+        {
+            std::scoped_lock lock(pipe_mutex);
+            if (abort) abort_workers = true;
+            stop_workers = true;
+        }
+        job_cv.notify_all();
+        for (auto& worker : workers) {
+            if (worker.joinable()) worker.join();
+        }
+        workers.clear();
+    }
+
+    void worker_main(AVCodecContext* codec) noexcept {
+        for (;;) {
+            EncodeJob job{};
+            {
+                std::unique_lock lock(pipe_mutex);
+                job_cv.wait(lock, [this] {
+                    return abort_workers || stop_workers || !job_queue.empty();
+                });
+                if (abort_workers) return;
+                if (job_queue.empty()) {
+                    if (stop_workers) return;
+                    continue;
+                }
+                job = job_queue.front();
+                job_queue.pop_front();
+            }
+            try {
+                encode_job(codec, job);
+            } catch (...) {
+                std::scoped_lock lock(pipe_mutex);
+                if (worker_error == nullptr) worker_error = std::current_exception();
+                pipeline_failed = true;
+                job_cv.notify_all();
+                space_cv.notify_all();
+                return;
+            }
+        }
+    }
+
+    void encode_job(AVCodecContext* codec, EncodeJob job) {
+        const int send_result = avcodec_send_frame(codec, job.frame);
+        av_frame_free(&job.frame);
+        require_ffmpeg(send_result, "send video frame");
+        std::vector<AVPacket*> packets;
+        AVPacket* packet = av_packet_alloc();
+        if (packet == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate encoded packet");
+        try {
+            while (true) {
+                const int result = avcodec_receive_packet(codec, packet);
+                if (result == AVERROR(EAGAIN) || result == AVERROR_EOF) break;
+                require_ffmpeg(result, "receive video packet");
+                av_packet_rescale_ts(packet, codec->time_base, video_stream->time_base);
+                if (packet->duration <= 0 && job.duration > 0) {
+                    packet->duration = av_rescale_q(job.duration, codec->time_base,
+                                                    video_stream->time_base);
+                }
+                packet->stream_index = video_stream->index;
+                packets.push_back(packet);
+                packet = av_packet_alloc();
+                if (packet == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate encoded packet");
+            }
+            av_packet_free(&packet);
+            packet = nullptr;
+            // An intra-only encoder must emit each frame's packet immediately;
+            // buffering would make cross-context mux order undecidable.
+            if (packets.empty()) {
+                throw Error(ErrorCode::encode_failed, "ProRes encoder buffered a frame unexpectedly");
+            }
+            complete_job(job.sequence, packets);
+        } catch (...) {
+            av_packet_free(&packet);
+            free_packets(packets);
+            throw;
+        }
+    }
+
+    void complete_job(std::uint64_t sequence, std::vector<AVPacket*>& packets) {
+        std::unique_lock lock(pipe_mutex);
+        completed.emplace(sequence, std::move(packets));
+        packets.clear();
+        // Whichever worker completes the lowest outstanding sequence drains
+        // the in-order prefix; next_mux_sequence only advances under the lock.
+        while (!pipeline_failed && !completed.empty() &&
+               completed.begin()->first == next_mux_sequence) {
+            auto ready = std::move(completed.begin()->second);
+            completed.erase(completed.begin());
+            lock.unlock();
+            try {
+                for (auto& item : ready) {
+                    int write_result;
+                    {
+                        std::scoped_lock mux(mux_mutex);
+                        write_result = av_interleaved_write_frame(format, item);
+                    }
+                    av_packet_free(&item);
+                    require_ffmpeg(write_result, "interleave video packet");
+                }
+            } catch (...) {
+                free_packets(ready);
+                throw;
+            }
+            lock.lock();
+            ++next_mux_sequence;
+            --jobs_in_flight;
+            space_cv.notify_all();
+        }
+    }
+
+    void rethrow_pipeline_error() {
+        std::exception_ptr error;
+        {
+            std::scoped_lock lock(pipe_mutex);
+            error = worker_error;
+        }
+        if (error != nullptr) std::rethrow_exception(error);
+    }
+
+public:
     std::int64_t origin_ns{};
     std::filesystem::path output_path;
     AVFormatContext* format{};
-    AVCodecContext* video_codec{};
+    std::vector<AVCodecContext*> video_codecs;
     AVCodecContext* audio_codec{};
     AVStream* video_stream{};
     AVStream* audio_stream{};
-    std::deque<std::int64_t> pending_video_durations;
     std::int64_t last_video_pts{AV_NOPTS_VALUE};
     std::int64_t next_audio_pts{};
     bool header_written{};
     bool finished{};
+
+private:
+    // Encode pipeline state; guarded by pipe_mutex unless noted otherwise.
+    std::mutex pipe_mutex;
+    std::condition_variable job_cv;
+    std::condition_variable space_cv;
+    std::deque<EncodeJob> job_queue;
+    std::map<std::uint64_t, std::vector<AVPacket*>> completed;
+    std::uint64_t next_submit_sequence{};
+    std::uint64_t next_mux_sequence{};
+    std::size_t jobs_in_flight{};
+    std::size_t max_jobs_in_flight{1};
+    bool stop_workers{};
+    bool abort_workers{};
+    bool pipeline_failed{};
+    std::exception_ptr worker_error;
+    std::mutex mux_mutex; // serializes every muxer write across threads
+    std::vector<std::thread> workers;
 };
 
 FfmpegWriter::FfmpegWriter(const std::filesystem::path& output,
@@ -315,9 +510,10 @@ FfmpegWriter::FfmpegWriter(const std::filesystem::path& output,
                            std::uint32_t height,
                            std::int64_t timeline_origin_ns,
                            int audio_sample_rate,
-                           int audio_channels)
+                           int audio_channels,
+                           VideoEncodeConcurrency video_concurrency)
     : impl_(std::make_unique<Impl>(output, width, height, timeline_origin_ns,
-                                   audio_sample_rate, audio_channels)) {}
+                                   audio_sample_rate, audio_channels, video_concurrency)) {}
 
 FfmpegWriter::~FfmpegWriter() = default;
 FfmpegWriter::FfmpegWriter(FfmpegWriter&&) noexcept = default;
