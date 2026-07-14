@@ -21,6 +21,7 @@ extern "C" {
 
 #include <mcraw/output/ffmpeg_raii.hpp>
 #include <mcraw/output/ffmpeg_writer.hpp>
+#include <mcraw/core/error.hpp>
 
 namespace {
 
@@ -41,6 +42,26 @@ mcraw::Yuv422P10 test_frame(std::uint32_t width,
     frame.y.assign(static_cast<std::size_t>(width) * height, luma);
     frame.cb.assign(static_cast<std::size_t>(width / 2U) * height, 512U);
     frame.cr.assign(static_cast<std::size_t>(width / 2U) * height, 512U);
+    return frame;
+}
+
+mcraw::TargetLogRgbF32 test_rgb_frame(std::uint32_t width,
+                                      std::uint32_t height,
+                                      int frame_index) {
+    mcraw::TargetLogRgbF32 frame;
+    frame.width = width;
+    frame.height = height;
+    for (auto& plane : frame.planes) {
+        plane.resize(static_cast<std::size_t>(width) * height);
+    }
+    for (std::size_t pixel = 0; pixel < frame.planes[0].size(); ++pixel) {
+        const float gradient = static_cast<float>((pixel + frame_index) % width) /
+                               static_cast<float>(width - 1U);
+        const float evolution = static_cast<float>(frame_index % 300) / 299.0F;
+        frame.planes[0][pixel] = 0.75F * gradient + 0.25F * evolution;
+        frame.planes[1][pixel] = 0.5F * gradient + 0.3F * evolution;
+        frame.planes[2][pixel] = 0.8F * (1.0F - gradient) + 0.2F * evolution;
+    }
     return frame;
 }
 
@@ -169,4 +190,56 @@ TEST_CASE("Vulkan upload bridge writes a decodable ProRes HQ MOV") {
              << ", final private bytes=" << final_private_bytes);
         CHECK(final_private_bytes <= warmed_private_bytes + 128ULL * 1024ULL * 1024ULL);
     }
+}
+
+TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    constexpr int frame_count = 300;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-direct-e2e-" + std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriterTelemetry telemetry;
+    {
+        mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                                   {}, {mcraw::VideoBackend::vulkan, "auto", 8, false});
+        for (int index = 0; index < frame_count; ++index) {
+            writer.write_video(test_rgb_frame(width, height, index),
+                               1'000'000'000LL + index * 33'333'333LL,
+                               static_cast<std::size_t>(index));
+        }
+        writer.finish();
+        telemetry = writer.telemetry();
+    }
+    CHECK(telemetry.backend == "prores_ks_vulkan");
+    CHECK(telemetry.gpu_resident);
+    CHECK(telemetry.direct_frames == frame_count);
+    CHECK(telemetry.upload_frames == 0U);
+    CHECK(telemetry.readback_frames == 0U);
+    CHECK(telemetry.rgb_upload_bytes ==
+          static_cast<std::uint64_t>(width) * height * 3U * sizeof(float) * frame_count);
+    CHECK(telemetry.video_packets == frame_count);
+    CHECK(telemetry.gpu_queue_capacity >= 4U);
+    CHECK(telemetry.gpu_queue_max_depth > 0U);
+    CHECK(telemetry.gpu_queue_max_depth <= telemetry.gpu_queue_capacity);
+    CHECK(telemetry.packet_queue_capacity >= 8U);
+    CHECK(telemetry.packet_queue_max_depth > 0U);
+    CHECK(telemetry.packet_queue_max_depth <= telemetry.packet_queue_capacity);
+    CHECK(telemetry.mux_bytes > 0U);
+    CHECK(telemetry.mux_megabytes_per_second > 0.0);
+    mcraw::validate_prores_mov(output.path, frame_count);
+    CHECK(decode_video_frames(output.path) == frame_count);
+}
+
+TEST_CASE("Vulkan worker failure cancels bounded queues and reaches the caller") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-cancel-" + std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 4, false});
+    writer.write_video(test_rgb_frame(width, height, 0), 1'000'000'000LL, 0);
+    writer.write_video(test_rgb_frame(width, height, 1), 1'000'000'000LL, 1);
+    CHECK_THROWS_AS(writer.finish(), mcraw::Error);
 }

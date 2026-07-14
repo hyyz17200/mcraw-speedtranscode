@@ -27,9 +27,10 @@ not included in its telemetry.
   layout, shader-write access, timeline value, and compute queue family.
 - Queue submission uses FFmpeg's owner-provided queue mutex, so an application
   submission cannot race an encoder submission to the same `VkQueue`.
-- A per-dispatch fence protects the transient image views, descriptor set,
-  command buffer, and RGB staging buffers. There is no per-frame
-  `vkQueueWaitIdle()`. Removing this fence through bounded slots is Phase 6 / Task 8.
+- Phase 5 initially used a per-dispatch fence to protect transient resources.
+  Task 8 replaced that wait with bounded reusable slots; this historical phase
+  still establishes the direct handoff contract. Neither version uses a
+  per-frame `vkQueueWaitIdle()`.
 - The encoder keeps the submitted `AVFrame` reference for as long as libavcodec
   needs it; frame-pool reuse remains under FFmpeg control.
 

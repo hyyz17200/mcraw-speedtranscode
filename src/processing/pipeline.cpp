@@ -8,9 +8,12 @@
 
 namespace mcraw {
 
-CpuPipeline::CpuPipeline(EffectiveConfig config, std::size_t worker_threads)
+CpuPipeline::CpuPipeline(EffectiveConfig config,
+                         std::size_t worker_threads,
+                         bool output_target_log)
     : config_(std::move(config)),
-      worker_threads_(std::clamp<std::size_t>(worker_threads, 1U, 256U)) {
+      worker_threads_(std::clamp<std::size_t>(worker_threads, 1U, 256U)),
+      output_target_log_(output_target_log) {
     config_.validate();
 }
 
@@ -45,7 +48,17 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         StageTimer timer(timings, "color_solution");
         result.color_solution = build_camera_color_solution(result.metadata);
     }
-    {
+    if (output_target_log_) {
+        StageTimer timer(timings, "camera_to_dwg_di_rgb");
+        const auto target_linear = camera_to_dwg(
+            camera_rgb, result.color_solution, config_.exposure_offset_stops,
+            1.0 / 65535.0);
+        const auto sharpened = sharpen_target_linear(
+            target_linear, config_.capture_sharpening,
+            config_.capture_sharpening_threshold);
+        result.target_log = encode_davinci_intermediate(
+            sharpened, config_.negative_policy);
+    } else {
         StageTimer timer(timings, "fused_camera_to_dwg_di_yuv422p10");
         result.packed = pack_camera_to_dwg_di_yuv422p10(
             camera_rgb, result.color_solution, config_.exposure_offset_stops,

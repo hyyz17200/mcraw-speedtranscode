@@ -74,7 +74,21 @@ void write_sidecar(const std::filesystem::path& path,
             {"gpu_resident", pipeline.gpu_resident},
             {"upload_frames", pipeline.upload_frames},
             {"readback_frames", pipeline.readback_frames},
+            {"direct_frames", pipeline.direct_frames},
+            {"rgb_upload_bytes", pipeline.rgb_upload_bytes},
             {"video_packets", pipeline.video_packets},
+            {"queues", {
+                {"gpu_capacity", pipeline.gpu_queue_capacity},
+                {"gpu_max_depth", pipeline.gpu_queue_max_depth},
+                {"packet_capacity", pipeline.packet_queue_capacity},
+                {"packet_max_depth", pipeline.packet_queue_max_depth},
+                {"backpressure_waits", pipeline.backpressure_waits},
+                {"backpressure_wait_ms", pipeline.backpressure_wait_ms}
+            }},
+            {"mux", {
+                {"bytes", pipeline.mux_bytes},
+                {"megabytes_per_second", pipeline.mux_megabytes_per_second}
+            }},
             {"gpu", {
                 {"name", pipeline.gpu_name},
                 {"uuid", pipeline.gpu_uuid},

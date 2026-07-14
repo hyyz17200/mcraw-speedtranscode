@@ -40,7 +40,12 @@ struct CameraColorSolution {
 [[nodiscard]] TargetLinearRgbF32 camera_to_dwg(
     const CameraRgbF32& input,
     const CameraColorSolution& solution,
-    double exposure_offset_stops = 0.0);
+    double exposure_offset_stops = 0.0,
+    double input_scale = 1.0);
+
+[[nodiscard]] TargetLinearRgbF32 sharpen_target_linear(
+    const TargetLinearRgbF32& input,
+    double amount,
+    double threshold);
 
 } // namespace mcraw
-

@@ -157,7 +157,7 @@ TEST_CASE("Vulkan ProRes consumes shader-written pool frames without YUV transfe
     mcraw::FfmpegVulkanFrameContext frames(runtime, {width, height, 10});
     mcraw::VulkanRgbToYuvFrameWriter frame_writer(
         runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
-                          mcraw::GpuPrecision::fp32});
+                          mcraw::GpuPrecision::fp32, 8});
     mcraw::VulkanProResEncoder encoder(
         frames, {width, height, {1, 90'000}, {30, 1}, "hq", 8});
     std::vector<mcraw::EncodedPacket> packets;
@@ -185,6 +185,7 @@ TEST_CASE("Vulkan ProRes consumes shader-written pool frames without YUV transfe
     }
     auto tail = encoder.flush();
     std::move(tail.begin(), tail.end(), std::back_inserter(packets));
+    frame_writer.wait();
     REQUIRE(packets.size() == frame_count);
     for (std::size_t index = 0; index < packets.size(); ++index) {
         CHECK(packets[index].packet->size > 0);
@@ -197,6 +198,9 @@ TEST_CASE("Vulkan ProRes consumes shader-written pool frames without YUV transfe
     CHECK(writer_telemetry.output_frames == frame_count);
     CHECK(writer_telemetry.yuv_upload_frames == 0U);
     CHECK(writer_telemetry.yuv_readback_frames == 0U);
+    CHECK(writer_telemetry.slot_count == 8U);
+    CHECK(writer_telemetry.in_flight == 0U);
+    CHECK(writer_telemetry.max_in_flight == 8U);
     const auto encoder_telemetry = encoder.telemetry();
     CHECK(encoder_telemetry.gpu_resident);
     CHECK(encoder_telemetry.direct_frames == frame_count);

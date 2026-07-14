@@ -17,6 +17,7 @@ struct VulkanRgbToYuvConfig {
     ChromaFilter chroma_filter{ChromaFilter::quality};
     bool deterministic_dither{true};
     GpuPrecision precision{GpuPrecision::fp32};
+    std::size_t slots{1};
 };
 
 struct VulkanRgbToYuvTelemetry {
@@ -53,6 +54,11 @@ struct VulkanRgbToYuvFrameTelemetry {
     std::uint64_t output_frames{};
     std::uint64_t yuv_upload_frames{};
     std::uint64_t yuv_readback_frames{};
+    std::size_t slot_count{};
+    std::size_t in_flight{};
+    std::size_t max_in_flight{};
+    std::uint64_t backpressure_waits{};
+    double backpressure_wait_ms{};
     double last_dispatch_ms{};
 };
 
@@ -72,6 +78,7 @@ public:
     [[nodiscard]] VulkanVideoFrame pack(const TargetLogRgbF32& input,
                                         std::size_t frame_index,
                                         FrameMetadata metadata);
+    void wait();
     [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const noexcept;
 
 private:

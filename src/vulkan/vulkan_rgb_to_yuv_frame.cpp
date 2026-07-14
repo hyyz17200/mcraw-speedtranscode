@@ -100,6 +100,16 @@ public:
         VkDeviceSize size{};
     };
 
+    struct Slot {
+        std::array<Buffer, 3> input_buffers;
+        VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
+        VkCommandBuffer command_buffer{VK_NULL_HANDLE};
+        VkFence fence{VK_NULL_HANDLE};
+        std::array<VkImageView, 3> views{};
+        bool in_flight{};
+        std::chrono::steady_clock::time_point submitted_at{};
+    };
+
     Impl(VulkanRuntime& runtime_owner,
          FfmpegVulkanFrameContext& frame_owner,
          VulkanRgbToYuvConfig requested)
@@ -114,6 +124,9 @@ public:
             throw Error(ErrorCode::unsupported_format,
                         "FP16 direct frame writing is disabled until validated");
         }
+        config.slots = std::clamp<std::size_t>(config.slots, 1U, 64U);
+        slots.resize(config.slots);
+        counters.slot_count = config.slots;
         if ((frames.image_usage() & VK_IMAGE_USAGE_STORAGE_BIT) == 0U) {
             throw Error(ErrorCode::unsupported_format,
                         "FFmpeg Vulkan frame pool does not allow storage-image writes");
@@ -195,7 +208,9 @@ public:
     void create_input_buffers() {
         const auto pixels = static_cast<std::size_t>(config.width) * config.height;
         const auto bytes = frame_checked_bytes(pixels, sizeof(float));
-        for (auto& buffer : input_buffers) buffer = create_buffer(bytes);
+        for (auto& slot : slots) {
+            for (auto& buffer : slot.input_buffers) buffer = create_buffer(bytes);
+        }
     }
 
     void create_descriptor_resources() {
@@ -215,16 +230,29 @@ public:
         require_frame_vulkan(vkCreateDescriptorSetLayout(device, &info, allocator,
                                                          &descriptor_layout),
                              "create direct-frame descriptor layout");
+        const auto descriptor_count = static_cast<std::uint32_t>(config.slots * 3U);
         const std::array<VkDescriptorPoolSize, 2> sizes{{
-            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3},
-            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 3}}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, descriptor_count},
+            {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, descriptor_count}}};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool.maxSets = 1;
+        pool.maxSets = static_cast<std::uint32_t>(config.slots);
         pool.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
         pool.pPoolSizes = sizes.data();
         require_frame_vulkan(vkCreateDescriptorPool(device, &pool, allocator,
                                                     &descriptor_pool),
                              "create direct-frame descriptor pool");
+        std::vector<VkDescriptorSetLayout> layouts(config.slots, descriptor_layout);
+        std::vector<VkDescriptorSet> sets(config.slots);
+        VkDescriptorSetAllocateInfo allocation{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocation.descriptorPool = descriptor_pool;
+        allocation.descriptorSetCount = static_cast<std::uint32_t>(config.slots);
+        allocation.pSetLayouts = layouts.data();
+        require_frame_vulkan(vkAllocateDescriptorSets(device, &allocation, sets.data()),
+                             "allocate direct-frame descriptor sets");
+        for (std::size_t index = 0; index < slots.size(); ++index) {
+            slots[index].descriptor_set = sets[index];
+        }
     }
 
     void create_pipeline() {
@@ -269,26 +297,31 @@ public:
             VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         allocation.commandPool = command_pool;
         allocation.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-        allocation.commandBufferCount = 1;
-        require_frame_vulkan(vkAllocateCommandBuffers(device, &allocation, &command_buffer),
+        allocation.commandBufferCount = static_cast<std::uint32_t>(config.slots);
+        std::vector<VkCommandBuffer> commands(config.slots);
+        require_frame_vulkan(vkAllocateCommandBuffers(device, &allocation, commands.data()),
                              "allocate direct-frame command buffer");
         VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
-        require_frame_vulkan(vkCreateFence(device, &fence_info, allocator, &fence),
-                             "create direct-frame fence");
+        for (std::size_t index = 0; index < slots.size(); ++index) {
+            slots[index].command_buffer = commands[index];
+            require_frame_vulkan(vkCreateFence(device, &fence_info, allocator,
+                                               &slots[index].fence),
+                                 "create direct-frame fence");
+        }
     }
 
-    void upload(std::size_t plane, const std::vector<float>& values) {
+    void upload(Slot& slot, std::size_t plane, const std::vector<float>& values) {
         const auto bytes = frame_checked_bytes(values.size(), sizeof(float));
-        if (bytes != input_buffers[plane].size) {
+        if (bytes != slot.input_buffers[plane].size) {
             throw Error(ErrorCode::invalid_argument,
                         "RGB plane size changed during direct frame write");
         }
         void* mapped = nullptr;
-        require_frame_vulkan(vkMapMemory(device, input_buffers[plane].memory, 0,
-                                         input_buffers[plane].size, 0, &mapped),
+        require_frame_vulkan(vkMapMemory(device, slot.input_buffers[plane].memory, 0,
+                                         slot.input_buffers[plane].size, 0, &mapped),
                              "map direct-frame RGB input");
         std::memcpy(mapped, values.data(), bytes);
-        vkUnmapMemory(device, input_buffers[plane].memory);
+        vkUnmapMemory(device, slot.input_buffers[plane].memory);
         counters.rgb_upload_bytes += bytes;
     }
 
@@ -324,31 +357,22 @@ public:
         return result;
     }
 
-    VkDescriptorSet update_descriptors(const std::array<VkImageView, 3>& views) {
-        require_frame_vulkan(vkResetDescriptorPool(device, descriptor_pool, 0),
-                             "reset direct-frame descriptor pool");
-        VkDescriptorSet set = VK_NULL_HANDLE;
-        VkDescriptorSetAllocateInfo allocation{
-            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
-        allocation.descriptorPool = descriptor_pool;
-        allocation.descriptorSetCount = 1;
-        allocation.pSetLayouts = &descriptor_layout;
-        require_frame_vulkan(vkAllocateDescriptorSets(device, &allocation, &set),
-                             "allocate direct-frame descriptor set");
+    VkDescriptorSet update_descriptors(Slot& slot) {
         std::array<VkDescriptorBufferInfo, 3> buffer_info{};
         std::array<VkDescriptorImageInfo, 3> image_info{};
         std::array<VkWriteDescriptorSet, 6> writes{};
         for (std::uint32_t index = 0; index < 3U; ++index) {
-            buffer_info[index] = {input_buffers[index].buffer, 0, input_buffers[index].size};
+            buffer_info[index] = {slot.input_buffers[index].buffer, 0,
+                                  slot.input_buffers[index].size};
             writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[index].dstSet = set;
+            writes[index].dstSet = slot.descriptor_set;
             writes[index].dstBinding = index;
             writes[index].descriptorCount = 1;
             writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
             writes[index].pBufferInfo = &buffer_info[index];
-            image_info[index] = {VK_NULL_HANDLE, views[index], VK_IMAGE_LAYOUT_GENERAL};
+            image_info[index] = {VK_NULL_HANDLE, slot.views[index], VK_IMAGE_LAYOUT_GENERAL};
             writes[index + 3U].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-            writes[index + 3U].dstSet = set;
+            writes[index + 3U].dstSet = slot.descriptor_set;
             writes[index + 3U].dstBinding = index + 3U;
             writes[index + 3U].descriptorCount = 1;
             writes[index + 3U].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_IMAGE;
@@ -356,7 +380,33 @@ public:
         }
         vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
                                writes.data(), 0, nullptr);
-        return set;
+        return slot.descriptor_set;
+    }
+
+    void recycle_slot(Slot& slot, bool count_backpressure) {
+        if (!slot.in_flight) return;
+        const auto wait_start = std::chrono::steady_clock::now();
+        const auto status = vkGetFenceStatus(device, slot.fence);
+        if (status == VK_NOT_READY) {
+            if (count_backpressure) ++counters.backpressure_waits;
+            require_frame_vulkan(vkWaitForFences(device, 1, &slot.fence, VK_TRUE,
+                                                 UINT64_MAX),
+                                 "wait for direct-frame slot");
+            if (count_backpressure) {
+                counters.backpressure_wait_ms += std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - wait_start).count();
+            }
+        } else {
+            require_frame_vulkan(status, "query direct-frame slot fence");
+        }
+        counters.last_dispatch_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - slot.submitted_at).count();
+        for (auto& view : slot.views) {
+            if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, allocator);
+            view = VK_NULL_HANDLE;
+        }
+        slot.in_flight = false;
+        if (counters.in_flight > 0U) --counters.in_flight;
     }
 
     VulkanVideoFrame pack(const TargetLogRgbF32& input,
@@ -369,7 +419,12 @@ public:
             throw Error(ErrorCode::invalid_argument,
                         "direct Vulkan frame dimensions do not match RGB input");
         }
-        for (std::size_t plane = 0; plane < 3; ++plane) upload(plane, input.planes[plane]);
+        auto& slot = slots[next_slot];
+        next_slot = (next_slot + 1U) % slots.size();
+        recycle_slot(slot, true);
+        for (std::size_t plane = 0; plane < 3; ++plane) {
+            upload(slot, plane, input.planes[plane]);
+        }
         auto output = frames.allocate_frame(metadata);
         auto* frame = reinterpret_cast<AVVkFrame*>(output.frame->data[0]);
         auto* hw_frames = reinterpret_cast<AVHWFramesContext*>(
@@ -381,9 +436,10 @@ public:
             throw Error(ErrorCode::processing_failed,
                         "FFmpeg Vulkan frame lacks images or frame locks");
         }
-        const auto views = create_views(*frame, image_count);
-        const auto descriptor_set = update_descriptors(views);
+        slot.views = create_views(*frame, image_count);
+        const auto descriptor_set = update_descriptors(slot);
         bool frame_locked = false;
+        bool submitted = false;
         try {
             vk_frames->lock_frame(hw_frames, frame);
             frame_locked = true;
@@ -413,31 +469,31 @@ public:
                 wait_values[image] = frame->sem_value[image];
                 signal_values[image] = frame->sem_value[image] + 1U;
             }
-            require_frame_vulkan(vkResetFences(device, 1, &fence),
+            require_frame_vulkan(vkResetFences(device, 1, &slot.fence),
                                  "reset direct-frame fence");
-            require_frame_vulkan(vkResetCommandBuffer(command_buffer, 0),
+            require_frame_vulkan(vkResetCommandBuffer(slot.command_buffer, 0),
                                  "reset direct-frame command buffer");
             VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-            require_frame_vulkan(vkBeginCommandBuffer(command_buffer, &begin),
+            require_frame_vulkan(vkBeginCommandBuffer(slot.command_buffer, &begin),
                                  "begin direct-frame command buffer");
-            vkCmdPipelineBarrier(command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+            vkCmdPipelineBarrier(slot.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
                                  0, nullptr, static_cast<std::uint32_t>(image_count),
                                  barriers.data());
-            vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-            vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+            vkCmdBindPipeline(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+            vkCmdBindDescriptorSets(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                     pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
             const FramePushConstants push{
                 config.width, config.height,
                 config.chroma_filter == ChromaFilter::quality ? 1U : 0U,
                 config.deterministic_dither ? 1U : 0U,
                 static_cast<std::uint64_t>(frame_index)};
-            vkCmdPushConstants(command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
+            vkCmdPushConstants(slot.command_buffer, pipeline_layout, VK_SHADER_STAGE_COMPUTE_BIT,
                                0, sizeof(push), &push);
             const auto pairs = config.width / 2U;
-            vkCmdDispatch(command_buffer, (pairs + 63U) / 64U, config.height, 1);
-            require_frame_vulkan(vkEndCommandBuffer(command_buffer),
+            vkCmdDispatch(slot.command_buffer, (pairs + 63U) / 64U, config.height, 1);
+            require_frame_vulkan(vkEndCommandBuffer(slot.command_buffer),
                                  "end direct-frame command buffer");
             VkTimelineSemaphoreSubmitInfo timeline{
                 VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO};
@@ -451,16 +507,21 @@ public:
             submit.pWaitSemaphores = frame->sem;
             submit.pWaitDstStageMask = wait_stages.data();
             submit.commandBufferCount = 1;
-            submit.pCommandBuffers = &command_buffer;
+            submit.pCommandBuffers = &slot.command_buffer;
             submit.signalSemaphoreCount = static_cast<std::uint32_t>(image_count);
             submit.pSignalSemaphores = frame->sem;
-            const auto start = std::chrono::steady_clock::now();
+            slot.submitted_at = std::chrono::steady_clock::now();
             // VkQueue is externally synchronized. Use the FFmpeg device's
             // queue mutex so its encoder submissions cannot race this one.
             lock_ffmpeg_queue(*vulkan_device, hw_device, queue_family);
-            const auto submit_result = vkQueueSubmit(queue, 1, &submit, fence);
+            const auto submit_result = vkQueueSubmit(queue, 1, &submit, slot.fence);
             unlock_ffmpeg_queue(*vulkan_device, hw_device, queue_family);
             require_frame_vulkan(submit_result, "submit direct-frame compute");
+            submitted = true;
+            slot.in_flight = true;
+            ++counters.in_flight;
+            counters.max_in_flight = std::max(counters.max_in_flight,
+                                              counters.in_flight);
             for (std::size_t image = 0; image < image_count; ++image) {
                 frame->layout[image] = VK_IMAGE_LAYOUT_GENERAL;
                 frame->access[image] = VK_ACCESS_SHADER_WRITE_BIT;
@@ -471,24 +532,43 @@ public:
             }
             vk_frames->unlock_frame(hw_frames, frame);
             frame_locked = false;
-            require_frame_vulkan(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
-                                 "wait for direct-frame compute");
-            counters.last_dispatch_ms = std::chrono::duration<double, std::milli>(
-                std::chrono::steady_clock::now() - start).count();
             ++counters.dispatches;
             ++counters.output_frames;
         } catch (...) {
             if (frame_locked) vk_frames->unlock_frame(hw_frames, frame);
-            for (auto view : views) vkDestroyImageView(device, view, allocator);
+            if (submitted) {
+                vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX);
+                slot.in_flight = false;
+                if (counters.in_flight > 0U) --counters.in_flight;
+            }
+            for (auto& view : slot.views) {
+                if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, allocator);
+                view = VK_NULL_HANDLE;
+            }
             throw;
         }
-        for (auto view : views) vkDestroyImageView(device, view, allocator);
         return output;
+    }
+
+    void wait() {
+        for (auto& slot : slots) recycle_slot(slot, false);
     }
 
     void cleanup() noexcept {
         if (device == VK_NULL_HANDLE) return;
-        if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, allocator);
+        try {
+            wait();
+        } catch (...) {
+            // Destructors cannot surface device-lost. Resource teardown below
+            // remains best-effort; the owning runtime reports operational
+            // errors through pack()/wait() during normal shutdown.
+        }
+        for (auto& slot : slots) {
+            for (auto& view : slot.views) {
+                if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, allocator);
+            }
+            if (slot.fence != VK_NULL_HANDLE) vkDestroyFence(device, slot.fence, allocator);
+        }
         if (command_pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, command_pool, allocator);
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, allocator);
         if (pipeline_layout != VK_NULL_HANDLE) {
@@ -500,10 +580,16 @@ public:
         if (descriptor_layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, descriptor_layout, allocator);
         }
-        for (auto& buffer : input_buffers) {
-            if (buffer.buffer != VK_NULL_HANDLE) vkDestroyBuffer(device, buffer.buffer, allocator);
-            if (buffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, buffer.memory, allocator);
-            buffer = {};
+        for (auto& slot : slots) {
+            for (auto& buffer : slot.input_buffers) {
+                if (buffer.buffer != VK_NULL_HANDLE) {
+                    vkDestroyBuffer(device, buffer.buffer, allocator);
+                }
+                if (buffer.memory != VK_NULL_HANDLE) {
+                    vkFreeMemory(device, buffer.memory, allocator);
+                }
+                buffer = {};
+            }
         }
     }
 
@@ -517,14 +603,13 @@ public:
     const VkAllocationCallbacks* allocator{};
     VkQueue queue{VK_NULL_HANDLE};
     std::uint32_t queue_family{};
-    std::array<Buffer, 3> input_buffers;
+    std::vector<Slot> slots;
+    std::size_t next_slot{};
     VkDescriptorSetLayout descriptor_layout{VK_NULL_HANDLE};
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
     VkPipelineLayout pipeline_layout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
     VkCommandPool command_pool{VK_NULL_HANDLE};
-    VkCommandBuffer command_buffer{VK_NULL_HANDLE};
-    VkFence fence{VK_NULL_HANDLE};
     VulkanRgbToYuvFrameTelemetry counters;
 };
 
@@ -543,6 +628,7 @@ VulkanVideoFrame VulkanRgbToYuvFrameWriter::pack(const TargetLogRgbF32& input,
                                                  FrameMetadata metadata) {
     return impl_->pack(input, frame_index, metadata);
 }
+void VulkanRgbToYuvFrameWriter::wait() { impl_->wait(); }
 VulkanRgbToYuvFrameTelemetry VulkanRgbToYuvFrameWriter::telemetry() const noexcept {
     return impl_->counters;
 }

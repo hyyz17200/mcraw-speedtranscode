@@ -281,11 +281,16 @@ CameraColorSolution build_camera_color_solution(const NormalizedCameraMetadata& 
 
 TargetLinearRgbF32 camera_to_dwg(const CameraRgbF32& input,
                                  const CameraColorSolution& solution,
-                                 double exposure_offset_stops) {
+                                 double exposure_offset_stops,
+                                 double input_scale) {
     input.validate();
+    if (!std::isfinite(input_scale) || input_scale <= 0.0) {
+        throw Error(ErrorCode::invalid_argument,
+                    "camera RGB input scale must be finite and positive");
+    }
     TargetLinearRgbF32 output{input.width, input.height, {}};
     for (auto& plane : output.planes) plane.resize(input.planes[0].size());
-    const double exposure = std::exp2(exposure_offset_stops);
+    const double exposure = std::exp2(exposure_offset_stops) * input_scale;
     for (std::size_t i = 0; i < input.planes[0].size(); ++i) {
         const auto transformed = solution.camera_to_target * std::array<double, 3>{
             input.planes[0][i], input.planes[1][i], input.planes[2][i]
@@ -294,6 +299,45 @@ TargetLinearRgbF32 camera_to_dwg(const CameraRgbF32& input,
             output.planes[channel][i] = static_cast<float>(transformed[channel] * exposure);
         }
     }
+    return output;
+}
+
+TargetLinearRgbF32 sharpen_target_linear(const TargetLinearRgbF32& input,
+                                         double amount,
+                                         double threshold) {
+    input.validate();
+    if (!std::isfinite(amount) || amount < 0.0 ||
+        !std::isfinite(threshold) || threshold < 0.0) {
+        throw Error(ErrorCode::invalid_argument,
+                    "target-linear sharpening parameters must be finite and non-negative");
+    }
+    if (amount <= 0.0) return input;
+    TargetLinearRgbF32 output = input;
+    constexpr double kr = 0.2627;
+    constexpr double kb = 0.0593;
+    constexpr double kg = 1.0 - kr - kb;
+    const auto luma_at = [&](std::uint32_t x, std::uint32_t y) {
+        const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+        return kr * input.planes[0][pixel] + kg * input.planes[1][pixel] +
+               kb * input.planes[2][pixel];
+    };
+    for (std::uint32_t y = 0; y < input.height; ++y) {
+        for (std::uint32_t x = 0; x < input.width; ++x) {
+            const auto left = x == 0U ? 0U : x - 1U;
+            const auto right = std::min(x + 1U, input.width - 1U);
+            const auto up = y == 0U ? 0U : y - 1U;
+            const auto down = std::min(y + 1U, input.height - 1U);
+            const double detail = luma_at(x, y) - 0.25 * (
+                luma_at(left, y) + luma_at(right, y) +
+                luma_at(x, up) + luma_at(x, down));
+            if (std::abs(detail) <= threshold) continue;
+            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
+            const float delta = static_cast<float>(amount * std::copysign(
+                std::abs(detail) - threshold, detail));
+            for (auto& plane : output.planes) plane[pixel] += delta;
+        }
+    }
+    output.validate();
     return output;
 }
 

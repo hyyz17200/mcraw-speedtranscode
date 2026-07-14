@@ -110,3 +110,44 @@ TEST_CASE("capture sharpening increases luma edge contrast without adding chroma
     for (const auto value : sharpened.image.cb) REQUIRE(value == 512);
     for (const auto value : sharpened.image.cr) REQUIRE(value == 512);
 }
+
+TEST_CASE("split TargetLog RGB path preserves fused color and sharpening codes") {
+    mcraw::CameraRgbF32 camera{16, 8, {}};
+    for (std::size_t channel = 0; channel < camera.planes.size(); ++channel) {
+        camera.planes[channel].resize(128);
+        for (std::size_t pixel = 0; pixel < 128; ++pixel) {
+            camera.planes[channel][pixel] = static_cast<float>(
+                1'000U + (pixel * (channel + 7U) * 271U) % 60'000U);
+        }
+    }
+    mcraw::CameraColorSolution solution;
+    solution.camera_to_target = mcraw::Matrix3d{{
+        1.1, -0.1, 0.02, -0.03, 1.04, -0.01, 0.01, -0.08, 1.07
+    }};
+    constexpr double exposure = 0.25;
+    constexpr double sharpening = 0.4;
+    constexpr double threshold = 0.002;
+    const auto linear = mcraw::camera_to_dwg(
+        camera, solution, exposure, 1.0 / 65535.0);
+    const auto sharpened = mcraw::sharpen_target_linear(
+        linear, sharpening, threshold);
+    const auto target_log = mcraw::encode_davinci_intermediate(
+        sharpened, mcraw::NegativePolicy::preserve_by_curve);
+    const auto split = mcraw::pack_dwg_log_to_yuv422p10(
+        target_log, mcraw::ChromaFilter::quality, true, 27);
+    const mcraw::DaVinciIntermediateLut curve;
+    const auto fused = mcraw::pack_camera_to_dwg_di_yuv422p10(
+        camera, solution, exposure, mcraw::NegativePolicy::preserve_by_curve,
+        curve, mcraw::ChromaFilter::quality, true, 27, 4,
+        sharpening, threshold, 1.0 / 65535.0);
+    const auto compare = [](const auto& expected, const auto& actual) {
+        REQUIRE(expected.size() == actual.size());
+        for (std::size_t index = 0; index < expected.size(); ++index) {
+            CHECK(std::abs(static_cast<int>(expected[index]) -
+                           static_cast<int>(actual[index])) <= 1);
+        }
+    };
+    compare(fused.image.y, split.image.y);
+    compare(fused.image.cb, split.image.cb);
+    compare(fused.image.cr, split.image.cr);
+}

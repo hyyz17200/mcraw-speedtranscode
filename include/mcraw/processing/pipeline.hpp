@@ -17,11 +17,14 @@ struct ProcessedFrame {
     NormalizedCameraMetadata metadata;
     CameraColorSolution color_solution;
     PackedYuvResult packed;
+    TargetLogRgbF32 target_log;
 };
 
 class CpuPipeline {
 public:
-    explicit CpuPipeline(EffectiveConfig config, std::size_t worker_threads = 1);
+    explicit CpuPipeline(EffectiveConfig config,
+                         std::size_t worker_threads = 1,
+                         bool output_target_log = false);
     [[nodiscard]] ProcessedFrame process(
         const McrawReader& reader,
         std::size_t frame_index,
@@ -30,6 +33,7 @@ public:
 private:
     EffectiveConfig config_;
     std::size_t worker_threads_{1};
+    bool output_target_log_{};
     DaVinciIntermediateLut di_curve_;
 };
 

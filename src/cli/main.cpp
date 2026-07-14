@@ -260,40 +260,6 @@ std::uint64_t fnv1a(const void* input, std::size_t size) {
     return hash;
 }
 
-mcraw::TargetLinearRgbF32 sharpen_target_linear_reference(
-    const mcraw::TargetLinearRgbF32& input,
-    double amount,
-    double threshold) {
-    if (amount <= 0.0) return input;
-    mcraw::TargetLinearRgbF32 output = input;
-    constexpr double kr = 0.2627;
-    constexpr double kb = 0.0593;
-    constexpr double kg = 1.0 - kr - kb;
-    const auto luma_at = [&](std::uint32_t x, std::uint32_t y) {
-        const auto pixel = static_cast<std::size_t>(y) * input.width + x;
-        return kr * input.planes[0][pixel] + kg * input.planes[1][pixel] +
-               kb * input.planes[2][pixel];
-    };
-    for (std::uint32_t y = 0; y < input.height; ++y) {
-        for (std::uint32_t x = 0; x < input.width; ++x) {
-            const auto left = x == 0U ? 0U : x - 1U;
-            const auto right = std::min(x + 1U, input.width - 1U);
-            const auto up = y == 0U ? 0U : y - 1U;
-            const auto down = std::min(y + 1U, input.height - 1U);
-            const double detail = luma_at(x, y) - 0.25 * (
-                luma_at(left, y) + luma_at(right, y) +
-                luma_at(x, up) + luma_at(x, down));
-            if (std::abs(detail) <= threshold) continue;
-            const auto pixel = static_cast<std::size_t>(y) * input.width + x;
-            const float delta = static_cast<float>(amount * std::copysign(
-                std::abs(detail) - threshold, detail));
-            for (auto& plane : output.planes) plane[pixel] += delta;
-        }
-    }
-    output.validate();
-    return output;
-}
-
 int command_inspect(const Arguments& args) {
     mcraw::McrawReader reader(std::filesystem::path(std::string(args.at(2))));
     std::cout << inspect_document(reader, args.flag("--raw-json")).dump(2) << '\n';
@@ -517,7 +483,7 @@ int command_validate(const Arguments& args) {
                                              execution.threads_per_frame);
         const auto unsharpened_target_linear = mcraw::camera_to_dwg(
             camera, solution, config.exposure_offset_stops);
-        const auto target_linear = sharpen_target_linear_reference(
+        const auto target_linear = mcraw::sharpen_target_linear(
             unsharpened_target_linear, config.capture_sharpening,
             config.capture_sharpening_threshold);
         const auto target_log = mcraw::encode_davinci_intermediate(
@@ -727,7 +693,9 @@ int command_convert(const Arguments& args) {
     std::error_code remove_error;
     std::filesystem::remove(partial, remove_error);
     mcraw::StageTimings timings;
-    mcraw::CpuPipeline pipeline(config, execution.threads_per_frame);
+    const bool direct_vulkan_pipeline = backend.backend == mcraw::VideoBackend::vulkan;
+    mcraw::CpuPipeline pipeline(config, execution.threads_per_frame,
+                                direct_vulkan_pipeline);
     auto first_solution = mcraw::build_camera_color_solution(first_metadata);
     const auto sync_report = av_sync_report(audio_chunks, audio.sample_rate, audio.channels,
         reader.frames().front().timestamp_ns, video_end_ns);
@@ -742,7 +710,10 @@ int command_convert(const Arguments& args) {
                                        static_cast<int>(execution.encode_threads_per_context)},
                                    mcraw::FfmpegVideoBackendConfig{
                                        backend.backend, config.gpu_selector,
-                                       config.async_depth, args.flag("--validation")});
+                                       config.async_depth, args.flag("--validation"),
+                                       config.chroma_filter,
+                                       config.deterministic_dither,
+                                       config.precision});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -762,7 +733,13 @@ int command_convert(const Arguments& args) {
                 // measures submission plus any backpressure wait, not the
                 // encode itself, which overlaps with frame compute.
                 mcraw::StageTimer timer(timings, "prores_submit_wait");
-                writer.write_video(std::move(processed.packed.image), processed.timestamp_ns);
+                if (direct_vulkan_pipeline) {
+                    writer.write_video(std::move(processed.target_log),
+                                       processed.timestamp_ns, frames_completed);
+                } else {
+                    writer.write_video(std::move(processed.packed.image),
+                                       processed.timestamp_ns);
+                }
             }
             if (frames_completed == 0U) first_solution = processed.color_solution;
             ++frames_completed;
@@ -797,7 +774,13 @@ int command_convert(const Arguments& args) {
         config.async_depth, backend.used_fallback, backend.reason,
         writer_telemetry.gpu_resident,
         writer_telemetry.upload_frames, writer_telemetry.readback_frames,
-        writer_telemetry.video_packets, writer_telemetry.gpu_name,
+        writer_telemetry.direct_frames, writer_telemetry.rgb_upload_bytes,
+        writer_telemetry.video_packets,
+        writer_telemetry.gpu_queue_capacity, writer_telemetry.gpu_queue_max_depth,
+        writer_telemetry.packet_queue_capacity, writer_telemetry.packet_queue_max_depth,
+        writer_telemetry.backpressure_waits, writer_telemetry.backpressure_wait_ms,
+        writer_telemetry.mux_bytes, writer_telemetry.mux_megabytes_per_second,
+        writer_telemetry.gpu_name,
         writer_telemetry.gpu_uuid, writer_telemetry.gpu_driver,
         capabilities.ffmpeg_version, capabilities.ffmpeg_configuration};
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
@@ -816,7 +799,13 @@ int command_convert(const Arguments& args) {
                                     {"gpu_resident", pipeline_report.gpu_resident},
                                     {"upload_frames", pipeline_report.upload_frames},
                                     {"readback_frames", pipeline_report.readback_frames},
+                                    {"direct_frames", pipeline_report.direct_frames},
+                                    {"rgb_upload_bytes", pipeline_report.rgb_upload_bytes},
                                     {"video_packets", pipeline_report.video_packets},
+                                    {"gpu_queue_max_depth", pipeline_report.gpu_queue_max_depth},
+                                    {"packet_queue_max_depth", pipeline_report.packet_queue_max_depth},
+                                    {"backpressure_waits", pipeline_report.backpressure_waits},
+                                    {"mux_megabytes_per_second", pipeline_report.mux_megabytes_per_second},
                                     {"gpu_name", pipeline_report.gpu_name},
                                     {"gpu_uuid", pipeline_report.gpu_uuid}
                                 }},

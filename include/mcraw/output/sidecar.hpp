@@ -29,7 +29,17 @@ struct PipelineBackendReport {
     bool gpu_resident{};
     std::uint64_t upload_frames{};
     std::uint64_t readback_frames{};
+    std::uint64_t direct_frames{};
+    std::uint64_t rgb_upload_bytes{};
     std::uint64_t video_packets{};
+    std::size_t gpu_queue_capacity{};
+    std::size_t gpu_queue_max_depth{};
+    std::size_t packet_queue_capacity{};
+    std::size_t packet_queue_max_depth{};
+    std::uint64_t backpressure_waits{};
+    double backpressure_wait_ms{};
+    std::uint64_t mux_bytes{};
+    double mux_megabytes_per_second{};
     std::string gpu_name;
     std::string gpu_uuid;
     std::string gpu_driver;
