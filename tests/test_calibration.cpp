@@ -27,5 +27,9 @@ TEST_CASE("black and white calibration preserves negative values and super-white
     REQUIRE(output.pixels[1] == Catch::Approx(0.0));
     REQUIRE(output.pixels[2] == Catch::Approx(0.5));
     REQUIRE(output.pixels[3] == Catch::Approx(1.5));
-}
 
+    const auto demosaic = mcraw::calibrate_raw_for_demosaic(input, metadata);
+    for (std::size_t i = 0; i < output.pixels.size(); ++i) {
+        REQUIRE(demosaic.pixels[i] == output.pixels[i] * 65535.0F);
+    }
+}

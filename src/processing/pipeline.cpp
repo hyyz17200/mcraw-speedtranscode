@@ -21,7 +21,7 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
     result.timestamp_ns = reader.frames().at(frame_index).timestamp_ns;
     CameraRgbF32 camera_rgb;
     {
-        RawNormalizedF32 normalized;
+        RawDemosaicF32 calibrated;
         DecodedRawFrame decoded;
         {
             StageTimer timer(timings, "official_raw_decode_and_metadata");
@@ -30,11 +30,12 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         result.metadata = std::move(decoded.metadata);
         {
             StageTimer timer(timings, "black_white_calibration");
-            normalized = calibrate_raw(decoded.raw, result.metadata, worker_threads_);
+            calibrated = calibrate_raw_for_demosaic(
+                decoded.raw, result.metadata, worker_threads_);
         }
         {
             StageTimer timer(timings, "demosaic");
-            camera_rgb = demosaic(normalized, config_.demosaic, worker_threads_);
+            camera_rgb = demosaic(calibrated, config_.demosaic, worker_threads_);
         }
     }
     {

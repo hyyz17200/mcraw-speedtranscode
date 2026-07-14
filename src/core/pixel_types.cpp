@@ -76,6 +76,12 @@ void RawNormalizedF32::validate() const {
     }
 }
 
+void RawDemosaicF32::validate() const {
+    if (pixels.size() != checked_pixels(width, height)) {
+        throw Error(ErrorCode::invalid_argument, "RawDemosaicF32 buffer size does not match dimensions");
+    }
+}
+
 void PlanarRgbF32::validate() const {
     const auto count = checked_pixels(width, height);
     for (const auto& plane : planes) {
@@ -97,4 +103,3 @@ void Yuv422P10::validate() const {
 }
 
 } // namespace mcraw
-

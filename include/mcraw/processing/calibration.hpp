@@ -10,4 +10,9 @@ namespace mcraw {
     const NormalizedCameraMetadata& metadata,
     std::size_t worker_threads = 1);
 
+[[nodiscard]] RawDemosaicF32 calibrate_raw_for_demosaic(
+    const RawMosaicU16& input,
+    const NormalizedCameraMetadata& metadata,
+    std::size_t worker_threads = 1);
+
 } // namespace mcraw

@@ -39,6 +39,18 @@ struct RawNormalizedF32 {
     void validate() const;
 };
 
+// RAW samples already converted to librtprocess' documented 0..65535 working
+// scale. Keeping this distinct from RawNormalizedF32 prevents accidental use
+// at color-processing boundaries that expect normalized camera values.
+struct RawDemosaicF32 {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    CfaPattern cfa{CfaPattern::rggb};
+    std::vector<float> pixels;
+
+    void validate() const;
+};
+
 struct PlanarRgbF32 {
     std::uint32_t width{};
     std::uint32_t height{};
@@ -63,4 +75,3 @@ struct Yuv422P10 {
 };
 
 } // namespace mcraw
-

@@ -36,39 +36,31 @@ std::vector<const float*> const_row_pointers(const std::vector<float>& values,
     return rows;
 }
 
-} // namespace
-
-CameraRgbF32 demosaic(const RawNormalizedF32& input,
-                      DemosaicAlgorithm algorithm,
-                      std::size_t worker_threads) {
-    input.validate();
+CameraRgbF32 demosaic_scaled_buffer(std::uint32_t width,
+                                   std::uint32_t height,
+                                   CfaPattern cfa_pattern,
+                                   const std::vector<float>& scaled_input,
+                                   DemosaicAlgorithm algorithm,
+                                   std::size_t worker_threads) {
 #if !MCRAW_HAS_RTPROCESS
     static_cast<void>(algorithm);
     throw Error(ErrorCode::unsupported_format, "this build has no librtprocess support");
 #else
-    if (input.width < 32U || input.height < 32U) {
+    if (width < 32U || height < 32U) {
         throw Error(ErrorCode::invalid_argument, "high-quality demosaic requires at least a 32x32 frame");
     }
-    CameraRgbF32 output{input.width, input.height, {}};
-    const auto count = static_cast<std::size_t>(input.width) * input.height;
+    CameraRgbF32 output{width, height, {}};
+    const auto count = static_cast<std::size_t>(width) * height;
     for (auto& plane : output.planes) plane.resize(count);
 
-    // librtprocess documents a 0..65535 float working scale. Values outside the
-    // nominal range are deliberately not clipped, so negative and super-white
-    // samples remain available to algorithms that can propagate them.
-    std::vector<float> scaled_input(input.pixels.size());
     const int thread_count = static_cast<int>(std::max<std::size_t>(1U, worker_threads));
-#pragma omp parallel for schedule(static) num_threads(thread_count)
-    for (std::int64_t i = 0; i < static_cast<std::int64_t>(input.pixels.size()); ++i) {
-        scaled_input[static_cast<std::size_t>(i)] = input.pixels[static_cast<std::size_t>(i)] * 65535.0F;
-    }
-    auto raw_rows = const_row_pointers(scaled_input, input.width, input.height);
-    auto red_rows = row_pointers(output.planes[0], input.width, input.height);
-    auto green_rows = row_pointers(output.planes[1], input.width, input.height);
-    auto blue_rows = row_pointers(output.planes[2], input.width, input.height);
+    auto raw_rows = const_row_pointers(scaled_input, width, height);
+    auto red_rows = row_pointers(output.planes[0], width, height);
+    auto green_rows = row_pointers(output.planes[1], width, height);
+    auto blue_rows = row_pointers(output.planes[2], width, height);
     unsigned cfa[2][2] = {
-        {cfa_color(input.cfa, 0, 0), cfa_color(input.cfa, 1, 0)},
-        {cfa_color(input.cfa, 0, 1), cfa_color(input.cfa, 1, 1)}
+        {cfa_color(cfa_pattern, 0, 0), cfa_color(cfa_pattern, 1, 0)},
+        {cfa_color(cfa_pattern, 0, 1), cfa_color(cfa_pattern, 1, 1)}
     };
     const std::function<bool(double)> progress = [](double) { return false; };
     rpError status = RP_NO_ERROR;
@@ -77,28 +69,28 @@ CameraRgbF32 demosaic(const RawNormalizedF32& input,
 #endif
     switch (algorithm) {
     case DemosaicAlgorithm::rcd:
-        status = rcd_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+        status = rcd_demosaic(static_cast<int>(width), static_cast<int>(height),
                               raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                               cfa, progress, 2U, false, true);
         break;
     case DemosaicAlgorithm::amaze:
-        status = amaze_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
-                                0, 0, static_cast<int>(input.width), static_cast<int>(input.height),
+        status = amaze_demosaic(static_cast<int>(width), static_cast<int>(height),
+                                0, 0, static_cast<int>(width), static_cast<int>(height),
                                 raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                                 cfa, progress, 1.0, 16, 65535.0F, 65535.0F, 2U, false);
         break;
     case DemosaicAlgorithm::igv:
-        status = igv_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+        status = igv_demosaic(static_cast<int>(width), static_cast<int>(height),
                               raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                               cfa, progress);
         break;
     case DemosaicAlgorithm::dcb:
-        status = dcb_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+        status = dcb_demosaic(static_cast<int>(width), static_cast<int>(height),
                               raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                               cfa, progress, 2, false);
         break;
     case DemosaicAlgorithm::lmmse:
-        status = lmmse_demosaic(static_cast<int>(input.width), static_cast<int>(input.height),
+        status = lmmse_demosaic(static_cast<int>(width), static_cast<int>(height),
                                 raw_rows.data(), red_rows.data(), green_rows.data(), blue_rows.data(),
                                 cfa, progress, 2);
         break;
@@ -116,6 +108,33 @@ CameraRgbF32 demosaic(const RawNormalizedF32& input,
     output.validate();
     return output;
 #endif
+}
+
+} // namespace
+
+CameraRgbF32 demosaic(const RawNormalizedF32& input,
+                      DemosaicAlgorithm algorithm,
+                      std::size_t worker_threads) {
+    input.validate();
+    // Public normalized input remains supported. The production pipeline uses
+    // RawDemosaicF32 and avoids this extra full-frame conversion pass.
+    std::vector<float> scaled_input(input.pixels.size());
+    const int thread_count = static_cast<int>(std::max<std::size_t>(1U, worker_threads));
+#pragma omp parallel for schedule(static) num_threads(thread_count)
+    for (std::int64_t i = 0; i < static_cast<std::int64_t>(input.pixels.size()); ++i) {
+        scaled_input[static_cast<std::size_t>(i)] =
+            input.pixels[static_cast<std::size_t>(i)] * 65535.0F;
+    }
+    return demosaic_scaled_buffer(input.width, input.height, input.cfa,
+                                  scaled_input, algorithm, worker_threads);
+}
+
+CameraRgbF32 demosaic(const RawDemosaicF32& input,
+                      DemosaicAlgorithm algorithm,
+                      std::size_t worker_threads) {
+    input.validate();
+    return demosaic_scaled_buffer(input.width, input.height, input.cfa,
+                                  input.pixels, algorithm, worker_threads);
 }
 
 } // namespace mcraw

@@ -10,4 +10,9 @@ namespace mcraw {
     DemosaicAlgorithm algorithm,
     std::size_t worker_threads = 1);
 
+[[nodiscard]] CameraRgbF32 demosaic(
+    const RawDemosaicF32& input,
+    DemosaicAlgorithm algorithm,
+    std::size_t worker_threads = 1);
+
 } // namespace mcraw
