@@ -44,6 +44,7 @@
 #include <mcraw/output/ffmpeg_writer.hpp>
 #endif
 #if MCRAW_HAS_VULKAN
+#include <mcraw/output/ffmpeg_vulkan_context.hpp>
 #include <mcraw/vulkan/vulkan_runtime.hpp>
 #endif
 
@@ -334,12 +335,30 @@ nlohmann::json vulkan_runtime_report() {
             devices.push_back(vulkan_device_json(device));
         }
         mcraw::VulkanRuntime runtime;
+        nlohmann::json frame_context;
+        try {
+            mcraw::FfmpegVulkanFrameContext frames(runtime, {64, 32, 4});
+            mcraw::FrameMetadata metadata;
+            metadata.width = 64;
+            metadata.height = 32;
+            metadata.time_base = {1, 90'000};
+            auto frame = frames.allocate_frame(metadata);
+            const auto allocation = frames.inspect_frame(*frame.frame);
+            frame_context = {
+                {"available", true}, {"software_format", "yuv422p10le"},
+                {"pool_size", frames.pool_size()}, {"image_count", allocation.image_count},
+                {"image_formats", allocation.formats}, {"image_usage", frames.image_usage()}
+            };
+        } catch (const std::exception& error) {
+            frame_context = {{"available", false}, {"reason", error.what()}};
+        }
         return {
             {"available", true}, {"selected", vulkan_device_json(runtime.device())},
             {"compute_queue_family", runtime.compute_queue_family()},
             {"compute_queue_count", runtime.compute_queue_count()},
             {"instance_extensions", runtime.instance_extensions()},
             {"device_extensions", runtime.device_extensions()},
+            {"frame_context", std::move(frame_context)},
             {"devices", std::move(devices)}
         };
     } catch (const std::exception& error) {

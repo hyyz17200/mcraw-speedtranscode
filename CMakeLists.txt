@@ -175,7 +175,10 @@ if(MCRAW_ENABLE_FFMPEG)
 endif()
 
 if(MCRAW_ENABLE_VULKAN)
-  target_sources(mcraw_core PRIVATE src/vulkan/vulkan_runtime.cpp)
+  target_sources(mcraw_core PRIVATE
+    src/output/ffmpeg_vulkan_context.cpp
+    src/vulkan/vulkan_runtime.cpp
+  )
   target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
 endif()
 
@@ -207,7 +210,10 @@ if(MCRAW_BUILD_TESTS)
     target_sources(mcraw_tests PRIVATE tests/test_video_encoder.cpp)
   endif()
   if(MCRAW_ENABLE_VULKAN)
-    target_sources(mcraw_tests PRIVATE tests/test_vulkan_runtime.cpp)
+    target_sources(mcraw_tests PRIVATE
+      tests/test_ffmpeg_vulkan_context.cpp
+      tests/test_vulkan_runtime.cpp
+    )
   endif()
   target_link_libraries(mcraw_tests PRIVATE mcraw_core Catch2::Catch2WithMain)
   include(Catch)
