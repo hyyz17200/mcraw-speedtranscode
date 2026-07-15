@@ -964,6 +964,11 @@ int command_convert(const Arguments& args) {
     pipeline_report.queue_submit_total_ms = writer_telemetry.queue_submit_total_ms;
     pipeline_report.queue_submit_mean_ms = writer_telemetry.queue_submit_mean_ms;
     pipeline_report.queue_submit_max_ms = writer_telemetry.queue_submit_max_ms;
+    pipeline_report.resident_slot_count = writer_telemetry.resident_slot_count;
+    pipeline_report.prepared_frame_queue_capacity =
+        writer_telemetry.prepared_frame_queue_capacity;
+    pipeline_report.prepared_frame_queue_max_depth =
+        writer_telemetry.prepared_frame_queue_max_depth;
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
@@ -1006,6 +1011,8 @@ int command_convert(const Arguments& args) {
                                     {"job_queue_backpressure_wait_ms", pipeline_report.job_queue_backpressure_wait_ms},
                                     {"slot_backpressure_waits", pipeline_report.slot_backpressure_waits},
                                     {"slot_backpressure_wait_ms", pipeline_report.slot_backpressure_wait_ms},
+                                    {"resident_slot_count", pipeline_report.resident_slot_count},
+                                    {"prepared_frame_queue_max_depth", pipeline_report.prepared_frame_queue_max_depth},
                                     {"frame_pack_mean_ms", pipeline_report.frame_pack_mean_ms},
                                     {"encoder_send_mean_ms", pipeline_report.encoder_send_mean_ms},
                                     {"encoder_receive_mean_ms", pipeline_report.encoder_receive_mean_ms},

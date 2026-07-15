@@ -130,6 +130,9 @@ struct FfmpegWriterTelemetry {
     double queue_submit_total_ms{};
     double queue_submit_mean_ms{};
     double queue_submit_max_ms{};
+    std::size_t resident_slot_count{};
+    std::size_t prepared_frame_queue_capacity{};
+    std::size_t prepared_frame_queue_max_depth{};
 };
 
 // A semantic wrapper is required because CameraRgbF32 and TargetLogRgbF32

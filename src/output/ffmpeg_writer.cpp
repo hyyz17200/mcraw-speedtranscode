@@ -132,11 +132,19 @@ public:
         video_backend = backend_config.backend;
         if (video_backend == VideoBackend::vulkan) {
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
-            const auto slot_count = std::clamp<std::size_t>(backend_config.async_depth, 1U, 32U);
-            const auto pool_size = std::clamp<std::size_t>(slot_count * 2U + 4U, 8U, 64U);
-            vulkan_job_capacity = std::clamp<std::size_t>(slot_count + 2U, 4U, 64U);
+            const auto encoder_depth = std::clamp<std::size_t>(
+                backend_config.async_depth, 1U, 32U);
+            // Preparation now overlaps encoder submission. Two resident slots
+            // cover that producer/consumer overlap without replicating the two
+            // full-resolution FP32 ping sets for every encoder-delay frame.
+            const auto slot_count = std::min<std::size_t>(encoder_depth, 2U);
+            const auto pool_size = std::clamp<std::size_t>(
+                encoder_depth * 2U + 4U, 8U, 64U);
+            vulkan_job_capacity = std::clamp<std::size_t>(
+                encoder_depth + 2U, 4U, 64U);
             vulkan_frame_capacity = slot_count;
-            vulkan_packet_capacity = std::clamp<std::size_t>(slot_count * 2U, 8U, 128U);
+            vulkan_packet_capacity = std::clamp<std::size_t>(
+                encoder_depth * 2U, 8U, 128U);
             vulkan_runtime = std::make_unique<VulkanRuntime>(VulkanRuntimeConfig{
                 backend_config.gpu_selector, backend_config.enable_validation});
             vulkan_frames = std::make_unique<FfmpegVulkanFrameContext>(
@@ -514,6 +522,7 @@ public:
                 result.queue_submit_total_ms = frame_counters.queue_submit_total_ms;
                 result.queue_submit_mean_ms = frame_counters.queue_submit_mean_ms;
                 result.queue_submit_max_ms = frame_counters.queue_submit_max_ms;
+                result.resident_slot_count = frame_counters.slot_count;
                 result.gpu_timestamps_supported =
                     frame_counters.gpu_timestamps_supported;
                 result.rgb_to_yuv_gpu_timestamp_samples =
@@ -582,6 +591,8 @@ public:
             result.gpu_queue_max_depth = vulkan_job_max_depth;
             result.packet_queue_capacity = vulkan_packet_capacity;
             result.packet_queue_max_depth = vulkan_packet_max_depth;
+            result.prepared_frame_queue_capacity = vulkan_frame_capacity;
+            result.prepared_frame_queue_max_depth = vulkan_frame_max_depth;
             result.job_queue_latency_samples = vulkan_job_queue_latency_samples;
             result.job_queue_latency_total_ms = vulkan_job_queue_latency_total_ms;
             result.job_queue_latency_mean_ms = vulkan_job_queue_latency_mean_ms;

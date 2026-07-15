@@ -234,6 +234,11 @@ TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
     CHECK(telemetry.gpu_queue_capacity >= 4U);
     CHECK(telemetry.gpu_queue_max_depth > 0U);
     CHECK(telemetry.gpu_queue_max_depth <= telemetry.gpu_queue_capacity);
+    CHECK(telemetry.resident_slot_count == 2U);
+    CHECK(telemetry.prepared_frame_queue_capacity == 2U);
+    CHECK(telemetry.prepared_frame_queue_max_depth > 0U);
+    CHECK(telemetry.prepared_frame_queue_max_depth <=
+          telemetry.prepared_frame_queue_capacity);
     CHECK(telemetry.packet_queue_capacity >= 8U);
     CHECK(telemetry.packet_queue_max_depth > 0U);
     CHECK(telemetry.packet_queue_max_depth <= telemetry.packet_queue_capacity);
@@ -307,6 +312,8 @@ TEST_CASE("Vulkan Camera RGB resident chain writes a decodable MOV") {
     CHECK(telemetry.rgb_to_yuv_gpu_timestamp_samples == 1U);
     CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t));
     CHECK(telemetry.control_status_failures == 0U);
+    CHECK(telemetry.resident_slot_count == 2U);
+    CHECK(telemetry.prepared_frame_queue_capacity == 2U);
     CHECK(telemetry.job_queue_latency_samples == 1U);
     CHECK(telemetry.frame_pack_samples == 1U);
     CHECK(telemetry.encoder_send_samples == 1U);
