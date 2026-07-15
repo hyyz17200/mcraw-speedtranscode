@@ -408,6 +408,104 @@ TEST_CASE("Vulkan resident Camera RGB chain matches real Stage 0 final YUV frame
     CHECK(telemetry.control_status_failures == 0U);
 }
 
+TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames") {
+    const char* sample_path = std::getenv("MCRAW_STAGE2_REAL_SAMPLE");
+    if (sample_path == nullptr || *sample_path == '\0') {
+        SKIP("set MCRAW_STAGE2_REAL_SAMPLE to run the Stage 2E final YUV golden");
+    }
+    constexpr std::uint32_t width = 4096;
+    constexpr std::uint32_t height = 3072;
+    constexpr double sharpening = 0.4;
+    constexpr double threshold = 0.002;
+    constexpr std::array<std::size_t, 3> frame_indices{0, 120, 239};
+
+    mcraw::McrawReader reader{std::filesystem::path(sample_path)};
+    REQUIRE(reader.frames().size() > frame_indices.back());
+    mcraw::VulkanRuntime runtime;
+    mcraw::FfmpegVulkanFrameContext frames(
+        runtime, {static_cast<int>(width), static_cast<int>(height), 4});
+    mcraw::VulkanRgbToYuvFrameWriter writer(
+        runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
+                          mcraw::GpuPrecision::fp32, 1});
+    const mcraw::DaVinciIntermediateLut curve;
+
+    for (const auto frame_index : frame_indices) {
+        const auto decoded = reader.load_reference_frame_with_metadata(frame_index);
+        const auto calibrated = mcraw::calibrate_raw_for_demosaic(
+            decoded.raw, decoded.metadata, 16);
+        const auto camera = mcraw::demosaic_unnormalized(
+            calibrated, mcraw::DemosaicAlgorithm::rcd, 16);
+        const auto solution = mcraw::build_camera_color_solution(decoded.metadata);
+        const auto reference = mcraw::pack_camera_to_dwg_di_yuv422p10(
+            camera, solution, 0.0, mcraw::NegativePolicy::preserve_by_curve,
+            curve, mcraw::ChromaFilter::quality, true, frame_index, 16,
+            sharpening, threshold, 1.0 / 65535.0).image;
+        mcraw::FrameMetadata metadata;
+        metadata.width = width;
+        metadata.height = height;
+        metadata.pts = static_cast<std::int64_t>(frame_index) * 3'000;
+        metadata.duration = 3'000;
+        metadata.time_base = {1, 90'000};
+        metadata.range = AVCOL_RANGE_MPEG;
+        metadata.matrix = AVCOL_SPC_BT2020_NCL;
+        auto output = writer.pack_raw_mosaic(
+            decoded.raw, decoded.metadata, solution.camera_to_target, 0.0,
+            sharpening, threshold, mcraw::NegativePolicy::preserve_by_curve,
+            frame_index, metadata);
+        auto software = mcraw::make_av_frame();
+        software->format = AV_PIX_FMT_YUV422P10LE;
+        software->width = width;
+        software->height = height;
+        mcraw::require_ffmpeg(av_frame_get_buffer(software.get(), 32),
+                              "allocate real Stage 2 final YUV readback");
+        mcraw::require_ffmpeg(
+            av_hwframe_transfer_data(software.get(), output.frame.get(), 0),
+            "read back real Stage 2 final YUV");
+
+        const auto maximum_error = [&](int plane,
+                                       const std::vector<std::uint16_t>& expected,
+                                       std::uint32_t plane_width) {
+            std::uint16_t maximum = 0;
+            std::size_t offset = 0;
+            for (std::uint32_t row = 0; row < height; ++row) {
+                const auto* actual = reinterpret_cast<const std::uint16_t*>(
+                    software->data[plane] + row * software->linesize[plane]);
+                for (std::uint32_t x = 0; x < plane_width; ++x, ++offset) {
+                    const auto error = static_cast<std::uint16_t>(std::abs(
+                        static_cast<int>(expected[offset]) -
+                        static_cast<int>(actual[x])));
+                    maximum = std::max(maximum, error);
+                }
+            }
+            return maximum;
+        };
+        const auto y_error = maximum_error(0, reference.y, width);
+        const auto cb_error = maximum_error(1, reference.cb, width / 2U);
+        const auto cr_error = maximum_error(2, reference.cr, width / 2U);
+        INFO("frame=" << frame_index << " Y/Cb/Cr max=" << y_error << "/"
+                      << cb_error << "/" << cr_error);
+        CHECK(y_error <= 1U);
+        CHECK(cb_error <= 1U);
+        CHECK(cr_error <= 1U);
+        writer.wait();
+    }
+
+    const auto telemetry = writer.telemetry();
+    const auto pixels = static_cast<std::uint64_t>(width) * height;
+    CHECK(telemetry.u16_raw_upload_bytes ==
+          pixels * sizeof(std::uint16_t) * frame_indices.size());
+    CHECK(telemetry.rgb_upload_bytes == 0U);
+    CHECK(telemetry.raw_calibration_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.rcd_demosaic_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.camera_to_dwg_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.capture_sharpening_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.davinci_intermediate_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.gpu_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.control_status_read_bytes ==
+          sizeof(std::uint32_t) * frame_indices.size());
+    CHECK(telemetry.control_status_failures == 0U);
+}
+
 TEST_CASE("Vulkan RGB-to-YUV packs the 4K sample dimensions") {
     if (std::getenv("MCRAW_VULKAN_4K_TEST") == nullptr) {
         SKIP("set MCRAW_VULKAN_4K_TEST=1 for the high-memory 4K dispatch");
