@@ -47,6 +47,15 @@ public:
         return low_segment_.size();
     }
 
+    // Stage 1D uploads the two immutable tables once into a pipeline-owned
+    // Vulkan buffer. The spans remain owned by this cache.
+    [[nodiscard]] inline const std::vector<float>& low_segment() const noexcept {
+        return low_segment_;
+    }
+    [[nodiscard]] inline const std::vector<float>& high_segment() const noexcept {
+        return high_segment_;
+    }
+
 private:
     // The per-sample hot path avoids divisions, size loads, and std::lerp
     // edge-case branches: segment scales are precomputed and the clamped

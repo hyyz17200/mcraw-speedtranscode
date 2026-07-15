@@ -1,6 +1,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdlib>
 #include <filesystem>
@@ -11,6 +12,7 @@
 #include <mcraw/processing/calibration.hpp>
 #include <mcraw/processing/color.hpp>
 #include <mcraw/processing/demosaic.hpp>
+#include <mcraw/processing/log_curve.hpp>
 #include <mcraw/vulkan/vulkan_camera_pipeline_resources.hpp>
 
 namespace {
@@ -216,6 +218,108 @@ TEST_CASE("Vulkan TargetLinear sharpening rejects invalid parameters") {
                     mcraw::Error);
 }
 
+TEST_CASE("Vulkan DaVinci Intermediate matches LUT boundaries and policies") {
+    constexpr std::uint32_t width = 16;
+    constexpr std::uint32_t height = 2;
+    constexpr std::array<float, 16> values{
+        -0.25F, -0.001F, 0.0F, 0.001F, 0.00262409F, 0.0027F,
+        0.01F, 0.18F, 0.999F, 1.0F, 1.001F, 12.5F, 99.999F,
+        100.0F, 100.001F, 150.0F};
+    mcraw::CameraRgbF32 camera{width, height, {}};
+    for (std::size_t channel = 0; channel < camera.planes.size(); ++channel) {
+        auto& plane = camera.planes[channel];
+        plane.resize(static_cast<std::size_t>(width) * height);
+        for (std::size_t pixel = 0; pixel < plane.size(); ++pixel) {
+            plane[pixel] = values[(pixel + channel * 3U) % values.size()];
+        }
+    }
+    mcraw::CameraColorSolution solution;
+    solution.camera_to_target = mcraw::Matrix3d::identity();
+    const mcraw::DaVinciIntermediateLut curve;
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(
+        runtime, {width, height, 2, true});
+
+    for (const auto policy : {mcraw::NegativePolicy::preserve_by_curve,
+                              mcraw::NegativePolicy::clamp_zero}) {
+        auto expected = mcraw::camera_to_dwg(camera, solution, 0.0, 1.0, 1);
+        expected = mcraw::sharpen_target_linear(std::move(expected), 0.0, 0.002, 1);
+        const auto expected_log = mcraw::encode_davinci_intermediate_lut(
+            std::move(expected), policy, curve, 1);
+        const auto actual = resources.camera_to_dwg_sharpen_di_for_test(
+            camera, solution.camera_to_target, 0.0, 0.0, 0.002,
+            policy, 1.0);
+        const auto repeated = resources.camera_to_dwg_sharpen_di_for_test(
+            camera, solution.camera_to_target, 0.0, 0.0, 0.002,
+            policy, 1.0);
+        const auto error = compare_rgb(expected_log, actual);
+        INFO("DI max abs=" << error.maximum << ", rmse=" << error.rmse);
+        CHECK(error.maximum <= 3.0e-5);
+        CHECK(error.rmse <= 2.0e-6);
+        CHECK(repeated.planes == actual.planes);
+    }
+    const auto telemetry = resources.telemetry();
+    CHECK(telemetry.davinci_intermediate_timestamp_samples == 4U);
+    CHECK(telemetry.davinci_intermediate_last_gpu_ms > 0.0);
+    CHECK(telemetry.control_status_read_bytes == 4U * sizeof(std::uint32_t));
+    CHECK(telemetry.control_status_failures == 0U);
+    CHECK(telemetry.davinci_lut_capacity_bytes == 2U * 65'536U * sizeof(float));
+}
+
+TEST_CASE("Vulkan DaVinci Intermediate handles the one-pixel boundary") {
+    mcraw::CameraRgbF32 camera{1, 1, {}};
+    camera.planes[0] = {-0.01F};
+    camera.planes[1] = {0.00262409F};
+    camera.planes[2] = {150.0F};
+    mcraw::CameraColorSolution solution;
+    solution.camera_to_target = mcraw::Matrix3d::identity();
+    auto expected = mcraw::camera_to_dwg(camera, solution, 0.0, 1.0, 1);
+    const mcraw::DaVinciIntermediateLut curve;
+    const auto expected_log = mcraw::encode_davinci_intermediate_lut(
+        std::move(expected), mcraw::NegativePolicy::preserve_by_curve,
+        curve, 1);
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(runtime, {1, 1, 1, true});
+    const auto actual = resources.camera_to_dwg_sharpen_di_for_test(
+        camera, solution.camera_to_target, 0.0, 0.0, 0.002,
+        mcraw::NegativePolicy::preserve_by_curve, 1.0);
+    const auto error = compare_rgb(expected_log, actual);
+    CHECK(error.maximum <= 3.0e-5);
+    CHECK(error.rmse <= 2.0e-6);
+}
+
+TEST_CASE("Vulkan DaVinci Intermediate reports negative-policy failure") {
+    auto camera = camera_pattern(8, 4, 0.0F);
+    camera.planes[1][3] = -0.25F;
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(runtime, {8, 4, 1, true});
+    CHECK_THROWS_AS(resources.camera_to_dwg_sharpen_di_for_test(
+                        camera, mcraw::Matrix3d::identity(), 0.0,
+                        0.0, 0.002, mcraw::NegativePolicy::error, 1.0),
+                    mcraw::Error);
+    const auto telemetry = resources.telemetry();
+    CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t));
+    CHECK(telemetry.control_status_failures == 1U);
+}
+
+TEST_CASE("Vulkan DaVinci Intermediate reports shader non-finite failure") {
+    mcraw::CameraRgbF32 camera{8, 4, {}};
+    for (auto& plane : camera.planes) {
+        plane.assign(32U, std::numeric_limits<float>::max());
+    }
+    auto matrix = mcraw::Matrix3d::identity();
+    matrix.v[0] = 2.0;
+    matrix.v[4] = 2.0;
+    matrix.v[8] = 2.0;
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(runtime, {8, 4, 1, true});
+    CHECK_THROWS_AS(resources.camera_to_dwg_sharpen_di_for_test(
+                        camera, matrix, 0.0, 0.0, 0.002,
+                        mcraw::NegativePolicy::preserve_by_curve, 1.0),
+                    mcraw::Error);
+    CHECK(resources.telemetry().control_status_failures == 1U);
+}
+
 TEST_CASE("Vulkan Camera RGB color pass matches a real Stage 0 frame") {
     const char* sample_path = std::getenv("MCRAW_STAGE1_REAL_SAMPLE");
     if (sample_path == nullptr || *sample_path == '\0') {
@@ -281,4 +385,45 @@ TEST_CASE("Vulkan TargetLinear sharpening matches a real Stage 0 frame") {
     CHECK(telemetry.camera_to_dwg_timestamp_samples == 1U);
     CHECK(telemetry.capture_sharpening_timestamp_samples == 1U);
     CHECK(telemetry.capture_sharpening_last_gpu_ms > 0.0);
+}
+
+TEST_CASE("Vulkan DaVinci Intermediate matches a real Stage 0 frame") {
+    const char* sample_path = std::getenv("MCRAW_STAGE1_REAL_SAMPLE");
+    if (sample_path == nullptr || *sample_path == '\0') {
+        SKIP("set MCRAW_STAGE1_REAL_SAMPLE to run the 4K Stage 1D golden");
+    }
+    mcraw::McrawReader reader{std::filesystem::path(sample_path)};
+    const auto decoded = reader.load_reference_frame_with_metadata(0);
+    const auto calibrated = mcraw::calibrate_raw_for_demosaic(
+        decoded.raw, decoded.metadata, 16);
+    const auto camera = mcraw::demosaic_unnormalized(
+        calibrated, mcraw::DemosaicAlgorithm::rcd, 16);
+    const auto solution = mcraw::build_camera_color_solution(decoded.metadata);
+    constexpr double input_scale = 1.0 / 65535.0;
+    constexpr double amount = 0.4;
+    constexpr double threshold = 0.002;
+    auto expected = mcraw::camera_to_dwg(
+        camera, solution, 0.0, input_scale, 16);
+    expected = mcraw::sharpen_target_linear(
+        std::move(expected), amount, threshold, 16);
+    const mcraw::DaVinciIntermediateLut curve;
+    const auto expected_log = mcraw::encode_davinci_intermediate_lut(
+        std::move(expected), mcraw::NegativePolicy::preserve_by_curve,
+        curve, 16);
+    const bool validation = std::getenv("MCRAW_VULKAN_VALIDATION") != nullptr;
+    mcraw::VulkanRuntime runtime({"auto", validation});
+    mcraw::VulkanCameraPipelineResources resources(
+        runtime, {camera.width, camera.height, 1, true});
+    const auto actual = resources.camera_to_dwg_sharpen_di_for_test(
+        camera, solution.camera_to_target, 0.0, amount, threshold,
+        mcraw::NegativePolicy::preserve_by_curve, input_scale);
+    const auto error = compare_rgb(expected_log, actual);
+    const auto telemetry = resources.telemetry();
+    INFO("real DI max abs=" << error.maximum << ", rmse=" << error.rmse);
+    INFO("real DI GPU ms=" << telemetry.davinci_intermediate_last_gpu_ms);
+    CHECK(error.maximum <= 3.0e-5);
+    CHECK(error.rmse <= 2.0e-6);
+    CHECK(telemetry.davinci_intermediate_timestamp_samples == 1U);
+    CHECK(telemetry.davinci_intermediate_last_gpu_ms > 0.0);
+    CHECK(telemetry.control_status_failures == 0U);
 }

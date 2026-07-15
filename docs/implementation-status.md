@@ -124,3 +124,20 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
   单样本为 `4.3264 ms`，仅作为 shader 验证数据，不作为性能承诺。
 - 本批次仍不切换 production writer；详细报告见
   `GPU_STAGE1C_SHARPENING_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 1D DaVinci Intermediate
+
+- 新增独立 `davinci_intermediate.comp.glsl` FP32 precise pass，从 sharpened
+  ping B 读取并在明确 barrier 后复用 ping A 写入 TargetLog。
+- 现有两段各 65,536-entry FP32 LUT 通过 staging 一次性上传到 524,288-byte
+  pipeline-owned device-local buffer，由所有 slot 共享；高于 100 的值仍走 analytic DI。
+- `preserve_by_curve`、`clamp_zero`、`error` 策略 ABI 已冻结；每 slot 独立
+  4-byte status word 检测 error-policy negative 和 shader-created non-finite，
+  只在 fence signal 后读取并以 `processing_failed` 终止。
+- LUT boundary synthetic golden max/RMSE 为 `1.19209e-7 / 2.98023e-8`；
+  真实 4096×3072 Stage 0 首帧为 `5.96046e-8 / 1.17004e-8`，均通过
+  `3e-5 / 2e-6` 门槛；1x1、重复确定性和两类 fault injection 也已通过。
+- DI pass 已有独立 GPU timestamp summary；validation-enabled 4K 单样本为
+  `3.48774 ms`，仅作为 shader 验证数据，不作为性能承诺。
+- 本批次仍不切换 production writer；详细报告见
+  `GPU_STAGE1D_DAVINCI_INTERMEDIATE_VALIDATION.md`。
