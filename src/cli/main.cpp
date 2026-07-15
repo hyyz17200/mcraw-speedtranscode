@@ -763,7 +763,8 @@ int command_convert(const Arguments& args) {
                                        config.async_depth, args.flag("--validation"),
                                        config.chroma_filter,
                                        config.deterministic_dither,
-                                       config.precision});
+                                       config.precision,
+                                       config.gpu_performance_mode});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -861,6 +862,12 @@ int command_convert(const Arguments& args) {
         writer_telemetry.color_solution_location,
         writer_telemetry.target_log_fp32_upload_bytes,
         writer_telemetry.camera_rgb_fp32_upload_bytes};
+    pipeline_report.performance_mode = writer_telemetry.performance_mode;
+    pipeline_report.intermediate_storage = writer_telemetry.intermediate_storage;
+    pipeline_report.di_implementation = writer_telemetry.di_implementation;
+    pipeline_report.dither_mode = writer_telemetry.dither_mode;
+    pipeline_report.demosaic_implementation =
+        writer_telemetry.demosaic_implementation;
     pipeline_report.camera_to_dwg_gpu_timestamp_samples =
         writer_telemetry.camera_to_dwg_gpu_timestamp_samples;
     pipeline_report.camera_to_dwg_gpu_total_ms =
@@ -1015,6 +1022,11 @@ int command_convert(const Arguments& args) {
                                     {"precision", pipeline_report.pipeline_precision},
                                     {"demosaic_location", pipeline_report.demosaic_location},
                                     {"color_solution_location", pipeline_report.color_solution_location},
+                                    {"performance_mode", pipeline_report.performance_mode},
+                                    {"intermediate_storage", pipeline_report.intermediate_storage},
+                                    {"di_implementation", pipeline_report.di_implementation},
+                                    {"dither_mode", pipeline_report.dither_mode},
+                                    {"demosaic_implementation", pipeline_report.demosaic_implementation},
                                     {"requested_backend", pipeline_report.requested_backend},
                                     {"async_depth", pipeline_report.async_depth},
                                     {"used_fallback", pipeline_report.used_fallback},

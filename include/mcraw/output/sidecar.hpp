@@ -65,6 +65,11 @@ struct PipelineBackendReport {
     std::string color_solution_location{"not_applicable"};
     std::uint64_t target_log_fp32_upload_bytes{};
     std::uint64_t camera_rgb_fp32_upload_bytes{};
+    std::string performance_mode{"not_applicable"};
+    std::string intermediate_storage{"not_applicable"};
+    std::string di_implementation{"not_applicable"};
+    std::string dither_mode{"not_applicable"};
+    std::string demosaic_implementation{"not_applicable"};
     std::uint64_t camera_to_dwg_gpu_timestamp_samples{};
     double camera_to_dwg_gpu_total_ms{};
     double camera_to_dwg_gpu_mean_ms{};

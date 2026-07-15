@@ -62,6 +62,15 @@ GpuPrecision parse_enum(std::string_view value) {
     throw Error(ErrorCode::invalid_argument, "unknown GPU precision: " + std::string(value));
 }
 
+template <>
+GpuPerformanceMode parse_enum(std::string_view value) {
+    if (value == "precise") return GpuPerformanceMode::precise;
+    if (value == "balanced") return GpuPerformanceMode::balanced;
+    if (value == "fast") return GpuPerformanceMode::fast;
+    throw Error(ErrorCode::invalid_argument,
+                "unknown GPU performance mode: " + std::string(value));
+}
+
 } // namespace
 
 void EffectiveConfig::validate() const {
@@ -118,7 +127,7 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
         "preserve_source_timestamps", "preserve_audio", "max_frames",
         "cpu_threads", "max_parallel_frames",
         "target_profile", "prores_profile", "backend", "gpu_selector",
-        "async_depth", "fallback", "precision"
+        "async_depth", "fallback", "precision", "gpu_performance_mode"
     };
     for (const auto& [key, ignored] : value.items()) {
         static_cast<void>(ignored);
@@ -151,6 +160,9 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
         "fallback", std::string(to_string(config.fallback))));
     config.precision = parse_enum<GpuPrecision>(value.value(
         "precision", std::string(to_string(config.precision))));
+    config.gpu_performance_mode = parse_enum<GpuPerformanceMode>(value.value(
+        "gpu_performance_mode",
+        std::string(to_string(config.gpu_performance_mode))));
     config.validate();
     return config;
 }
@@ -178,6 +190,7 @@ nlohmann::json config_to_json(const EffectiveConfig& config) {
         {"async_depth", config.async_depth},
         {"fallback", to_string(config.fallback)},
         {"precision", to_string(config.precision)},
+        {"gpu_performance_mode", to_string(config.gpu_performance_mode)},
         {"packing", {
             {"pixel_format", "yuv422p10le"},
             {"range", "video"},
@@ -236,6 +249,15 @@ std::string_view to_string(GpuPrecision value) noexcept {
     switch (value) {
     case GpuPrecision::fp32: return "fp32";
     case GpuPrecision::fp16: return "fp16";
+    }
+    return "unknown";
+}
+
+std::string_view to_string(GpuPerformanceMode value) noexcept {
+    switch (value) {
+    case GpuPerformanceMode::precise: return "precise";
+    case GpuPerformanceMode::balanced: return "balanced";
+    case GpuPerformanceMode::fast: return "fast";
     }
     return "unknown";
 }

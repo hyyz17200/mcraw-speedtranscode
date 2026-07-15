@@ -91,6 +91,8 @@ public:
          VideoEncodeConcurrency video_concurrency,
          FfmpegVideoBackendConfig backend_config)
         : origin_ns(timeline_origin_ns), output_path(output) {
+        performance_mode = backend_config.performance_mode;
+        deterministic_dither = backend_config.deterministic_dither;
         if (width == 0 || height == 0 || (width & 1U) != 0U) {
             throw Error(ErrorCode::invalid_argument, "invalid ProRes frame dimensions");
         }
@@ -486,19 +488,26 @@ public:
         FfmpegWriterTelemetry result;
         result.video_packets = video_packet_count.load();
         result.pipeline_entry = pipeline_entry;
+        result.performance_mode = std::string(to_string(performance_mode));
+        result.intermediate_storage = "fp32";
+        result.di_implementation = "fp32_lut";
+        result.dither_mode = deterministic_dither ? "deterministic" : "disabled";
         if (pipeline_entry == "target_log_f32" ||
             pipeline_entry == "camera_rgb_f32") {
             result.pipeline_precision = "fp32/precise";
             result.demosaic_location = "cpu";
+            result.demosaic_implementation = "cpu_configured";
             result.color_solution_location = "cpu_fp64";
         } else if (pipeline_entry == "raw_mosaic_u16") {
             result.pipeline_precision = "fp32/precise";
             result.demosaic_location = "gpu_rcd_precise";
+            result.demosaic_implementation = "gpu_rcd_precise";
             result.color_solution_location = "cpu_fp64";
         } else if (pipeline_entry == "yuv422p10_cpu" ||
                    pipeline_entry == "yuv422p10_cpu_upload") {
             result.pipeline_precision = "cpu_reference";
             result.demosaic_location = "cpu";
+            result.demosaic_implementation = "cpu_configured";
             result.color_solution_location = "cpu_fp64";
         }
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
@@ -1272,6 +1281,8 @@ private:
 public:
     std::int64_t origin_ns{};
     std::filesystem::path output_path;
+    GpuPerformanceMode performance_mode{GpuPerformanceMode::precise};
+    bool deterministic_dither{true};
     AVFormatContext* format{};
     std::vector<AVCodecContext*> video_codecs;
     AVCodecContext* audio_codec{};

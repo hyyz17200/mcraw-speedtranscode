@@ -30,6 +30,7 @@ struct FfmpegVideoBackendConfig {
     ChromaFilter chroma_filter{ChromaFilter::quality};
     bool deterministic_dither{true};
     GpuPrecision precision{GpuPrecision::fp32};
+    GpuPerformanceMode performance_mode{GpuPerformanceMode::precise};
 };
 
 struct FfmpegWriterTelemetry {
@@ -111,6 +112,11 @@ struct FfmpegWriterTelemetry {
     std::string pipeline_precision{"not_applicable"};
     std::string demosaic_location{"not_applicable"};
     std::string color_solution_location{"not_applicable"};
+    std::string performance_mode{"not_applicable"};
+    std::string intermediate_storage{"not_applicable"};
+    std::string di_implementation{"not_applicable"};
+    std::string dither_mode{"not_applicable"};
+    std::string demosaic_implementation{"not_applicable"};
     std::uint64_t target_log_fp32_upload_bytes{};
     std::uint64_t camera_rgb_fp32_upload_bytes{};
     std::uint64_t job_queue_backpressure_waits{};

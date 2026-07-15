@@ -16,6 +16,7 @@ enum class ChromaFilter { fast, quality };
 enum class VideoBackend { automatic, cpu, vulkan };
 enum class GpuFallback { prores_ks, none };
 enum class GpuPrecision { fp32, fp16 };
+enum class GpuPerformanceMode { precise, balanced, fast };
 
 struct EffectiveConfig {
     std::uint32_t schema_version{1};
@@ -42,6 +43,7 @@ struct EffectiveConfig {
     std::size_t async_depth{8};
     GpuFallback fallback{GpuFallback::prores_ks};
     GpuPrecision precision{GpuPrecision::fp32};
+    GpuPerformanceMode gpu_performance_mode{GpuPerformanceMode::precise};
 
     void validate() const;
 };
@@ -54,5 +56,6 @@ struct EffectiveConfig {
 [[nodiscard]] std::string_view to_string(VideoBackend value) noexcept;
 [[nodiscard]] std::string_view to_string(GpuFallback value) noexcept;
 [[nodiscard]] std::string_view to_string(GpuPrecision value) noexcept;
+[[nodiscard]] std::string_view to_string(GpuPerformanceMode value) noexcept;
 
 } // namespace mcraw

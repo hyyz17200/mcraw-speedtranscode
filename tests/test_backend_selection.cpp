@@ -72,6 +72,15 @@ TEST_CASE("GPU backend configuration is serialized without changing CPU defaults
     CHECK(json.at("async_depth") == 8);
     CHECK(json.at("fallback") == "prores_ks");
     CHECK(json.at("precision") == "fp32");
+    CHECK(json.at("gpu_performance_mode") == "precise");
+}
+
+TEST_CASE("GPU performance modes have stable serialized identities") {
+    mcraw::EffectiveConfig config;
+    config.gpu_performance_mode = mcraw::GpuPerformanceMode::balanced;
+    CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "balanced");
+    config.gpu_performance_mode = mcraw::GpuPerformanceMode::fast;
+    CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "fast");
 }
 
 TEST_CASE("device loss has a stable machine-readable error taxonomy") {

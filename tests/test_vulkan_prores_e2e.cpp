@@ -359,7 +359,10 @@ TEST_CASE("Vulkan U16 RAW resident chain writes a decodable MOV") {
     TemporaryMov output{std::filesystem::temp_directory_path() /
                         ("mcraw-vulkan-raw-stage2d-" + std::to_string(unique) + ".mov")};
     mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
-                               {}, {mcraw::VideoBackend::vulkan, "auto", 4, false});
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 4, false,
+                                    mcraw::ChromaFilter::quality, true,
+                                    mcraw::GpuPrecision::fp32,
+                                    mcraw::GpuPerformanceMode::balanced});
     for (std::size_t index = 0; index < frame_count; ++index) {
         writer.write_video(test_raw_frame(width, height, static_cast<int>(index)),
                            1'000'000'000LL + static_cast<std::int64_t>(index) * 33'333'333LL,
@@ -371,6 +374,11 @@ TEST_CASE("Vulkan U16 RAW resident chain writes a decodable MOV") {
     CHECK(telemetry.pipeline_precision == "fp32/precise");
     CHECK(telemetry.demosaic_location == "gpu_rcd_precise");
     CHECK(telemetry.color_solution_location == "cpu_fp64");
+    CHECK(telemetry.performance_mode == "balanced");
+    CHECK(telemetry.intermediate_storage == "fp32");
+    CHECK(telemetry.di_implementation == "fp32_lut");
+    CHECK(telemetry.dither_mode == "deterministic");
+    CHECK(telemetry.demosaic_implementation == "gpu_rcd_precise");
     CHECK(telemetry.u16_raw_upload_bytes ==
           static_cast<std::uint64_t>(width) * height * sizeof(std::uint16_t) * frame_count);
     CHECK(telemetry.rgb_upload_bytes == 0U);
