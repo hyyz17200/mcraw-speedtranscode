@@ -37,7 +37,11 @@ $sampleSpec = @($contract.real_samples)[0]
 $samplePath = Resolve-RepoPath $sampleSpec.path
 $configPath = Resolve-RepoPath $contract.production_config
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
-$moviePath = Join-Path $outputPath "stage0-vulkan.mov"
+$moviePath = Join-Path $outputPath $(if ($ValidateStage2Raw) {
+    "stage2-vulkan.mov"
+} else {
+    "stage0-vulkan.mov"
+})
 $benchmarkLabel = if ($ValidateStage2Raw) { "Stage 2" } else { "Stage 0" }
 $logicalProcessors = [Environment]::ProcessorCount
 $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
@@ -194,6 +198,12 @@ $wall = [double[]]@($official | ForEach-Object { $_.result.wall_ms })
 $gpuMean = [double[]]@($official | ForEach-Object {
     $_.result.pipeline.gpu_stages.rgb_to_yuv_422.mean_ms
 })
+$rawCalibrationMean = [double[]]@($official | ForEach-Object {
+    $_.result.pipeline.gpu_stages.raw_calibration.mean_ms
+})
+$rcdDemosaicMean = [double[]]@($official | ForEach-Object {
+    $_.result.pipeline.gpu_stages.rcd_demosaic.mean_ms
+})
 $ffprobe = Get-Command ffprobe -ErrorAction SilentlyContinue
 $ffprobeReport = $null
 if ($null -ne $ffprobe) {
@@ -234,6 +244,16 @@ $report = [ordered]@{
             min_run_mean = ($gpuMean | Measure-Object -Minimum).Minimum
             max_run_mean = ($gpuMean | Measure-Object -Maximum).Maximum
         }
+        raw_calibration_gpu_ms = if ($ValidateStage2Raw) { [ordered]@{
+            median_of_run_means = Get-Median $rawCalibrationMean
+            min_run_mean = ($rawCalibrationMean | Measure-Object -Minimum).Minimum
+            max_run_mean = ($rawCalibrationMean | Measure-Object -Maximum).Maximum
+        }} else { $null }
+        rcd_demosaic_gpu_ms = if ($ValidateStage2Raw) { [ordered]@{
+            median_of_run_means = Get-Median $rcdDemosaicMean
+            min_run_mean = ($rcdDemosaicMean | Measure-Object -Minimum).Minimum
+            max_run_mean = ($rcdDemosaicMean | Measure-Object -Maximum).Maximum
+        }} else { $null }
     }
     output = [ordered]@{
         file = [System.IO.Path]::GetFileName($moviePath)

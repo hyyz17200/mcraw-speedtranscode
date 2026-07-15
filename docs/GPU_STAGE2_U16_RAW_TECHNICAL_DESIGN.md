@@ -187,6 +187,11 @@ be committed independently and leave a clean worktree before the next point.
 
 ## 10. Stage 2 decision
 
+Stage 2 was accepted on 2026-07-15. The clean Stage 2E candidate reached a
+37.747 fps median, improved 173.710% over accepted Stage 1G, passed the real
+frame final-YUV one-LSB gate, and satisfied all resident transfer/accounting
+invariants. See `GPU_STAGE2E_E2E_BENCHMARK.md` for the matched evidence.
+
 Run one warm-up and at least three matched full conversions for accepted Stage 1
 and Stage 2. Stage 2 is accepted when all numeric/E2E/failure/accounting gates
 pass and the complete sample shows repeatable improvement over Stage 1. The

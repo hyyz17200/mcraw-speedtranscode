@@ -244,3 +244,18 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - validation-layer RAW E2E 33 assertions、backend selection 4 assertions、Release
   CTest 71/71 全通过（6 个既有 real-sample opt-in tests skipped）。详细结果见
   `GPU_STAGE2D_RESIDENT_CHAIN_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 2E acceptance and Batch C closure
+
+- real sample frames 0/120/239 的 final Y/Cb/Cr max error 全部为 `1 LSB`；普通与
+  Vulkan validation-layer 两种运行均通过，Stage 2 real test 共 20 assertions。
+- clean `867c0b1` 完整 240-frame warm-up + 3 official runs 中位数 `37.747 fps`
+  （37.530-37.935），相对 accepted Stage 1G 提升 `173.710%`，并同时超过 24 fps
+  minimum 与 30 fps extended target。
+- 每次 official run 精确上传 6,039,797,760 U16 bytes、0 FP32 RGB、0 YUV readback，
+  六段 GPU stage 均 240 timestamps，status read 960 bytes、failure 0。
+- 最终 MOV 包含 240 ProRes HQ `yuv422p10le` + 377 PCM stereo packets，完整 FFmpeg
+  decode 无错误，A/V offsets 与 Stage 1 保持一致。
+- Release CTest 72/72 通过（7 个 real/high-memory opt-in skips）。Batch C 正式 GO，
+  详细证据见 `GPU_STAGE2E_E2E_BENCHMARK.md`；默认 backend 仍保持 CPU，发布 gates
+  与 fast preset 属于后续 Batch D/F。
