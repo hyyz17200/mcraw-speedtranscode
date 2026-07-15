@@ -286,6 +286,7 @@ if(MCRAW_ENABLE_VULKAN)
     src/vulkan/vulkan_rgb_to_yuv.cpp
     src/vulkan/vulkan_rgb_to_yuv_frame.cpp
     src/vulkan/vulkan_camera_pipeline_resources.cpp
+    src/vulkan/vulkan_raw_pipeline_resources.cpp
     src/vulkan/vulkan_runtime.cpp
   )
   target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
@@ -324,6 +325,7 @@ if(MCRAW_BUILD_TESTS)
       tests/test_vulkan_prores_e2e.cpp
       tests/test_vulkan_prores_encoder.cpp
       tests/test_vulkan_camera_pipeline_resources.cpp
+      tests/test_vulkan_raw_pipeline_resources.cpp
       tests/test_vulkan_rgb_to_yuv.cpp
       tests/test_vulkan_runtime.cpp
     )

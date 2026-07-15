@@ -22,6 +22,7 @@ std::string_view to_string(CpuPipelineOutput value) noexcept {
     case CpuPipelineOutput::packed_yuv: return "packed_yuv";
     case CpuPipelineOutput::target_log_rgb: return "target_log_rgb";
     case CpuPipelineOutput::camera_rgb: return "camera_rgb";
+    case CpuPipelineOutput::raw_mosaic: return "raw_mosaic";
     }
     return "unknown";
 }
@@ -40,24 +41,32 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
             decoded = reader.load_reference_frame_with_metadata(frame_index);
         }
         result.metadata = std::move(decoded.metadata);
-        {
-            StageTimer timer(timings, "black_white_calibration");
-            calibrated = calibrate_raw_for_demosaic(
-                decoded.raw, result.metadata, worker_threads_);
-        }
-        {
-            StageTimer timer(timings, "demosaic");
-            // Planes stay in the 0..65535 librtprocess domain; the 1/65535
-            // scale folds into the per-frame matrix inside the fused pack.
-            camera_rgb = demosaic_unnormalized(calibrated, config_.demosaic,
-                                               worker_threads_);
+        if (output_ == CpuPipelineOutput::raw_mosaic) {
+            // Stage 2 keeps official decode and metadata on the CPU, but moves
+            // calibration and demosaic behind the Vulkan writer boundary.
+            result.raw_mosaic = std::move(decoded.raw);
+        } else {
+            {
+                StageTimer timer(timings, "black_white_calibration");
+                calibrated = calibrate_raw_for_demosaic(
+                    decoded.raw, result.metadata, worker_threads_);
+            }
+            {
+                StageTimer timer(timings, "demosaic");
+                // Planes stay in the 0..65535 librtprocess domain; the 1/65535
+                // scale folds into the per-frame matrix inside the fused pack.
+                camera_rgb = demosaic_unnormalized(calibrated, config_.demosaic,
+                                                   worker_threads_);
+            }
         }
     }
     {
         StageTimer timer(timings, "color_solution");
         result.color_solution = build_camera_color_solution(result.metadata);
     }
-    if (output_ == CpuPipelineOutput::camera_rgb) {
+    if (output_ == CpuPipelineOutput::raw_mosaic) {
+        return result;
+    } else if (output_ == CpuPipelineOutput::camera_rgb) {
         result.camera_rgb = std::move(camera_rgb);
     } else if (output_ == CpuPipelineOutput::target_log_rgb) {
         StageTimer timer(timings, "camera_to_dwg_di_rgb");

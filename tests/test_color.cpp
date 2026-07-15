@@ -10,6 +10,7 @@ TEST_CASE("CPU pipeline output boundary names are explicit") {
     CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::target_log_rgb) ==
           "target_log_rgb");
     CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::camera_rgb) == "camera_rgb");
+    CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::raw_mosaic) == "raw_mosaic");
 }
 
 TEST_CASE("3x3 inverse composes to identity") {

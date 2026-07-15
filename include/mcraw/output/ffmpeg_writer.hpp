@@ -1,5 +1,6 @@
 #pragma once
 
+#include <array>
 #include <cstdint>
 #include <filesystem>
 #include <memory>
@@ -143,6 +144,20 @@ struct VulkanCameraRgbInput {
     Matrix3d camera_to_target;
     double exposure_offset_stops{};
     double input_scale{1.0 / 65535.0};
+    double capture_sharpening{};
+    double capture_sharpening_threshold{};
+    NegativePolicy negative_policy{NegativePolicy::preserve_by_curve};
+};
+
+// Stage 2 semantic job boundary. The writer overload is added only when the
+// resident RAW chain is connected; defining the payload now prevents U16 RAW
+// from being confused with a generic byte upload.
+struct VulkanRawMosaicInput {
+    RawMosaicU16 image;
+    std::array<double, 4> black_level{};
+    std::array<double, 4> white_level{};
+    Matrix3d camera_to_target;
+    double exposure_offset_stops{};
     double capture_sharpening{};
     double capture_sharpening_threshold{};
     NegativePolicy negative_policy{NegativePolicy::preserve_by_curve};

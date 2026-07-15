@@ -17,6 +17,7 @@ enum class CpuPipelineOutput {
     packed_yuv,
     target_log_rgb,
     camera_rgb,
+    raw_mosaic,
 };
 
 [[nodiscard]] std::string_view to_string(CpuPipelineOutput value) noexcept;
@@ -28,6 +29,7 @@ struct ProcessedFrame {
     PackedYuvResult packed;
     TargetLogRgbF32 target_log;
     CameraRgbF32 camera_rgb;
+    RawMosaicU16 raw_mosaic;
 };
 
 class CpuPipeline {
