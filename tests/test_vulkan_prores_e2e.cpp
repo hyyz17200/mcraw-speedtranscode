@@ -371,11 +371,11 @@ TEST_CASE("Vulkan U16 RAW resident chain writes a decodable MOV") {
     writer.finish();
     const auto telemetry = writer.telemetry();
     CHECK(telemetry.pipeline_entry == "raw_mosaic_u16");
-    CHECK(telemetry.pipeline_precision == "fp32/precise");
+    CHECK(telemetry.pipeline_precision == "fp16-storage/fp32-compute");
     CHECK(telemetry.demosaic_location == "gpu_rcd_precise");
     CHECK(telemetry.color_solution_location == "cpu_fp64");
     CHECK(telemetry.performance_mode == "balanced");
-    CHECK(telemetry.intermediate_storage == "fp32");
+    CHECK(telemetry.intermediate_storage == "fp16");
     CHECK(telemetry.di_implementation == "fp32_lut");
     CHECK(telemetry.dither_mode == "deterministic");
     CHECK(telemetry.demosaic_implementation == "gpu_rcd_precise");

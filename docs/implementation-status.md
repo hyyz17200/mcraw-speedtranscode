@@ -1,5 +1,17 @@
 # v0.1 Implementation Status
 
+## GPU Stage 3B balanced FP16 storage
+
+- `gpu_performance_mode` provides stable precise/balanced/fast identities and
+  sidecars report actual intermediate storage, DI, dither, and demosaic choices.
+- Balanced mode stores post-RCD color/sharpen/DI planes as packed FP16 while
+  preserving FP32 computation, precise RCD, and FP32 final quantization.
+- Real frames 0/120/239 remain at max 1 LSB with RMSE below 0.202 LSB.
+- Matched median throughput improved from 34.901 to 35.577 fps (+1.938%); the
+  slowest balanced run exceeded the fastest precise run.
+- See `GPU_STAGE3_PERFORMANCE_MODES_TECHNICAL_DESIGN.md` and
+  `GPU_STAGE3B_FP16_STORAGE_VALIDATION.md`.
+
 ## 已实现源码边界
 
 - CMake/vcpkg/MSVC 2022 构建骨架

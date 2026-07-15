@@ -424,9 +424,11 @@ TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames")
     mcraw::VulkanRuntime runtime;
     mcraw::FfmpegVulkanFrameContext frames(
         runtime, {static_cast<int>(width), static_cast<int>(height), 4});
+    const bool fp16_storage = std::getenv("MCRAW_STAGE3_FP16_STORAGE") != nullptr;
     mcraw::VulkanRgbToYuvFrameWriter writer(
         runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
-                          mcraw::GpuPrecision::fp32, 1});
+                          fp16_storage ? mcraw::GpuPrecision::fp16
+                                       : mcraw::GpuPrecision::fp32, 1});
     const mcraw::DaVinciIntermediateLut curve;
 
     for (const auto frame_index : frame_indices) {
@@ -462,10 +464,13 @@ TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames")
             av_hwframe_transfer_data(software.get(), output.frame.get(), 0),
             "read back real Stage 2 final YUV");
 
-        const auto maximum_error = [&](int plane,
-                                       const std::vector<std::uint16_t>& expected,
-                                       std::uint32_t plane_width) {
-            std::uint16_t maximum = 0;
+        struct ErrorStats { std::uint16_t maximum{}; std::uint16_t p99{}; double rmse{}; };
+        const auto error_stats = [&](int plane,
+                                     const std::vector<std::uint16_t>& expected,
+                                     std::uint32_t plane_width) {
+            std::vector<std::uint16_t> errors;
+            errors.reserve(expected.size());
+            double squared_sum = 0.0;
             std::size_t offset = 0;
             for (std::uint32_t row = 0; row < height; ++row) {
                 const auto* actual = reinterpret_cast<const std::uint16_t*>(
@@ -474,19 +479,30 @@ TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames")
                     const auto error = static_cast<std::uint16_t>(std::abs(
                         static_cast<int>(expected[offset]) -
                         static_cast<int>(actual[x])));
-                    maximum = std::max(maximum, error);
+                    errors.push_back(error);
+                    squared_sum += static_cast<double>(error) * error;
                 }
             }
-            return maximum;
+            std::sort(errors.begin(), errors.end());
+            return ErrorStats{errors.back(), errors[(errors.size() * 99U) / 100U],
+                              std::sqrt(squared_sum / errors.size())};
         };
-        const auto y_error = maximum_error(0, reference.y, width);
-        const auto cb_error = maximum_error(1, reference.cb, width / 2U);
-        const auto cr_error = maximum_error(2, reference.cr, width / 2U);
-        INFO("frame=" << frame_index << " Y/Cb/Cr max=" << y_error << "/"
-                      << cb_error << "/" << cr_error);
-        CHECK(y_error <= 1U);
-        CHECK(cb_error <= 1U);
-        CHECK(cr_error <= 1U);
+        const auto y_error = error_stats(0, reference.y, width);
+        const auto cb_error = error_stats(1, reference.cb, width / 2U);
+        const auto cr_error = error_stats(2, reference.cr, width / 2U);
+        INFO("frame=" << frame_index << " Y/Cb/Cr max=" << y_error.maximum << "/"
+                      << cb_error.maximum << "/" << cr_error.maximum
+                      << " p99=" << y_error.p99 << "/" << cb_error.p99 << "/"
+                      << cr_error.p99 << " rmse=" << y_error.rmse << "/"
+                      << cb_error.rmse << "/" << cr_error.rmse);
+        const auto max_budget = fp16_storage ? 4U : 1U;
+        CHECK(y_error.maximum <= max_budget);
+        CHECK(cb_error.maximum <= max_budget);
+        CHECK(cr_error.maximum <= max_budget);
+        if (fp16_storage) {
+            CHECK(y_error.p99 <= 1U); CHECK(cb_error.p99 <= 1U); CHECK(cr_error.p99 <= 1U);
+            CHECK(y_error.rmse <= 0.5); CHECK(cb_error.rmse <= 0.5); CHECK(cr_error.rmse <= 0.5);
+        }
         writer.wait();
     }
 

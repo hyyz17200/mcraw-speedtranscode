@@ -17,11 +17,15 @@ extern "C" {
 #include <mcraw/core/error.hpp>
 #include <mcraw/processing/log_curve.hpp>
 #include <mcraw/vulkan/camera_to_dwg_spv.hpp>
+#include <mcraw/vulkan/camera_to_dwg_fp16_storage_spv.hpp>
 #include <mcraw/vulkan/calibrate_raw_spv.hpp>
 #include <mcraw/vulkan/davinci_intermediate_spv.hpp>
+#include <mcraw/vulkan/davinci_intermediate_fp16_storage_spv.hpp>
 #include <mcraw/vulkan/rgb_to_yuv_422_image_spv.hpp>
+#include <mcraw/vulkan/rgb_to_yuv_422_image_fp16_storage_spv.hpp>
 #include <mcraw/vulkan/rcd_demosaic_spv.hpp>
 #include <mcraw/vulkan/sharpen_target_linear_spv.hpp>
+#include <mcraw/vulkan/sharpen_target_linear_fp16_storage_spv.hpp>
 
 namespace mcraw {
 namespace {
@@ -220,10 +224,6 @@ public:
             throw Error(ErrorCode::invalid_argument,
                         "Vulkan frame writer requires matching non-zero dimensions and even width");
         }
-        if (config.precision != GpuPrecision::fp32) {
-            throw Error(ErrorCode::unsupported_format,
-                        "FP16 direct frame writing is disabled until validated");
-        }
         config.slots = std::clamp<std::size_t>(config.slots, 1U, 64U);
         slots.resize(config.slots);
         counters.slot_count = config.slots;
@@ -314,13 +314,15 @@ public:
     void create_input_buffers() {
         const auto pixels = static_cast<std::size_t>(config.width) * config.height;
         const auto bytes = frame_checked_bytes(pixels, sizeof(float));
+        const auto intermediate_bytes = config.precision == GpuPrecision::fp16
+            ? frame_checked_bytes(pixels / 2U, sizeof(std::uint32_t)) : bytes;
         const auto raw_bytes = frame_checked_bytes(pixels, sizeof(std::uint16_t));
         for (auto& slot : slots) {
             for (auto& buffer : slot.input_buffers) buffer = create_buffer(bytes);
             for (auto& set : slot.intermediate) {
                 for (auto& buffer : set) {
                     buffer = create_buffer(
-                        bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                        intermediate_bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
                         VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
                 }
             }
@@ -557,9 +559,15 @@ public:
                                                     &pipeline_layout),
                              "create direct-frame pipeline layout");
         VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-        module_info.codeSize = generated::rgb_to_yuv_422_image_spv.size() *
-                               sizeof(std::uint32_t);
-        module_info.pCode = generated::rgb_to_yuv_422_image_spv.data();
+        const auto fp16_storage = config.precision == GpuPrecision::fp16;
+        const auto* shader_code = fp16_storage
+            ? generated::rgb_to_yuv_422_image_fp16_storage_spv.data()
+            : generated::rgb_to_yuv_422_image_spv.data();
+        const auto shader_words = fp16_storage
+            ? generated::rgb_to_yuv_422_image_fp16_storage_spv.size()
+            : generated::rgb_to_yuv_422_image_spv.size();
+        module_info.codeSize = shader_words * sizeof(std::uint32_t);
+        module_info.pCode = shader_code;
         VkShaderModule module = VK_NULL_HANDLE;
         require_frame_vulkan(vkCreateShaderModule(device, &module_info, allocator, &module),
                              "create direct-frame shader module");
@@ -616,6 +624,7 @@ public:
     }
 
     void create_camera_pipelines() {
+        const auto fp16_storage = config.precision == GpuPrecision::fp16;
         create_camera_pipeline(
             generated::calibrate_raw_spv.data(), generated::calibrate_raw_spv.size(),
             calibration_descriptor_layout, sizeof(CalibrationPushConstants),
@@ -627,19 +636,25 @@ public:
             rcd_pipeline_layout, rcd_pipeline,
             "create resident RCD pipeline");
         create_camera_pipeline(
-            generated::camera_to_dwg_spv.data(),
-            generated::camera_to_dwg_spv.size(), camera_descriptor_layout,
+            fp16_storage ? generated::camera_to_dwg_fp16_storage_spv.data()
+                         : generated::camera_to_dwg_spv.data(),
+            fp16_storage ? generated::camera_to_dwg_fp16_storage_spv.size()
+                         : generated::camera_to_dwg_spv.size(), camera_descriptor_layout,
             sizeof(CameraToDwgPushConstants), color_pipeline_layout,
             color_pipeline, "create resident Camera RGB color pipeline");
         create_camera_pipeline(
-            generated::sharpen_target_linear_spv.data(),
-            generated::sharpen_target_linear_spv.size(),
+            fp16_storage ? generated::sharpen_target_linear_fp16_storage_spv.data()
+                         : generated::sharpen_target_linear_spv.data(),
+            fp16_storage ? generated::sharpen_target_linear_fp16_storage_spv.size()
+                         : generated::sharpen_target_linear_spv.size(),
             camera_descriptor_layout, sizeof(SharpenPushConstants),
             sharpen_pipeline_layout, sharpen_pipeline,
             "create resident TargetLinear sharpening pipeline");
         create_camera_pipeline(
-            generated::davinci_intermediate_spv.data(),
-            generated::davinci_intermediate_spv.size(), di_descriptor_layout,
+            fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.data()
+                         : generated::davinci_intermediate_spv.data(),
+            fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.size()
+                         : generated::davinci_intermediate_spv.size(), di_descriptor_layout,
             sizeof(DiPushConstants), di_pipeline_layout, di_pipeline,
             "create resident DaVinci Intermediate pipeline");
     }
@@ -1284,8 +1299,10 @@ public:
                                    sizeof(color_push), &color_push);
                 const auto pixels = static_cast<std::uint64_t>(config.width) *
                                     config.height;
+                const auto color_values = config.precision == GpuPrecision::fp16
+                    ? pixels / 2U : pixels;
                 vkCmdDispatch(slot.command_buffer,
-                              static_cast<std::uint32_t>((pixels + 255U) / 256U),
+                              static_cast<std::uint32_t>((color_values + 255U) / 256U),
                               1, 1);
                 if (timestamp_query_pool != VK_NULL_HANDLE) {
                     vkCmdWriteTimestamp(slot.command_buffer,
@@ -1332,7 +1349,9 @@ public:
                                    VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                    sizeof(sharpen_push), &sharpen_push);
                 vkCmdDispatch(slot.command_buffer,
-                              (config.width + 15U) / 16U,
+                              config.precision == GpuPrecision::fp16
+                                  ? ((config.width / 2U + 7U) / 8U)
+                                  : ((config.width + 15U) / 16U),
                               (config.height + 15U) / 16U, 1);
                 if (timestamp_query_pool != VK_NULL_HANDLE) {
                     vkCmdWriteTimestamp(slot.command_buffer,
@@ -1384,8 +1403,10 @@ public:
                 vkCmdPushConstants(slot.command_buffer, di_pipeline_layout,
                                    VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                    sizeof(di_push), &di_push);
+                const auto di_values = config.precision == GpuPrecision::fp16
+                    ? pixels / 2U : pixels;
                 vkCmdDispatch(slot.command_buffer,
-                              static_cast<std::uint32_t>((pixels + 255U) / 256U),
+                              static_cast<std::uint32_t>((di_values + 255U) / 256U),
                               1, 1);
                 if (timestamp_query_pool != VK_NULL_HANDLE) {
                     vkCmdWriteTimestamp(slot.command_buffer,
@@ -1531,6 +1552,10 @@ public:
     VulkanVideoFrame pack(const TargetLogRgbF32& input,
                           std::size_t frame_index,
                           FrameMetadata metadata) {
+        if (config.precision == GpuPrecision::fp16) {
+            throw Error(ErrorCode::unsupported_format,
+                        "FP16 intermediate storage requires Camera RGB or RAW entry");
+        }
         return pack_impl(input, frame_index, metadata, nullptr,
                          0.0, 1.0, 0.0, 0.0,
                          NegativePolicy::preserve_by_curve);

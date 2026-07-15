@@ -312,11 +312,46 @@ if(MCRAW_ENABLE_VULKAN)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     DEPENDS "${MCRAW_DAVINCI_INTERMEDIATE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     VERBATIM)
+  function(mcraw_compile_embedded_shader name source symbol)
+    set(spv "${MCRAW_GENERATED_SHADER_DIR}/${name}.comp.spv")
+    set(header "${MCRAW_GENERATED_SHADER_DIR}/${name}_spv.hpp")
+    add_custom_command(
+      OUTPUT "${spv}"
+      COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
+      COMMAND "${MCRAW_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+              -o "${spv}" "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+      DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${source}"
+      VERBATIM)
+    add_custom_command(
+      OUTPUT "${header}"
+      COMMAND "${CMAKE_COMMAND}" "-DINPUT=${spv}" "-DOUTPUT=${header}"
+              "-DSYMBOL=${symbol}"
+              -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+      DEPENDS "${spv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+      VERBATIM)
+    set(${name}_HEADER "${header}" PARENT_SCOPE)
+  endfunction()
+  mcraw_compile_embedded_shader(camera_to_dwg_fp16_storage
+    src/vulkan/shaders/camera_to_dwg_fp16_storage.comp.glsl
+    camera_to_dwg_fp16_storage_spv)
+  mcraw_compile_embedded_shader(sharpen_target_linear_fp16_storage
+    src/vulkan/shaders/sharpen_target_linear_fp16_storage.comp.glsl
+    sharpen_target_linear_fp16_storage_spv)
+  mcraw_compile_embedded_shader(davinci_intermediate_fp16_storage
+    src/vulkan/shaders/davinci_intermediate_fp16_storage.comp.glsl
+    davinci_intermediate_fp16_storage_spv)
+  mcraw_compile_embedded_shader(rgb_to_yuv_422_image_fp16_storage
+    src/vulkan/shaders/rgb_to_yuv_422_image_fp16_storage.comp.glsl
+    rgb_to_yuv_422_image_fp16_storage_spv)
   add_custom_target(mcraw_vulkan_shaders DEPENDS
     "${MCRAW_RGB_TO_YUV_HEADER}" "${MCRAW_RGB_TO_YUV_IMAGE_HEADER}"
     "${MCRAW_CAMERA_TO_DWG_HEADER}" "${MCRAW_SHARPEN_TARGET_LINEAR_HEADER}"
     "${MCRAW_DAVINCI_INTERMEDIATE_HEADER}" "${MCRAW_CALIBRATE_RAW_HEADER}"
-    "${MCRAW_RCD_DEMOSAIC_HEADER}")
+    "${MCRAW_RCD_DEMOSAIC_HEADER}"
+    "${camera_to_dwg_fp16_storage_HEADER}"
+    "${sharpen_target_linear_fp16_storage_HEADER}"
+    "${davinci_intermediate_fp16_storage_HEADER}"
+    "${rgb_to_yuv_422_image_fp16_storage_HEADER}")
   add_dependencies(mcraw_core mcraw_vulkan_shaders)
   target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_sources(mcraw_core PRIVATE

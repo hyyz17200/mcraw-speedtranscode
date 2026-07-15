@@ -499,7 +499,11 @@ public:
             result.demosaic_implementation = "cpu_configured";
             result.color_solution_location = "cpu_fp64";
         } else if (pipeline_entry == "raw_mosaic_u16") {
-            result.pipeline_precision = "fp32/precise";
+            const bool mixed_storage =
+                performance_mode != GpuPerformanceMode::precise;
+            result.pipeline_precision = mixed_storage
+                ? "fp16-storage/fp32-compute" : "fp32/precise";
+            result.intermediate_storage = mixed_storage ? "fp16" : "fp32";
             result.demosaic_location = "gpu_rcd_precise";
             result.demosaic_implementation = "gpu_rcd_precise";
             result.color_solution_location = "cpu_fp64";

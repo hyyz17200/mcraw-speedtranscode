@@ -763,7 +763,10 @@ int command_convert(const Arguments& args) {
                                        config.async_depth, args.flag("--validation"),
                                        config.chroma_filter,
                                        config.deterministic_dither,
-                                       config.precision,
+                                       config.gpu_performance_mode ==
+                                               mcraw::GpuPerformanceMode::precise
+                                           ? mcraw::GpuPrecision::fp32
+                                           : mcraw::GpuPrecision::fp16,
                                        config.gpu_performance_mode});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
