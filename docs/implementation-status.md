@@ -202,3 +202,15 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
   `LIM01(calibrated / 65536)` 输入边界，二者不混为新的提前 clamp。
 - 输入/输出、ownership、同步、golden、≤1 LSB 最终质量、transfer/timestamp telemetry、
   failure/fallback 和 matched benchmark 合约见 `GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md`。
+
+## 2026-07-15 GPU Stage 2B calibration
+
+- 新增 packed U16 CFA calibration compute pass；每个 32-bit storage word 解包两个 U16，
+  不要求 shader 16-bit storage capability，输入字节仍精确为 `width * height * 2`。
+- 固定 48-byte push ABI 传递尺寸与四组 black/white；输出 device-local FP32 CFA，负值与
+  super-white 不 clamp，test readback 只能在显式测试资源启用。
+- 64x32、四种 CFA、fractional black/white synthetic 对 CPU reference 的 max abs 为
+  `0.0078125`、RMSE `0.00137959`；据此冻结 calibration 中间门槛为 `0.01/0.002`，最终
+  YUV `≤1 LSB` 不变。
+- 新增 `raw_calibration` GPU timestamp summary；production 仍停在 Stage 1，不改变上传、
+  sidecar 或发布路径。详细证据见 `GPU_STAGE2B_CALIBRATION_VALIDATION.md`。

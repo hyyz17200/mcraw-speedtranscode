@@ -117,7 +117,7 @@ Test-only readback compares:
 
 | Boundary | Initial precise gate |
 |---|---:|
-| calibrated CFA | bit-exact FP32 where operations match; otherwise max abs <= 1/65535 |
+| calibrated CFA | max abs <= 0.01 and RMSE <= 0.002 in the 0..65535 domain |
 | Camera RGB RCD | max abs <= 2.0 in the 0..65535 domain; RMSE <= 0.05 |
 | final Y, Cb, Cr | max absolute code difference <= 1 LSB |
 
@@ -125,6 +125,12 @@ The RCD limits are diagnostic starting gates, not permission for structural
 artifacts. Reports also include P50/P95/P99, worst coordinates and separate
 border/interior maxima. If normal FP32 operation order cannot meet them, stop
 and update this contract with measured evidence; do not silently widen tests.
+
+The calibration gate was frozen from the Stage 2B all-CFA synthetic result:
+max abs `0.0078125`, RMSE `0.00137959`. The difference is the expected boundary
+between the CPU's FP64 division followed by FP32 storage and the first portable
+shader's FP32 arithmetic. This intermediate budget does not widen the final
+one-LSB YUV gate.
 
 Real-frame validation uses Stage 0 corpus frames 0, 120 and 239. Final quality
 must retain the Stage 1 one-LSB YUV gate.

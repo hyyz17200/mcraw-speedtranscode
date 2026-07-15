@@ -1,6 +1,8 @@
 #include <mcraw/vulkan/vulkan_raw_pipeline_resources.hpp>
 
 #include <algorithm>
+#include <array>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -13,6 +15,7 @@ extern "C" {
 }
 
 #include <mcraw/core/error.hpp>
+#include <mcraw/vulkan/calibrate_raw_spv.hpp>
 
 namespace mcraw {
 namespace {
@@ -49,6 +52,34 @@ std::uint64_t checked_capacity(std::size_t bytes, std::size_t planes,
                     "U16 RAW Vulkan telemetry size overflow");
     }
     return static_cast<std::uint64_t>(bytes) * planes * slots;
+}
+
+struct alignas(16) CalibrationPushConstants {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t pixel_count{};
+    std::uint32_t reserved{};
+    std::array<float, 4> black{};
+    std::array<float, 4> white{};
+};
+static_assert(sizeof(CalibrationPushConstants) == 48U);
+static_assert(offsetof(CalibrationPushConstants, black) == 16U);
+static_assert(offsetof(CalibrationPushConstants, white) == 32U);
+
+double percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty()) return 0.0;
+    const double index = p * static_cast<double>(sorted.size() - 1U);
+    const auto lo = static_cast<std::size_t>(std::floor(index));
+    const auto hi = static_cast<std::size_t>(std::ceil(index));
+    const double fraction = index - static_cast<double>(lo);
+    return sorted[lo] * (1.0 - fraction) + sorted[hi] * fraction;
+}
+
+std::uint64_t timestamp_delta(std::uint64_t start, std::uint64_t end,
+                              std::uint32_t valid_bits) {
+    if (valid_bits >= 64U) return end - start;
+    const auto mask = (std::uint64_t{1} << valid_bits) - 1U;
+    return (end - start) & mask;
 }
 
 #if defined(_MSC_VER)
@@ -93,8 +124,11 @@ public:
         std::vector<Buffer> camera_rgb;
         std::vector<Buffer> scratch;
         Buffer readback;
+        Buffer calibrated_readback;
         VkCommandBuffer command{VK_NULL_HANDLE};
         VkFence fence{VK_NULL_HANDLE};
+        VkDescriptorSet calibration_descriptor{VK_NULL_HANDLE};
+        std::uint32_t timestamp_query_base{};
     };
 
     Impl(VulkanRuntime& runtime_owner, VulkanRawPipelineResourceConfig requested)
@@ -138,8 +172,12 @@ public:
             checked_capacity(float_plane_bytes, 5U, slots.size());
         counters.test_readback_capacity_bytes = config.enable_test_readback
             ? checked_capacity(raw_bytes, 1U, slots.size()) : 0U;
+        counters.calibrated_test_readback_capacity_bytes = config.enable_test_readback
+            ? checked_capacity(float_plane_bytes, 1U, slots.size()) : 0U;
         try {
             create_buffers();
+            create_calibration_pipeline();
+            create_timestamp_queries();
             create_commands();
         } catch (...) {
             cleanup();
@@ -216,8 +254,117 @@ public:
             }
             if (config.enable_test_readback) {
                 slot.readback = create_buffer(raw_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
+                slot.calibrated_readback = create_buffer(
+                    float_plane_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
             }
         }
+    }
+
+    void create_calibration_pipeline() {
+        std::array<VkDescriptorSetLayoutBinding, 2> bindings{};
+        for (std::uint32_t index = 0; index < bindings.size(); ++index) {
+            bindings[index].binding = index;
+            bindings[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[index].descriptorCount = 1;
+            bindings[index].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo layout_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        require_raw_vulkan(vkCreateDescriptorSetLayout(
+            device, &layout_info, allocator, &calibration_descriptor_layout),
+            "create RAW calibration descriptor layout");
+
+        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+                                       static_cast<std::uint32_t>(slots.size() * 2U)};
+        VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = static_cast<std::uint32_t>(slots.size());
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        require_raw_vulkan(vkCreateDescriptorPool(device, &pool_info, allocator,
+                                                  &descriptor_pool),
+                           "create RAW calibration descriptor pool");
+        std::vector<VkDescriptorSetLayout> layouts(slots.size(),
+                                                   calibration_descriptor_layout);
+        std::vector<VkDescriptorSet> descriptors(slots.size());
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = descriptor_pool;
+        allocate.descriptorSetCount = static_cast<std::uint32_t>(layouts.size());
+        allocate.pSetLayouts = layouts.data();
+        require_raw_vulkan(vkAllocateDescriptorSets(device, &allocate, descriptors.data()),
+                           "allocate RAW calibration descriptor sets");
+        for (std::size_t slot_index = 0; slot_index < slots.size(); ++slot_index) {
+            auto& slot = slots[slot_index];
+            slot.calibration_descriptor = descriptors[slot_index];
+            std::array<VkDescriptorBufferInfo, 2> buffers{{
+                {slot.upload.handle, 0, raw_bytes},
+                {slot.calibrated.handle, 0, float_plane_bytes},
+            }};
+            std::array<VkWriteDescriptorSet, 2> writes{};
+            for (std::uint32_t index = 0; index < writes.size(); ++index) {
+                writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[index].dstSet = slot.calibration_descriptor;
+                writes[index].dstBinding = index;
+                writes[index].descriptorCount = 1;
+                writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[index].pBufferInfo = &buffers[index];
+            }
+            vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        }
+
+        VkPushConstantRange push_range{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                       sizeof(CalibrationPushConstants)};
+        VkPipelineLayoutCreateInfo pipeline_layout_info{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &calibration_descriptor_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        require_raw_vulkan(vkCreatePipelineLayout(device, &pipeline_layout_info, allocator,
+                                                  &calibration_pipeline_layout),
+                           "create RAW calibration pipeline layout");
+        VkShaderModuleCreateInfo shader_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        shader_info.codeSize = generated::calibrate_raw_spv.size() * sizeof(std::uint32_t);
+        shader_info.pCode = generated::calibrate_raw_spv.data();
+        VkShaderModule shader = VK_NULL_HANDLE;
+        require_raw_vulkan(vkCreateShaderModule(device, &shader_info, allocator, &shader),
+                           "create RAW calibration shader");
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+        VkComputePipelineCreateInfo pipeline_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipeline_info.stage = stage;
+        pipeline_info.layout = calibration_pipeline_layout;
+        const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                                     &pipeline_info, allocator,
+                                                     &calibration_pipeline);
+        vkDestroyShaderModule(device, shader, allocator);
+        require_raw_vulkan(result, "create RAW calibration pipeline");
+    }
+
+    void create_timestamp_queries() {
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physical_device, &properties);
+        timestamp_period_ns = properties.limits.timestampPeriod;
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, families.data());
+        timestamp_valid_bits = queue_family < families.size()
+            ? families[queue_family].timestampValidBits : 0U;
+        if (timestamp_valid_bits == 0U || timestamp_period_ns <= 0.0F) return;
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = static_cast<std::uint32_t>(slots.size() * 2U);
+        require_raw_vulkan(vkCreateQueryPool(device, &info, allocator, &timestamp_pool),
+                           "create RAW calibration timestamp pool");
+        for (std::size_t index = 0; index < slots.size(); ++index) {
+            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 2U);
+        }
+        counters.gpu_timestamps_supported = true;
     }
 
     void create_commands() {
@@ -298,6 +445,136 @@ public:
         return output;
     }
 
+    void upload_raw(Slot& slot, const RawMosaicU16& input) {
+        void* mapped = nullptr;
+        require_raw_vulkan(vkMapMemory(device, slot.upload.memory, 0, raw_bytes, 0, &mapped),
+                           "map U16 RAW upload");
+        std::memcpy(mapped, input.pixels.data(), raw_bytes);
+        vkUnmapMemory(device, slot.upload.memory);
+    }
+
+    void update_calibration_timestamp(const Slot& slot) {
+        if (timestamp_pool == VK_NULL_HANDLE) return;
+        std::array<std::uint64_t, 2> values{};
+        require_raw_vulkan(vkGetQueryPoolResults(
+            device, timestamp_pool, slot.timestamp_query_base, 2,
+            sizeof(values), values.data(), sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+            "read RAW calibration timestamp");
+        const double milliseconds = static_cast<double>(timestamp_delta(
+            values[0], values[1], timestamp_valid_bits)) *
+            static_cast<double>(timestamp_period_ns) / 1.0e6;
+        calibration_samples.push_back(milliseconds);
+        auto sorted = calibration_samples;
+        std::sort(sorted.begin(), sorted.end());
+        counters.raw_calibration_timestamp_samples = calibration_samples.size();
+        counters.raw_calibration_gpu_total_ms = 0.0;
+        for (const double sample : calibration_samples) {
+            counters.raw_calibration_gpu_total_ms += sample;
+        }
+        counters.raw_calibration_gpu_mean_ms = counters.raw_calibration_gpu_total_ms /
+            static_cast<double>(calibration_samples.size());
+        counters.raw_calibration_gpu_p50_ms = percentile(sorted, 0.50);
+        counters.raw_calibration_gpu_p95_ms = percentile(sorted, 0.95);
+        counters.raw_calibration_gpu_p99_ms = percentile(sorted, 0.99);
+        counters.raw_calibration_gpu_min_ms = sorted.front();
+        counters.raw_calibration_gpu_max_ms = sorted.back();
+    }
+
+    RawDemosaicF32 calibrate(const RawMosaicU16& input,
+                             const NormalizedCameraMetadata& metadata) {
+        if (!config.enable_test_readback) {
+            throw Error(ErrorCode::invalid_argument,
+                        "RAW calibration test readback is disabled for production resources");
+        }
+        input.validate();
+        metadata.validate_for_raw();
+        if (input.width != config.width || input.height != config.height ||
+            input.width != metadata.width || input.height != metadata.height ||
+            input.cfa != metadata.cfa) {
+            throw Error(ErrorCode::invalid_argument,
+                        "RAW calibration input, metadata and Vulkan resources disagree");
+        }
+        auto& slot = slots[next_slot];
+        next_slot = (next_slot + 1U) % slots.size();
+        require_raw_vulkan(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX),
+                           "wait for RAW calibration slot");
+        require_raw_vulkan(vkResetFences(device, 1, &slot.fence),
+                           "reset RAW calibration slot");
+        upload_raw(slot, input);
+
+        CalibrationPushConstants push;
+        push.width = config.width;
+        push.height = config.height;
+        push.pixel_count = static_cast<std::uint32_t>(pixels);
+        for (std::size_t index = 0; index < 4U; ++index) {
+            push.black[index] = static_cast<float>(metadata.black_level[index]);
+            push.white[index] = static_cast<float>(metadata.white_level[index]);
+        }
+        require_raw_vulkan(vkResetCommandBuffer(slot.command, 0),
+                           "reset RAW calibration command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        require_raw_vulkan(vkBeginCommandBuffer(slot.command, &begin),
+                           "begin RAW calibration command buffer");
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(slot.command, timestamp_pool, slot.timestamp_query_base, 2);
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          calibration_pipeline);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                calibration_pipeline_layout, 0, 1,
+                                &slot.calibration_descriptor, 0, nullptr);
+        vkCmdPushConstants(slot.command, calibration_pipeline_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(slot.command,
+                      (static_cast<std::uint32_t>(pixels) + 255U) / 256U, 1, 1);
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.timestamp_query_base + 1U);
+        }
+        VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+        barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        barrier.buffer = slot.calibrated.handle;
+        barrier.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
+                             0, nullptr, 1, &barrier, 0, nullptr);
+        VkBufferCopy copy{0, 0, float_plane_bytes};
+        vkCmdCopyBuffer(slot.command, slot.calibrated.handle,
+                        slot.calibrated_readback.handle, 1, &copy);
+        require_raw_vulkan(vkEndCommandBuffer(slot.command),
+                           "end RAW calibration command buffer");
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &slot.command;
+        lock_queue(*vulkan_device, hw_device, queue_family);
+        const auto submit_result = vkQueueSubmit(queue, 1, &submit, slot.fence);
+        unlock_queue(*vulkan_device, hw_device, queue_family);
+        require_raw_vulkan(submit_result, "submit RAW calibration");
+        require_raw_vulkan(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX),
+                           "wait for RAW calibration");
+        update_calibration_timestamp(slot);
+
+        RawDemosaicF32 output{config.width, config.height, input.cfa,
+                              std::vector<float>(pixels)};
+        void* mapped = nullptr;
+        require_raw_vulkan(vkMapMemory(device, slot.calibrated_readback.memory, 0,
+                                       float_plane_bytes, 0, &mapped),
+                           "map RAW calibration readback");
+        std::memcpy(output.pixels.data(), mapped, float_plane_bytes);
+        vkUnmapMemory(device, slot.calibrated_readback.memory);
+        output.validate();
+        counters.test_upload_bytes += raw_bytes;
+        counters.test_readback_bytes += float_plane_bytes;
+        return output;
+    }
+
     void destroy_buffer(Buffer& buffer) noexcept {
         if (buffer.handle != VK_NULL_HANDLE) vkDestroyBuffer(device, buffer.handle, allocator);
         if (buffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, buffer.memory, allocator);
@@ -312,6 +589,7 @@ public:
                 vkDestroyFence(device, slot.fence, allocator);
             }
             destroy_buffer(slot.readback);
+            destroy_buffer(slot.calibrated_readback);
             for (auto& buffer : slot.scratch) destroy_buffer(buffer);
             for (auto& buffer : slot.camera_rgb) destroy_buffer(buffer);
             destroy_buffer(slot.calibrated);
@@ -320,6 +598,26 @@ public:
         if (command_pool != VK_NULL_HANDLE) {
             vkDestroyCommandPool(device, command_pool, allocator);
             command_pool = VK_NULL_HANDLE;
+        }
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device, timestamp_pool, allocator);
+            timestamp_pool = VK_NULL_HANDLE;
+        }
+        if (calibration_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, calibration_pipeline, allocator);
+            calibration_pipeline = VK_NULL_HANDLE;
+        }
+        if (calibration_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, calibration_pipeline_layout, allocator);
+            calibration_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, descriptor_pool, allocator);
+            descriptor_pool = VK_NULL_HANDLE;
+        }
+        if (calibration_descriptor_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, calibration_descriptor_layout, allocator);
+            calibration_descriptor_layout = VK_NULL_HANDLE;
         }
     }
 
@@ -336,6 +634,14 @@ public:
     std::uint32_t queue_family{};
     VkQueue queue{VK_NULL_HANDLE};
     VkCommandPool command_pool{VK_NULL_HANDLE};
+    VkDescriptorSetLayout calibration_descriptor_layout{VK_NULL_HANDLE};
+    VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
+    VkPipelineLayout calibration_pipeline_layout{VK_NULL_HANDLE};
+    VkPipeline calibration_pipeline{VK_NULL_HANDLE};
+    VkQueryPool timestamp_pool{VK_NULL_HANDLE};
+    float timestamp_period_ns{};
+    std::uint32_t timestamp_valid_bits{};
+    std::vector<double> calibration_samples;
     std::vector<Slot> slots;
     std::size_t next_slot{};
     VulkanRawPipelineResourceTelemetry counters;
@@ -353,6 +659,11 @@ VulkanRawPipelineResources& VulkanRawPipelineResources::operator=(
 RawMosaicU16 VulkanRawPipelineResources::round_trip_for_test(
     const RawMosaicU16& input) {
     return impl_->round_trip(input);
+}
+
+RawDemosaicF32 VulkanRawPipelineResources::calibrate_for_test(
+    const RawMosaicU16& input, const NormalizedCameraMetadata& metadata) {
+    return impl_->calibrate(input, metadata);
 }
 
 VulkanRawPipelineResourceTelemetry VulkanRawPipelineResources::telemetry() const noexcept {
