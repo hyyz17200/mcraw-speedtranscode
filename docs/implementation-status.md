@@ -191,3 +191,14 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - VRAM delta 中位数由 3,782 MiB 降至 2,032 MiB；最终 MOV hash 与 Stage 1F 完全
   相同。默认 Release 63 tests 为 58 passed/5 opt-in skipped；真实帧 0/120/239 的
   Y/Cb/Cr 最大误差均为 1 LSB。详细报告见 `GPU_STAGE1G_PERFORMANCE_RECOVERY.md`。
+
+## 2026-07-15 GPU Stage 2A technical contract
+
+- Batch C 已冻结为五个独立 rollback points：技术/API/资源、calibration、precise RCD、
+  production resident chain、E2E/benchmark。
+- Stage 2 production 边界只从 Camera RGB FP32 前移到 U16 RAW；official decode、CPU FP64
+  color solution、Stage 1、ProRes、音频和发布语义保持不变。
+- calibration 保留负值和 super-white；后续 RCD 精确匹配 librtprocess 自身已有的
+  `LIM01(calibrated / 65536)` 输入边界，二者不混为新的提前 clamp。
+- 输入/输出、ownership、同步、golden、≤1 LSB 最终质量、transfer/timestamp telemetry、
+  failure/fallback 和 matched benchmark 合约见 `GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md`。
