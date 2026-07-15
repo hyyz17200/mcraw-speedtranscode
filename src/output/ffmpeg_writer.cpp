@@ -499,6 +499,14 @@ public:
     [[nodiscard]] FfmpegWriterTelemetry telemetry() const {
         FfmpegWriterTelemetry result;
         result.video_packets = video_packet_count.load();
+        if (video_backend == VideoBackend::vulkan) {
+            result.effective_async_depth = vulkan_encoder != nullptr
+                ? vulkan_encoder->async_depth() : 0U;
+            result.compute_pool_size = result.effective_async_depth;
+            result.compute_queue_family = vulkan_runtime != nullptr
+                ? vulkan_runtime->compute_queue_family() : 0U;
+            result.compute_queue_index = 0U;
+        }
         result.pipeline_entry = pipeline_entry;
         result.performance_mode = std::string(to_string(performance_mode));
         result.intermediate_storage = "fp32";

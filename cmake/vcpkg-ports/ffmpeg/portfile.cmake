@@ -4,4 +4,12 @@
 # to the exact port selected by the locked vcpkg baseline.
 vcpkg_add_to_path("${CURRENT_HOST_INSTALLED_DIR}/tools/glslang")
 set(CURRENT_PORT_DIR "${VCPKG_ROOT_DIR}/ports/ffmpeg")
-include("${CURRENT_PORT_DIR}/portfile.cmake")
+set(_upstream_portfile "${CURRENT_PORT_DIR}/portfile.cmake")
+file(READ "${_upstream_portfile}" _upstream_portfile_text)
+string(REPLACE
+  "        0050-fix-test-ld-absolute-lib-paths.patch"
+  "        0050-fix-test-ld-absolute-lib-paths.patch\n        ${CMAKE_CURRENT_LIST_DIR}/prores-vulkan-async-depth.patch"
+  _patched_portfile_text "${_upstream_portfile_text}")
+set(_patched_portfile "${CURRENT_PORT_DIR}/mcraw-overlay-portfile.cmake")
+file(WRITE "${_patched_portfile}" "${_patched_portfile_text}")
+include("${_patched_portfile}")

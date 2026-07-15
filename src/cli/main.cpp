@@ -1025,6 +1025,10 @@ int command_convert(const Arguments& args) {
         writer_telemetry.prepared_frame_queue_capacity;
     pipeline_report.prepared_frame_queue_max_depth =
         writer_telemetry.prepared_frame_queue_max_depth;
+    pipeline_report.effective_async_depth = writer_telemetry.effective_async_depth;
+    pipeline_report.compute_pool_size = writer_telemetry.compute_pool_size;
+    pipeline_report.compute_queue_family = writer_telemetry.compute_queue_family;
+    pipeline_report.compute_queue_index = writer_telemetry.compute_queue_index;
     const auto process_wall_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - process_start).count();
     timings.add("process_wall", process_wall_ms);

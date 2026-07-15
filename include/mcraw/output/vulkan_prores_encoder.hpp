@@ -43,6 +43,7 @@ public:
     [[nodiscard]] VulkanProResTelemetry telemetry() const noexcept;
     void copy_parameters_to(AVCodecParameters* parameters) const;
     [[nodiscard]] AVRational time_base() const noexcept;
+    [[nodiscard]] std::size_t async_depth() const noexcept;
 
 private:
     class Impl;

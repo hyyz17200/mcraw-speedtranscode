@@ -32,7 +32,7 @@ class VulkanProResEncoder::Impl {
 public:
     Impl(FfmpegVulkanFrameContext& input_frames,
          const VulkanProResEncoderConfig& config)
-        : frames(input_frames) {
+        : frames(input_frames), configured_async_depth(config.async_depth) {
         if (config.width <= 0 || config.height <= 0 || (config.width & 1) != 0 ||
             config.width != frames.width() || config.height != frames.height()) {
             throw Error(ErrorCode::invalid_argument,
@@ -109,6 +109,7 @@ public:
     }
 
     FfmpegVulkanFrameContext& frames;
+    std::size_t configured_async_depth{};
     AvCodecContextPtr context;
     std::vector<EncodedPacket> buffered;
     VulkanProResTelemetry counters;
@@ -213,6 +214,10 @@ void VulkanProResEncoder::copy_parameters_to(AVCodecParameters* parameters) cons
 
 AVRational VulkanProResEncoder::time_base() const noexcept {
     return impl_->context->time_base;
+}
+
+std::size_t VulkanProResEncoder::async_depth() const noexcept {
+    return impl_->configured_async_depth;
 }
 
 } // namespace mcraw

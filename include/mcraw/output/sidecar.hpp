@@ -149,6 +149,10 @@ struct PipelineBackendReport {
     std::size_t resident_slot_count{};
     std::size_t prepared_frame_queue_capacity{};
     std::size_t prepared_frame_queue_max_depth{};
+    std::size_t effective_async_depth{};
+    std::size_t compute_pool_size{};
+    std::size_t compute_queue_family{};
+    std::size_t compute_queue_index{};
 };
 
 void write_sidecar(const std::filesystem::path& path,

@@ -1,0 +1,11 @@
+--- a/libavcodec/proresenc_kostya_vulkan.c
++++ b/libavcodec/proresenc_kostya_vulkan.c
+@@ -868,7 +868,7 @@
+         return AVERROR(ENOTSUP);
+     }
+ 
+-    RET(ff_vk_exec_pool_init(vkctx, pv->qf, &pv->e, 1, 0, 0, 0, NULL));
++    RET(ff_vk_exec_pool_init(vkctx, pv->qf, &pv->e, pv->async_depth, 0, 0, 0, NULL));
+ 
+    pv->transfer_qf = ff_vk_qf_find(vkctx, VK_QUEUE_TRANSFER_BIT, 0);
+    if (!pv->transfer_qf) {
