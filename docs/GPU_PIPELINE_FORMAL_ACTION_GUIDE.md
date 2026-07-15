@@ -374,17 +374,54 @@ CPU official MCRAW decode
 
 ## Stage 4：评估 GPU MCRAW compression 6/7 decode
 
-### 是否启动的决策门槛
+### Batch E1：先建立 CPU decoder 的正式容量上限
 
-Stage 2/3 完成后重新 profile。只有满足以下任一条件才正式投入 GPU decoder：
+在实现 GPU decoder 前，先完成 CPU decoder foundation，避免把可低成本修复的 CPU
+调度、内存和 truth-source 问题误判为 GPU 迁移收益。E1 不引入新的 GPU 像素语义，范围为：
+
+1. 将 official MotionCam decoder 更新到同时覆盖 compression 6/7 的固定 commit；当前固定的
+   `release/0.2` commit `06bf1a8` 只接受 compression 7，不能作为 compression 6 truth source；
+2. 吸收 upstream 的 RAW output buffer 过度分配修复；4K U16 RAW 应为 24 MiB/frame，不能继续
+   以 `uint16_t` 元素数错误承载 48 MiB capacity；
+3. 将每帧 `std::async` 改为有界、持久的 decoder worker pool，保留 decoder instance pool、
+   有序交付、取消和异常传播语义；
+4. 分别报告 decoder-only 与完整 pipeline 的 worker scaling、CPU core-equivalent、P50/P95/P99、
+   工作集、输入 GB/s、producer wait 和 downstream backpressure；
+5. compression 6/7 都必须以 official decoder U16 输出作为逐像素 bit-exact golden，并覆盖损坏
+   payload、错误长度、边界尺寸和 unsupported compression。
+
+2026-07-15 的 E1 预评估使用 Ryzen 7 3700X（8C/16T）、NVMe、4096x3072 compression 7、
+826 帧/7.43 GB 长样本。测试包含真实文件读取、metadata JSON parse 和当前每帧 RAW buffer
+分配，但不包含 GPU、encoder 或输出写盘；文件先顺序预热，结果代表 CPU decoder 的 warm
+capacity ceiling：
+
+| Persistent workers | Median decode throughput | Run range | CPU core-equivalent | P95 loadFrame | Peak working set |
+|---:|---:|---:|---:|---:|---:|
+| 1 | 43.77 fps | single run | 1.00 | 20.42 ms | 68 MiB |
+| 2 | 77.25 fps | single run | 2.00 | 24.60 ms | 120 MiB |
+| 4 | 111.02 fps | 108.59-111.48 | 3.95 | 35.42 ms | 235 MiB |
+| 6 | 121.82 fps | 119.83-123.81 | 5.96 | 48.47 ms | 351 MiB |
+| 8 | 126.10 fps | 124.67-127.13 | 7.89 | 62.32 ms | 467 MiB |
+| 12 | 130.74 fps | 130.05-131.29 | 11.65 | 90.90 ms | 697 MiB |
+| 16 | 136.66 fps | 135.59-138.15 | 13.33 | 135.35 ms | 927 MiB |
+
+90 fps 需要约 0.809 GB/s compressed input。4 workers 已有约 23% throughput headroom，
+6 workers 有约 35%；8 workers 以后 scaling 明显变差。E1 的初始生产候选应为 6 个持久
+workers，而不是用 16 workers 追求 decoder-only 峰值。E1 完成后必须在完整 Vulkan pipeline
+中重新确认此容量，不能直接把隔离 benchmark 当作端到端承诺。
+
+### Batch E2：是否启动 GPU decoder 的决策门槛
+
+Stage 2/3 和 E1 完成后重新 profile。只有满足以下任一条件才正式投入 GPU decoder：
 
 - CPU official decode 成为端到端 top-2 热点；
-- CPU decode 无法稳定供给目标 24/30 fps；
+- CPU decode 无法稳定供给已确认的端到端目标；当前分档为 90 fps 可由 CPU 支撑、
+  120 fps 开始进入 CPU decoder 瓶颈区、130 fps 以上视为明确 GPU decoder 候选；
 - U16 upload/CPU memory traffic 成为明显瓶颈；
 - batch/多流场景下 CPU decode 限制扩展性。
 
-否则保留 official CPU decoder：约 56–61 ms/frame 的阶段可被多帧流水部分掩盖，GPU
-decoder 的复杂度和验证成本可能不值得。
+否则保留 official CPU decoder。旧的 56–61 ms/frame 数据属于早期串行/旧存储基线，不能再
+用于 E2 决策；应使用 E1 固定 worker pool 和目标生产硬件上的 matched result。
 
 ### 目标数据流
 
@@ -483,10 +520,16 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
 - 只合入具有可测端到端收益并通过质量预算的项；
 - 输出：可明确识别的 precise 与 fast presets。
 
-### Batch E：重新决定是否做 GPU RAW decoder
+### Batch E1：建立 CPU decoder truth 与容量上限
 
-- 用 Stage 2/3 完整结果判断 compression 6/7 decoder ROI；
-- 若启动，坚持 U16 bit-exact；若不启动，记录 CPU decode 已满足 producer 需求的证据。
+- 更新并固定真正覆盖 compression 6/7 的 official truth source，修复 RAW buffer 过度分配；
+- 用持久、有界 worker pool 替代 per-frame `std::async`，完成长样本 scaling 和完整流水验证；
+- 输出：90/120/130 fps 分档下的 CPU decoder capacity、资源成本和 GPU decoder 输入证据。
+
+### Batch E2：重新决定是否做 GPU RAW decoder
+
+- 用 Stage 2/3 和 E1 完整结果判断 compression 6/7 GPU decoder ROI；
+- 若启动，坚持 U16 bit-exact；若不启动，记录 CPU decode 已满足已确认 producer 目标的证据。
 
 ### Batch F：关闭生产发布 gates
 
@@ -535,7 +578,9 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
       中位数为 `34.776/36.857 fps`；合入 FP16 intermediate storage 与
       analytic DI，移除未作为公开模式的 balanced preset，拒绝 dither-off 和
       质量不合格的 bilinear demosaic；
-- [ ] Stage 2/3 完成后重新评估 GPU MCRAW decoder ROI；
+- [ ] Batch E1：更新 compression 6/7 official truth、修复 RAW buffer 过度分配、实现持久
+      decoder worker pool，并在完整流水中验证 90/120/130 fps 容量分档；
+- [ ] Batch E2：基于 E1 与 Stage 2/3 结果重新评估 GPU MCRAW decoder ROI；
 - [ ] 性能开发期间持续推进 NLE/硬件/长时间发布 gates。
 
 第一项实际工程任务应当是 **Stage 0 基线与 profiler 合约**，而不是直接开始写 FP16 或
