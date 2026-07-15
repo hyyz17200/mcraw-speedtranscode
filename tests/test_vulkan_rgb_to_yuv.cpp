@@ -9,7 +9,11 @@
 #include <string_view>
 
 #include <mcraw/core/error.hpp>
+#include <mcraw/io/mcraw_reader.hpp>
 #include <mcraw/output/ffmpeg_raii.hpp>
+#include <mcraw/processing/calibration.hpp>
+#include <mcraw/processing/color.hpp>
+#include <mcraw/processing/demosaic.hpp>
 #include <mcraw/processing/yuv.hpp>
 #include <mcraw/vulkan/vulkan_rgb_to_yuv.hpp>
 
@@ -303,6 +307,104 @@ TEST_CASE("Vulkan resident Camera RGB chain matches final YUV within one LSB") {
     CHECK(telemetry.davinci_intermediate_timestamp_samples == 1U);
     CHECK(telemetry.gpu_timestamp_samples == 1U);
     CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t));
+    CHECK(telemetry.control_status_failures == 0U);
+}
+
+TEST_CASE("Vulkan resident Camera RGB chain matches real Stage 0 final YUV frames") {
+    const char* sample_path = std::getenv("MCRAW_STAGE1_REAL_SAMPLE");
+    if (sample_path == nullptr || *sample_path == '\0') {
+        SKIP("set MCRAW_STAGE1_REAL_SAMPLE to run the Stage 1F final YUV golden");
+    }
+    constexpr std::uint32_t width = 4096;
+    constexpr std::uint32_t height = 3072;
+    constexpr double input_scale = 1.0 / 65535.0;
+    constexpr double sharpening = 0.4;
+    constexpr double threshold = 0.002;
+    constexpr std::array<std::size_t, 3> frame_indices{0, 120, 239};
+
+    mcraw::McrawReader reader{std::filesystem::path(sample_path)};
+    REQUIRE(reader.frames().size() > frame_indices.back());
+    mcraw::VulkanRuntime runtime;
+    mcraw::FfmpegVulkanFrameContext frames(
+        runtime, {static_cast<int>(width), static_cast<int>(height), 4});
+    mcraw::VulkanRgbToYuvFrameWriter writer(
+        runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
+                          mcraw::GpuPrecision::fp32, 1});
+    const mcraw::DaVinciIntermediateLut curve;
+
+    for (const auto frame_index : frame_indices) {
+        const auto decoded = reader.load_reference_frame_with_metadata(frame_index);
+        const auto calibrated = mcraw::calibrate_raw_for_demosaic(
+            decoded.raw, decoded.metadata, 16);
+        const auto camera = mcraw::demosaic_unnormalized(
+            calibrated, mcraw::DemosaicAlgorithm::rcd, 16);
+        REQUIRE(camera.width == width);
+        REQUIRE(camera.height == height);
+        const auto solution = mcraw::build_camera_color_solution(decoded.metadata);
+        const auto reference = mcraw::pack_camera_to_dwg_di_yuv422p10(
+            camera, solution, 0.0, mcraw::NegativePolicy::preserve_by_curve,
+            curve, mcraw::ChromaFilter::quality, true, frame_index, 16,
+            sharpening, threshold, input_scale).image;
+        mcraw::FrameMetadata metadata;
+        metadata.width = width;
+        metadata.height = height;
+        metadata.pts = static_cast<std::int64_t>(frame_index) * 3'000;
+        metadata.duration = 3'000;
+        metadata.time_base = {1, 90'000};
+        metadata.range = AVCOL_RANGE_MPEG;
+        metadata.matrix = AVCOL_SPC_BT2020_NCL;
+        auto output = writer.pack_camera_rgb(
+            camera, solution.camera_to_target, 0.0, input_scale, sharpening,
+            threshold, mcraw::NegativePolicy::preserve_by_curve, frame_index,
+            metadata);
+        auto software = mcraw::make_av_frame();
+        software->format = AV_PIX_FMT_YUV422P10LE;
+        software->width = width;
+        software->height = height;
+        mcraw::require_ffmpeg(av_frame_get_buffer(software.get(), 32),
+                              "allocate real Stage 1 final YUV readback");
+        mcraw::require_ffmpeg(
+            av_hwframe_transfer_data(software.get(), output.frame.get(), 0),
+            "read back real Stage 1 final YUV");
+
+        const auto maximum_error = [&](int plane,
+                                       const std::vector<std::uint16_t>& expected,
+                                       std::uint32_t plane_width) {
+            std::uint16_t maximum = 0;
+            std::size_t offset = 0;
+            for (std::uint32_t row = 0; row < height; ++row) {
+                const auto* actual = reinterpret_cast<const std::uint16_t*>(
+                    software->data[plane] + row * software->linesize[plane]);
+                for (std::uint32_t x = 0; x < plane_width; ++x, ++offset) {
+                    const auto error = static_cast<std::uint16_t>(std::abs(
+                        static_cast<int>(expected[offset]) -
+                        static_cast<int>(actual[x])));
+                    maximum = std::max(maximum, error);
+                }
+            }
+            return maximum;
+        };
+        const auto y_error = maximum_error(0, reference.y, width);
+        const auto cb_error = maximum_error(1, reference.cb, width / 2U);
+        const auto cr_error = maximum_error(2, reference.cr, width / 2U);
+        INFO("frame=" << frame_index << " Y/Cb/Cr max=" << y_error << "/"
+                      << cb_error << "/" << cr_error);
+        CHECK(y_error <= 1U);
+        CHECK(cb_error <= 1U);
+        CHECK(cr_error <= 1U);
+        writer.wait();
+    }
+
+    const auto telemetry = writer.telemetry();
+    const auto pixels = static_cast<std::uint64_t>(width) * height;
+    CHECK(telemetry.rgb_upload_bytes ==
+          pixels * 3U * sizeof(float) * frame_indices.size());
+    CHECK(telemetry.camera_to_dwg_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.capture_sharpening_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.davinci_intermediate_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.gpu_timestamp_samples == frame_indices.size());
+    CHECK(telemetry.control_status_read_bytes ==
+          sizeof(std::uint32_t) * frame_indices.size());
     CHECK(telemetry.control_status_failures == 0U);
 }
 

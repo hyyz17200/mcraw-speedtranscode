@@ -157,3 +157,19 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - 30 帧 4096x3072 E2E 中 Camera RGB upload 为 4,529,848,320 bytes、TargetLog
   upload 为 0、四个 GPU pass 各 30 个 timestamp；CPU/Vulkan 全流解码与音频/PTS
   检查通过。详细报告见 `GPU_STAGE1E_RESIDENT_CHAIN_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 1F E2E and benchmark
+
+- 真实 Stage 0 帧 0/120/239 的最终 Y/Cb/Cr 均以最大 1 LSB 通过；240 帧
+  Stage 1 MOV 的 ProRes HQ、yuv422p10le、视频全流解码、48 kHz 双声道音频、PTS、
+  transfer/status/timestamp invariants 全部通过。
+- 同一台 RTX 3060、同一 input/config、每候选一次 warm-up + 三次 official 的 matched
+  A/B：重建 Stage 0 中位数 6.863 fps，Stage 1 中位数 4.963 fps；相对性能为
+  `-27.685%`，未达到 `+20%` gate，结论为 **NO-GO**。
+- Stage 1 的 GPU job queue peak 为 10、每轮 backpressure waits 为 227、
+  ProRes submit/wait mean 中位数为 181.777 ms/frame、VRAM delta 中位数为
+  3,782 MiB；Stage 0 对应为 5、0、0.004 ms/frame、1,433 MiB。证据指向
+  resident slots/VRAM/barrier/occupancy 与 encoder contention，而非 CPU demosaic。
+- Stage 1A-1F 已完成为独立 rollback points，但 Stage 1 未通过性能验收，Vulkan
+  继续 opt-in；禁止直接融合 shader 或进入 Stage 2。详细报告见
+  `GPU_STAGE1F_E2E_BENCHMARK.md`。
