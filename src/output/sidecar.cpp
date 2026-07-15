@@ -89,6 +89,8 @@ void write_sidecar(const std::filesystem::path& path,
                  pipeline.target_log_fp32_upload_bytes},
                 {"camera_rgb_fp32_upload_bytes",
                  pipeline.camera_rgb_fp32_upload_bytes},
+                {"control_status_read_bytes",
+                 pipeline.control_status_read_bytes},
                 {"compressed_packet_download_bytes",
                  pipeline.compressed_packet_download_bytes},
                 {"gpu_image_to_image_counted_as_pcie", false}
@@ -112,6 +114,36 @@ void write_sidecar(const std::filesystem::path& path,
                 {"driver", pipeline.gpu_driver},
                 {"timestamps_supported", pipeline.gpu_timestamps_supported},
                 {"stages", {
+                    {"camera_to_dwg", {
+                        {"samples", pipeline.camera_to_dwg_gpu_timestamp_samples},
+                        {"total_ms", pipeline.camera_to_dwg_gpu_total_ms},
+                        {"mean_ms", pipeline.camera_to_dwg_gpu_mean_ms},
+                        {"p50_ms", pipeline.camera_to_dwg_gpu_p50_ms},
+                        {"p95_ms", pipeline.camera_to_dwg_gpu_p95_ms},
+                        {"p99_ms", pipeline.camera_to_dwg_gpu_p99_ms},
+                        {"min_ms", pipeline.camera_to_dwg_gpu_min_ms},
+                        {"max_ms", pipeline.camera_to_dwg_gpu_max_ms}
+                    }},
+                    {"capture_sharpening", {
+                        {"samples", pipeline.capture_sharpening_gpu_timestamp_samples},
+                        {"total_ms", pipeline.capture_sharpening_gpu_total_ms},
+                        {"mean_ms", pipeline.capture_sharpening_gpu_mean_ms},
+                        {"p50_ms", pipeline.capture_sharpening_gpu_p50_ms},
+                        {"p95_ms", pipeline.capture_sharpening_gpu_p95_ms},
+                        {"p99_ms", pipeline.capture_sharpening_gpu_p99_ms},
+                        {"min_ms", pipeline.capture_sharpening_gpu_min_ms},
+                        {"max_ms", pipeline.capture_sharpening_gpu_max_ms}
+                    }},
+                    {"davinci_intermediate", {
+                        {"samples", pipeline.davinci_intermediate_gpu_timestamp_samples},
+                        {"total_ms", pipeline.davinci_intermediate_gpu_total_ms},
+                        {"mean_ms", pipeline.davinci_intermediate_gpu_mean_ms},
+                        {"p50_ms", pipeline.davinci_intermediate_gpu_p50_ms},
+                        {"p95_ms", pipeline.davinci_intermediate_gpu_p95_ms},
+                        {"p99_ms", pipeline.davinci_intermediate_gpu_p99_ms},
+                        {"min_ms", pipeline.davinci_intermediate_gpu_min_ms},
+                        {"max_ms", pipeline.davinci_intermediate_gpu_max_ms}
+                    }},
                     {"rgb_to_yuv_422", {
                         {"samples", pipeline.rgb_to_yuv_gpu_timestamp_samples},
                         {"total_ms", pipeline.rgb_to_yuv_gpu_total_ms},
@@ -122,7 +154,8 @@ void write_sidecar(const std::filesystem::path& path,
                         {"min_ms", pipeline.rgb_to_yuv_gpu_min_ms},
                         {"max_ms", pipeline.rgb_to_yuv_gpu_max_ms}
                     }}
-                }}
+                }},
+                {"control_status_failures", pipeline.control_status_failures}
             }},
             {"ffmpeg", {
                 {"version", pipeline.ffmpeg_version},

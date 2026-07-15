@@ -7,6 +7,7 @@
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/pixel_types.hpp>
 #include <mcraw/output/ffmpeg_vulkan_context.hpp>
+#include <mcraw/processing/color.hpp>
 #include <mcraw/vulkan/vulkan_runtime.hpp>
 
 namespace mcraw {
@@ -80,6 +81,32 @@ struct VulkanRgbToYuvFrameTelemetry {
     double gpu_min_ms{};
     double gpu_max_ms{};
     double last_gpu_dispatch_ms{};
+    std::uint64_t camera_to_dwg_timestamp_samples{};
+    double camera_to_dwg_gpu_total_ms{};
+    double camera_to_dwg_gpu_mean_ms{};
+    double camera_to_dwg_gpu_p50_ms{};
+    double camera_to_dwg_gpu_p95_ms{};
+    double camera_to_dwg_gpu_p99_ms{};
+    double camera_to_dwg_gpu_min_ms{};
+    double camera_to_dwg_gpu_max_ms{};
+    std::uint64_t capture_sharpening_timestamp_samples{};
+    double capture_sharpening_gpu_total_ms{};
+    double capture_sharpening_gpu_mean_ms{};
+    double capture_sharpening_gpu_p50_ms{};
+    double capture_sharpening_gpu_p95_ms{};
+    double capture_sharpening_gpu_p99_ms{};
+    double capture_sharpening_gpu_min_ms{};
+    double capture_sharpening_gpu_max_ms{};
+    std::uint64_t davinci_intermediate_timestamp_samples{};
+    double davinci_intermediate_gpu_total_ms{};
+    double davinci_intermediate_gpu_mean_ms{};
+    double davinci_intermediate_gpu_p50_ms{};
+    double davinci_intermediate_gpu_p95_ms{};
+    double davinci_intermediate_gpu_p99_ms{};
+    double davinci_intermediate_gpu_min_ms{};
+    double davinci_intermediate_gpu_max_ms{};
+    std::uint64_t control_status_read_bytes{};
+    std::uint64_t control_status_failures{};
 };
 
 class VulkanRgbToYuvFrameWriter {
@@ -98,6 +125,16 @@ public:
     [[nodiscard]] VulkanVideoFrame pack(const TargetLogRgbF32& input,
                                         std::size_t frame_index,
                                         FrameMetadata metadata);
+    [[nodiscard]] VulkanVideoFrame pack_camera_rgb(
+        const CameraRgbF32& input,
+        const Matrix3d& camera_to_target,
+        double exposure_offset_stops,
+        double input_scale,
+        double sharpening_amount,
+        double sharpening_threshold,
+        NegativePolicy negative_policy,
+        std::size_t frame_index,
+        FrameMetadata metadata);
     void wait();
     [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const;
 

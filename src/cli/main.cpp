@@ -744,7 +744,7 @@ int command_convert(const Arguments& args) {
     mcraw::StageTimings timings;
     const bool direct_vulkan_pipeline = backend.backend == mcraw::VideoBackend::vulkan;
     mcraw::CpuPipeline pipeline(config, execution.threads_per_frame,
-        direct_vulkan_pipeline ? mcraw::CpuPipelineOutput::target_log_rgb
+        direct_vulkan_pipeline ? mcraw::CpuPipelineOutput::camera_rgb
                                : mcraw::CpuPipelineOutput::packed_yuv);
     auto first_solution = mcraw::build_camera_color_solution(first_metadata);
     const auto sync_report = av_sync_report(audio_chunks, audio.sample_rate, audio.channels,
@@ -784,8 +784,16 @@ int command_convert(const Arguments& args) {
                 // encode itself, which overlaps with frame compute.
                 mcraw::StageTimer timer(timings, "prores_submit_wait");
                 if (direct_vulkan_pipeline) {
-                    writer.write_video(std::move(processed.target_log),
-                                       processed.timestamp_ns, frames_completed);
+                    mcraw::VulkanCameraRgbInput input;
+                    input.image = std::move(processed.camera_rgb);
+                    input.camera_to_target = processed.color_solution.camera_to_target;
+                    input.exposure_offset_stops = config.exposure_offset_stops;
+                    input.capture_sharpening = config.capture_sharpening;
+                    input.capture_sharpening_threshold =
+                        config.capture_sharpening_threshold;
+                    input.negative_policy = config.negative_policy;
+                    writer.write_video(std::move(input), processed.timestamp_ns,
+                                       frames_completed);
                 } else {
                     writer.write_video(std::move(processed.packed.image),
                                        processed.timestamp_ns);
@@ -819,7 +827,7 @@ int command_convert(const Arguments& args) {
     std::sort(warnings.begin(), warnings.end());
     warnings.erase(std::unique(warnings.begin(), warnings.end()), warnings.end());
     for (const auto& warning : warnings) std::cerr << "warning: " << warning << '\n';
-    const mcraw::PipelineBackendReport pipeline_report{
+    mcraw::PipelineBackendReport pipeline_report{
         std::string(mcraw::to_string(config.backend)), writer_telemetry.backend,
         config.async_depth, backend.used_fallback, backend.reason,
         writer_telemetry.gpu_resident,
@@ -852,6 +860,58 @@ int command_convert(const Arguments& args) {
         writer_telemetry.color_solution_location,
         writer_telemetry.target_log_fp32_upload_bytes,
         writer_telemetry.camera_rgb_fp32_upload_bytes};
+    pipeline_report.camera_to_dwg_gpu_timestamp_samples =
+        writer_telemetry.camera_to_dwg_gpu_timestamp_samples;
+    pipeline_report.camera_to_dwg_gpu_total_ms =
+        writer_telemetry.camera_to_dwg_gpu_total_ms;
+    pipeline_report.camera_to_dwg_gpu_mean_ms =
+        writer_telemetry.camera_to_dwg_gpu_mean_ms;
+    pipeline_report.camera_to_dwg_gpu_p50_ms =
+        writer_telemetry.camera_to_dwg_gpu_p50_ms;
+    pipeline_report.camera_to_dwg_gpu_p95_ms =
+        writer_telemetry.camera_to_dwg_gpu_p95_ms;
+    pipeline_report.camera_to_dwg_gpu_p99_ms =
+        writer_telemetry.camera_to_dwg_gpu_p99_ms;
+    pipeline_report.camera_to_dwg_gpu_min_ms =
+        writer_telemetry.camera_to_dwg_gpu_min_ms;
+    pipeline_report.camera_to_dwg_gpu_max_ms =
+        writer_telemetry.camera_to_dwg_gpu_max_ms;
+    pipeline_report.capture_sharpening_gpu_timestamp_samples =
+        writer_telemetry.capture_sharpening_gpu_timestamp_samples;
+    pipeline_report.capture_sharpening_gpu_total_ms =
+        writer_telemetry.capture_sharpening_gpu_total_ms;
+    pipeline_report.capture_sharpening_gpu_mean_ms =
+        writer_telemetry.capture_sharpening_gpu_mean_ms;
+    pipeline_report.capture_sharpening_gpu_p50_ms =
+        writer_telemetry.capture_sharpening_gpu_p50_ms;
+    pipeline_report.capture_sharpening_gpu_p95_ms =
+        writer_telemetry.capture_sharpening_gpu_p95_ms;
+    pipeline_report.capture_sharpening_gpu_p99_ms =
+        writer_telemetry.capture_sharpening_gpu_p99_ms;
+    pipeline_report.capture_sharpening_gpu_min_ms =
+        writer_telemetry.capture_sharpening_gpu_min_ms;
+    pipeline_report.capture_sharpening_gpu_max_ms =
+        writer_telemetry.capture_sharpening_gpu_max_ms;
+    pipeline_report.davinci_intermediate_gpu_timestamp_samples =
+        writer_telemetry.davinci_intermediate_gpu_timestamp_samples;
+    pipeline_report.davinci_intermediate_gpu_total_ms =
+        writer_telemetry.davinci_intermediate_gpu_total_ms;
+    pipeline_report.davinci_intermediate_gpu_mean_ms =
+        writer_telemetry.davinci_intermediate_gpu_mean_ms;
+    pipeline_report.davinci_intermediate_gpu_p50_ms =
+        writer_telemetry.davinci_intermediate_gpu_p50_ms;
+    pipeline_report.davinci_intermediate_gpu_p95_ms =
+        writer_telemetry.davinci_intermediate_gpu_p95_ms;
+    pipeline_report.davinci_intermediate_gpu_p99_ms =
+        writer_telemetry.davinci_intermediate_gpu_p99_ms;
+    pipeline_report.davinci_intermediate_gpu_min_ms =
+        writer_telemetry.davinci_intermediate_gpu_min_ms;
+    pipeline_report.davinci_intermediate_gpu_max_ms =
+        writer_telemetry.davinci_intermediate_gpu_max_ms;
+    pipeline_report.control_status_read_bytes =
+        writer_telemetry.control_status_read_bytes;
+    pipeline_report.control_status_failures =
+        writer_telemetry.control_status_failures;
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
@@ -881,6 +941,7 @@ int command_convert(const Arguments& args) {
                                         {"fp32_rgb_upload_bytes", pipeline_report.fp32_rgb_upload_bytes},
                                         {"target_log_fp32_upload_bytes", pipeline_report.target_log_fp32_upload_bytes},
                                         {"camera_rgb_fp32_upload_bytes", pipeline_report.camera_rgb_fp32_upload_bytes},
+                                        {"control_status_read_bytes", pipeline_report.control_status_read_bytes},
                                         {"compressed_packet_download_bytes", pipeline_report.compressed_packet_download_bytes},
                                         {"gpu_image_to_image_counted_as_pcie", false}
                                     }},
@@ -892,7 +953,38 @@ int command_convert(const Arguments& args) {
                                     {"gpu_name", pipeline_report.gpu_name},
                                     {"gpu_uuid", pipeline_report.gpu_uuid},
                                     {"gpu_timestamps_supported", pipeline_report.gpu_timestamps_supported},
+                                    {"control_status_failures", pipeline_report.control_status_failures},
                                     {"gpu_stages", {
+                                        {"camera_to_dwg", {
+                                            {"samples", pipeline_report.camera_to_dwg_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.camera_to_dwg_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.camera_to_dwg_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.camera_to_dwg_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.camera_to_dwg_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.camera_to_dwg_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.camera_to_dwg_gpu_min_ms},
+                                            {"max_ms", pipeline_report.camera_to_dwg_gpu_max_ms}
+                                        }},
+                                        {"capture_sharpening", {
+                                            {"samples", pipeline_report.capture_sharpening_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.capture_sharpening_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.capture_sharpening_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.capture_sharpening_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.capture_sharpening_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.capture_sharpening_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.capture_sharpening_gpu_min_ms},
+                                            {"max_ms", pipeline_report.capture_sharpening_gpu_max_ms}
+                                        }},
+                                        {"davinci_intermediate", {
+                                            {"samples", pipeline_report.davinci_intermediate_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.davinci_intermediate_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.davinci_intermediate_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.davinci_intermediate_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.davinci_intermediate_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.davinci_intermediate_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.davinci_intermediate_gpu_min_ms},
+                                            {"max_ms", pipeline_report.davinci_intermediate_gpu_max_ms}
+                                        }},
                                         {"rgb_to_yuv_422", {
                                             {"samples", pipeline_report.rgb_to_yuv_gpu_timestamp_samples},
                                             {"total_ms", pipeline_report.rgb_to_yuv_gpu_total_ms},

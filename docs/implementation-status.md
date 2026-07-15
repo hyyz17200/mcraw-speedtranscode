@@ -141,3 +141,19 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
   `3.48774 ms`，仅作为 shader 验证数据，不作为性能承诺。
 - 本批次仍不切换 production writer；详细报告见
   `GPU_STAGE1D_DAVINCI_INTERMEDIATE_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 1E resident chain
+
+- production Vulkan route 已切换到 `camera_rgb_f32`：单一 slot command buffer
+  串联 color/exposure、sharpening、DI、RGB-to-YUV，并直接写 encoder-owned
+  `AVVkFrame`；Stage 0 TargetLog overload 仅保留为 rollback point。
+- Camera RGB upload 逐帧精确计数；production TargetLog upload、TargetLinear/
+  TargetLog/YUV pixel readback 均为 0。每帧只额外读取 4-byte control status。
+- ping-pong buffer reuse、status reset/read、AVVkFrame layout/access 与 timeline
+  semaphore 均有显式 barrier/ownership；validation 发现的宽泛 source stage 已收窄为
+  实际 compute shader stage，复测为 0 个应用 validation error。
+- synthetic resident final Y/Cb/Cr 均为 0 LSB；negative-policy fault injection、
+  decodable MOV、partial cleanup、auto fallback 和 forced invalid-device 均通过。
+- 30 帧 4096x3072 E2E 中 Camera RGB upload 为 4,529,848,320 bytes、TargetLog
+  upload 为 0、四个 GPU pass 各 30 个 timestamp；CPU/Vulkan 全流解码与音频/PTS
+  检查通过。详细报告见 `GPU_STAGE1E_RESIDENT_CHAIN_VALIDATION.md`。

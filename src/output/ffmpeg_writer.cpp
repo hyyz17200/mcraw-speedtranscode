@@ -492,6 +492,58 @@ public:
                 result.rgb_to_yuv_gpu_p99_ms = frame_counters.gpu_p99_ms;
                 result.rgb_to_yuv_gpu_min_ms = frame_counters.gpu_min_ms;
                 result.rgb_to_yuv_gpu_max_ms = frame_counters.gpu_max_ms;
+                result.camera_to_dwg_gpu_timestamp_samples =
+                    frame_counters.camera_to_dwg_timestamp_samples;
+                result.camera_to_dwg_gpu_total_ms =
+                    frame_counters.camera_to_dwg_gpu_total_ms;
+                result.camera_to_dwg_gpu_mean_ms =
+                    frame_counters.camera_to_dwg_gpu_mean_ms;
+                result.camera_to_dwg_gpu_p50_ms =
+                    frame_counters.camera_to_dwg_gpu_p50_ms;
+                result.camera_to_dwg_gpu_p95_ms =
+                    frame_counters.camera_to_dwg_gpu_p95_ms;
+                result.camera_to_dwg_gpu_p99_ms =
+                    frame_counters.camera_to_dwg_gpu_p99_ms;
+                result.camera_to_dwg_gpu_min_ms =
+                    frame_counters.camera_to_dwg_gpu_min_ms;
+                result.camera_to_dwg_gpu_max_ms =
+                    frame_counters.camera_to_dwg_gpu_max_ms;
+                result.capture_sharpening_gpu_timestamp_samples =
+                    frame_counters.capture_sharpening_timestamp_samples;
+                result.capture_sharpening_gpu_total_ms =
+                    frame_counters.capture_sharpening_gpu_total_ms;
+                result.capture_sharpening_gpu_mean_ms =
+                    frame_counters.capture_sharpening_gpu_mean_ms;
+                result.capture_sharpening_gpu_p50_ms =
+                    frame_counters.capture_sharpening_gpu_p50_ms;
+                result.capture_sharpening_gpu_p95_ms =
+                    frame_counters.capture_sharpening_gpu_p95_ms;
+                result.capture_sharpening_gpu_p99_ms =
+                    frame_counters.capture_sharpening_gpu_p99_ms;
+                result.capture_sharpening_gpu_min_ms =
+                    frame_counters.capture_sharpening_gpu_min_ms;
+                result.capture_sharpening_gpu_max_ms =
+                    frame_counters.capture_sharpening_gpu_max_ms;
+                result.davinci_intermediate_gpu_timestamp_samples =
+                    frame_counters.davinci_intermediate_timestamp_samples;
+                result.davinci_intermediate_gpu_total_ms =
+                    frame_counters.davinci_intermediate_gpu_total_ms;
+                result.davinci_intermediate_gpu_mean_ms =
+                    frame_counters.davinci_intermediate_gpu_mean_ms;
+                result.davinci_intermediate_gpu_p50_ms =
+                    frame_counters.davinci_intermediate_gpu_p50_ms;
+                result.davinci_intermediate_gpu_p95_ms =
+                    frame_counters.davinci_intermediate_gpu_p95_ms;
+                result.davinci_intermediate_gpu_p99_ms =
+                    frame_counters.davinci_intermediate_gpu_p99_ms;
+                result.davinci_intermediate_gpu_min_ms =
+                    frame_counters.davinci_intermediate_gpu_min_ms;
+                result.davinci_intermediate_gpu_max_ms =
+                    frame_counters.davinci_intermediate_gpu_max_ms;
+                result.control_status_read_bytes =
+                    frame_counters.control_status_read_bytes;
+                result.control_status_failures =
+                    frame_counters.control_status_failures;
             }
             result.gpu_queue_capacity = vulkan_job_capacity;
             result.gpu_queue_max_depth = vulkan_job_max_depth;
@@ -642,9 +694,16 @@ private:
         } else if (auto* rgb = std::get_if<TargetLogRgbF32>(&job.input)) {
             vulkan_encoder->send(vulkan_frame_writer->pack(
                 *rgb, job.frame_index, metadata));
+        } else if (auto* camera = std::get_if<VulkanCameraRgbInput>(&job.input)) {
+            vulkan_encoder->send(vulkan_frame_writer->pack_camera_rgb(
+                camera->image, camera->camera_to_target,
+                camera->exposure_offset_stops, camera->input_scale,
+                camera->capture_sharpening,
+                camera->capture_sharpening_threshold,
+                camera->negative_policy, job.frame_index, metadata));
         } else {
             throw Error(ErrorCode::unsupported_format,
-                        "Camera RGB Vulkan entry is not connected to the production writer before the Stage 1E resident chain");
+                        "unsupported Vulkan writer input variant");
         }
         enqueue_vulkan_packets(vulkan_encoder->drain());
     }

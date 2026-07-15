@@ -65,6 +65,32 @@ struct PipelineBackendReport {
     std::string color_solution_location{"not_applicable"};
     std::uint64_t target_log_fp32_upload_bytes{};
     std::uint64_t camera_rgb_fp32_upload_bytes{};
+    std::uint64_t camera_to_dwg_gpu_timestamp_samples{};
+    double camera_to_dwg_gpu_total_ms{};
+    double camera_to_dwg_gpu_mean_ms{};
+    double camera_to_dwg_gpu_p50_ms{};
+    double camera_to_dwg_gpu_p95_ms{};
+    double camera_to_dwg_gpu_p99_ms{};
+    double camera_to_dwg_gpu_min_ms{};
+    double camera_to_dwg_gpu_max_ms{};
+    std::uint64_t capture_sharpening_gpu_timestamp_samples{};
+    double capture_sharpening_gpu_total_ms{};
+    double capture_sharpening_gpu_mean_ms{};
+    double capture_sharpening_gpu_p50_ms{};
+    double capture_sharpening_gpu_p95_ms{};
+    double capture_sharpening_gpu_p99_ms{};
+    double capture_sharpening_gpu_min_ms{};
+    double capture_sharpening_gpu_max_ms{};
+    std::uint64_t davinci_intermediate_gpu_timestamp_samples{};
+    double davinci_intermediate_gpu_total_ms{};
+    double davinci_intermediate_gpu_mean_ms{};
+    double davinci_intermediate_gpu_p50_ms{};
+    double davinci_intermediate_gpu_p95_ms{};
+    double davinci_intermediate_gpu_p99_ms{};
+    double davinci_intermediate_gpu_min_ms{};
+    double davinci_intermediate_gpu_max_ms{};
+    std::uint64_t control_status_read_bytes{};
+    std::uint64_t control_status_failures{};
 };
 
 void write_sidecar(const std::filesystem::path& path,

@@ -260,7 +260,7 @@ TEST_CASE("Vulkan worker failure cancels bounded queues and reaches the caller")
     CHECK_THROWS_AS(writer.finish(), mcraw::Error);
 }
 
-TEST_CASE("Vulkan Camera RGB job stays unavailable until the resident chain") {
+TEST_CASE("Vulkan Camera RGB resident chain writes a decodable MOV") {
     constexpr std::uint32_t width = 64;
     constexpr std::uint32_t height = 32;
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
@@ -271,9 +271,43 @@ TEST_CASE("Vulkan Camera RGB job stays unavailable until the resident chain") {
     mcraw::VulkanCameraRgbInput input;
     input.image = test_rgb_frame(width, height, 0);
     input.camera_to_target = mcraw::Matrix3d::identity();
+    input.input_scale = 1.0;
     input.capture_sharpening = 0.4;
     input.capture_sharpening_threshold = 0.002;
     writer.write_video(std::move(input), 1'000'000'000LL, 0);
+    writer.finish();
+    const auto telemetry = writer.telemetry();
+    CHECK(telemetry.pipeline_entry == "camera_rgb_f32");
+    CHECK(telemetry.pipeline_precision == "fp32/precise");
+    CHECK(telemetry.camera_rgb_fp32_upload_bytes ==
+          static_cast<std::uint64_t>(width) * height * 3U * sizeof(float));
+    CHECK(telemetry.target_log_fp32_upload_bytes == 0U);
+    CHECK(telemetry.camera_to_dwg_gpu_timestamp_samples == 1U);
+    CHECK(telemetry.capture_sharpening_gpu_timestamp_samples == 1U);
+    CHECK(telemetry.davinci_intermediate_gpu_timestamp_samples == 1U);
+    CHECK(telemetry.rgb_to_yuv_gpu_timestamp_samples == 1U);
+    CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t));
+    CHECK(telemetry.control_status_failures == 0U);
+    mcraw::validate_prores_mov(output.path, 1);
+    CHECK(decode_video_frames(output.path) == 1);
+}
+
+TEST_CASE("Vulkan Camera RGB resident policy failure reaches the caller") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-camera-policy-" +
+                         std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 2, false});
+    mcraw::VulkanCameraRgbInput input;
+    input.image = test_rgb_frame(width, height, 0);
+    input.image.planes[0][0] = -0.25F;
+    input.camera_to_target = mcraw::Matrix3d::identity();
+    input.input_scale = 1.0;
+    input.negative_policy = mcraw::NegativePolicy::error;
+    writer.write_video(std::move(input), 1'000'000'000LL, 0);
     CHECK_THROWS_AS(writer.finish(), mcraw::Error);
-    CHECK(writer.telemetry().pipeline_entry == "camera_rgb_f32");
+    CHECK(writer.telemetry().control_status_failures == 1U);
 }

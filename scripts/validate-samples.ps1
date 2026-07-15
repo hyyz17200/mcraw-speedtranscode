@@ -70,6 +70,7 @@ foreach ($sample in $samples) {
             throw "direct Vulkan conversion failed for $($sample.FullName)"
         }
         if (-not $gpuResult.pipeline.gpu_resident -or
+            $gpuResult.pipeline.entry -ne "camera_rgb_f32" -or
             $gpuResult.pipeline.direct_frames -ne $selectedFrames -or
             $gpuResult.pipeline.upload_frames -ne 0 -or
             $gpuResult.pipeline.readback_frames -ne 0 -or
@@ -79,7 +80,16 @@ foreach ($sample in $samples) {
             $gpuResult.pipeline.transfers.fp16_rgb_upload_bytes -ne 0 -or
             $gpuResult.pipeline.transfers.fp32_rgb_upload_bytes -ne
                 $gpuResult.pipeline.rgb_upload_bytes -or
+            $gpuResult.pipeline.transfers.camera_rgb_fp32_upload_bytes -ne
+                $gpuResult.pipeline.rgb_upload_bytes -or
+            $gpuResult.pipeline.transfers.target_log_fp32_upload_bytes -ne 0 -or
+            $gpuResult.pipeline.transfers.control_status_read_bytes -ne
+                ($selectedFrames * 4) -or
             -not $gpuResult.pipeline.gpu_timestamps_supported -or
+            $gpuResult.pipeline.control_status_failures -ne 0 -or
+            $gpuResult.pipeline.gpu_stages.camera_to_dwg.samples -ne $selectedFrames -or
+            $gpuResult.pipeline.gpu_stages.capture_sharpening.samples -ne $selectedFrames -or
+            $gpuResult.pipeline.gpu_stages.davinci_intermediate.samples -ne $selectedFrames -or
             $gpuResult.pipeline.gpu_stages.rgb_to_yuv_422.samples -ne $selectedFrames) {
             throw "direct Vulkan telemetry invariant failed for $($sample.FullName)"
         }
