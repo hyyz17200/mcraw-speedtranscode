@@ -3,6 +3,14 @@
 
 #include <mcraw/core/metadata.hpp>
 #include <mcraw/processing/color.hpp>
+#include <mcraw/processing/pipeline.hpp>
+
+TEST_CASE("CPU pipeline output boundary names are explicit") {
+    CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::packed_yuv) == "packed_yuv");
+    CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::target_log_rgb) ==
+          "target_log_rgb");
+    CHECK(mcraw::to_string(mcraw::CpuPipelineOutput::camera_rgb) == "camera_rgb");
+}
 
 TEST_CASE("3x3 inverse composes to identity") {
     const mcraw::Matrix3d matrix{{1.2, 0.1, -0.2, 0.3, 0.8, 0.1, -0.1, 0.2, 1.1}};
@@ -34,4 +42,3 @@ TEST_CASE("identity camera profile converges for a D65 neutral") {
     REQUIRE(white.x == Catch::Approx(0.3127).margin(1.0e-5));
     REQUIRE(white.y == Catch::Approx(0.3290).margin(1.0e-5));
 }
-

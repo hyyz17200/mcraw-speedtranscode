@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstddef>
+#include <string_view>
 
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/metadata.hpp>
@@ -12,19 +13,28 @@
 
 namespace mcraw {
 
+enum class CpuPipelineOutput {
+    packed_yuv,
+    target_log_rgb,
+    camera_rgb,
+};
+
+[[nodiscard]] std::string_view to_string(CpuPipelineOutput value) noexcept;
+
 struct ProcessedFrame {
     std::int64_t timestamp_ns{};
     NormalizedCameraMetadata metadata;
     CameraColorSolution color_solution;
     PackedYuvResult packed;
     TargetLogRgbF32 target_log;
+    CameraRgbF32 camera_rgb;
 };
 
 class CpuPipeline {
 public:
     explicit CpuPipeline(EffectiveConfig config,
                          std::size_t worker_threads = 1,
-                         bool output_target_log = false);
+                         CpuPipelineOutput output = CpuPipelineOutput::packed_yuv);
     [[nodiscard]] ProcessedFrame process(
         const McrawReader& reader,
         std::size_t frame_index,
@@ -33,7 +43,7 @@ public:
 private:
     EffectiveConfig config_;
     std::size_t worker_threads_{1};
-    bool output_target_log_{};
+    CpuPipelineOutput output_{CpuPipelineOutput::packed_yuv};
     DaVinciIntermediateLut di_curve_;
 };
 

@@ -76,6 +76,20 @@ Capture Sharpening `0.25` 为 2.655 fps。两者均为 4096×3072 ProRes 422 HQ
 - Release build、43 项 CTest、GPU-assisted RGB→YUV golden、30 帧 CPU/Vulkan
   全流解码、auto fallback、forced Vulkan cleanup 全部通过。
 
-本轮 manifest 正确记录 `dirty=true`，因此属于实施验证基线，不是最终冻结的
-rollback point。Stage 1 开始前仍需在提交后重跑 capture，并确认 manifest
-`dirty=false`；详细合约见 `GPU_STAGE0_BASELINE.md`。
+Stage 0 已提交为 rollback point `622070c`。提交后 capture manifest 指向该 commit、
+记录 `dirty=false`，并保持相同 executable/config/corpus 与 21 项 artifact hashes。
+Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 benchmark 合约见
+`GPU_STAGE1_CAMERA_RGB_TECHNICAL_DESIGN.md`。
+
+## 2026-07-15 GPU Stage 1A foundation
+
+- `CpuPipelineOutput` 取代隐式 boolean producer seam，明确区分 CPU packed YUV、
+  TargetLog RGB 和 Camera RGB；当前 CLI 仍固定使用已验收的 Stage 0 TargetLog 路径。
+- 新增独立的 `VulkanCameraPipelineResources`：每 slot 三张 host-visible Camera RGB
+  upload buffer、两组三平面 device-local FP32 ping-pong buffer、独立 command buffer 和
+  fence；继续复用 FFmpeg-owned device、compute queue 及 queue lock。
+- test-only readback 必须显式启用；round-trip 通过 transfer barrier 验证 upload →
+  device-local intermediate → readback 的逐 bit 一致性，production 配置不会分配 readback。
+- writer telemetry/sidecar 开始记录实际 `pipeline.entry`、precision、demosaic/color
+  solution location，并分别统计 TargetLog 与 Camera RGB FP32 upload bytes。
+- 本批次没有 color/sharpen/DI shader，不改变 Stage 0 输出像素或 fallback 行为。

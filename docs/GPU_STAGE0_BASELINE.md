@@ -2,8 +2,9 @@
 
 Date: 2026-07-14
 
-Status: instrumentation and the initial dirty-tree capture are complete. A
-committed rollback-point recapture remains required before Stage 1 starts.
+Status: complete at committed rollback point `622070c`. The post-commit capture
+manifest records `dirty=false` and the fixed corpus hashes are stable. Stage 1
+implementation is governed by `GPU_STAGE1_CAMERA_RGB_TECHNICAL_DESIGN.md`.
 
 ## Frozen product semantics
 
@@ -99,13 +100,19 @@ Do not start Stage 1 until a clean committed rollback point has produced:
 If repeated full runs fluctuate enough to hide a 20% Stage 1 improvement, fix
 the benchmark environment or telemetry before moving the pipeline boundary.
 
-## Initial capture (dirty-tree implementation validation)
+## Frozen rollback-point capture
 
-The first run after adding this contract produced 21 hashed artifacts (three
-frames times seven boundaries, 1,767,327,738 bytes) and completed one warm-up
-plus three full forced-Vulkan conversions. It is evidence that the Stage 0
-machinery works, not the final frozen rollback point because its manifest
-correctly records `dirty=true`.
+The post-commit recapture at `622070c8a62200aa828efcd7b95b57f9189a1519`
+records `dirty=false`, the same executable/config/corpus hashes as the validated
+implementation run, and 21 artifacts totaling 1,767,327,738 bytes. The manifest
+was captured at `2026-07-15T05:43:54Z` and is the Stage 0 artifact truth source.
+
+## Initial matched benchmark (implementation validation)
+
+The implementation validation run used the same executable/config/corpus
+hashes and completed one warm-up plus three full forced-Vulkan conversions.
+Its report records the pre-commit dirty tree; the clean post-commit manifest
+above establishes the rollback-point identity.
 
 | Measurement | Initial result |
 |---|---:|

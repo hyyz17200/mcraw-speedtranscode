@@ -744,7 +744,8 @@ int command_convert(const Arguments& args) {
     mcraw::StageTimings timings;
     const bool direct_vulkan_pipeline = backend.backend == mcraw::VideoBackend::vulkan;
     mcraw::CpuPipeline pipeline(config, execution.threads_per_frame,
-                                direct_vulkan_pipeline);
+        direct_vulkan_pipeline ? mcraw::CpuPipelineOutput::target_log_rgb
+                               : mcraw::CpuPipelineOutput::packed_yuv);
     auto first_solution = mcraw::build_camera_color_solution(first_metadata);
     const auto sync_report = av_sync_report(audio_chunks, audio.sample_rate, audio.channels,
         reader.frames().front().timestamp_ns, video_end_ns);
@@ -845,7 +846,12 @@ int command_convert(const Arguments& args) {
         writer_telemetry.rgb_to_yuv_gpu_max_ms,
         writer_telemetry.gpu_name,
         writer_telemetry.gpu_uuid, writer_telemetry.gpu_driver,
-        capabilities.ffmpeg_version, capabilities.ffmpeg_configuration};
+        capabilities.ffmpeg_version, capabilities.ffmpeg_configuration,
+        writer_telemetry.pipeline_entry, writer_telemetry.pipeline_precision,
+        writer_telemetry.demosaic_location,
+        writer_telemetry.color_solution_location,
+        writer_telemetry.target_log_fp32_upload_bytes,
+        writer_telemetry.camera_rgb_fp32_upload_bytes};
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
@@ -855,6 +861,10 @@ int command_convert(const Arguments& args) {
                                     1000.0 / conversion_wall_ms},
                                 {"pipeline", {
                                     {"backend", pipeline_report.backend},
+                                    {"entry", pipeline_report.pipeline_entry},
+                                    {"precision", pipeline_report.pipeline_precision},
+                                    {"demosaic_location", pipeline_report.demosaic_location},
+                                    {"color_solution_location", pipeline_report.color_solution_location},
                                     {"requested_backend", pipeline_report.requested_backend},
                                     {"async_depth", pipeline_report.async_depth},
                                     {"used_fallback", pipeline_report.used_fallback},
@@ -869,6 +879,8 @@ int command_convert(const Arguments& args) {
                                         {"u16_raw_upload_bytes", pipeline_report.u16_raw_upload_bytes},
                                         {"fp16_rgb_upload_bytes", pipeline_report.fp16_rgb_upload_bytes},
                                         {"fp32_rgb_upload_bytes", pipeline_report.fp32_rgb_upload_bytes},
+                                        {"target_log_fp32_upload_bytes", pipeline_report.target_log_fp32_upload_bytes},
+                                        {"camera_rgb_fp32_upload_bytes", pipeline_report.camera_rgb_fp32_upload_bytes},
                                         {"compressed_packet_download_bytes", pipeline_report.compressed_packet_download_bytes},
                                         {"gpu_image_to_image_counted_as_pcie", false}
                                     }},

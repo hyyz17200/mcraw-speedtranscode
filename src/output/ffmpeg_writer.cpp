@@ -4,6 +4,7 @@
 #include <atomic>
 #include <condition_variable>
 #include <chrono>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -14,6 +15,7 @@
 #include <string>
 #include <string_view>
 #include <thread>
+#include <type_traits>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -253,6 +255,9 @@ public:
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
         rethrow_pipeline_error();
         input.validate();
+        record_pipeline_entry(video_backend == VideoBackend::vulkan
+                                  ? "yuv422p10_cpu_upload"
+                                  : "yuv422p10_cpu");
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
         if (video_backend == VideoBackend::vulkan) {
             enqueue_vulkan_video(std::move(input), timestamp_ns, 0U);
@@ -310,6 +315,7 @@ public:
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
         rethrow_pipeline_error();
         input.validate();
+        record_pipeline_entry("target_log_f32");
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
         if (video_backend == VideoBackend::vulkan) {
             enqueue_vulkan_video(std::move(input), timestamp_ns, frame_index);
@@ -318,6 +324,35 @@ public:
 #endif
         throw Error(ErrorCode::invalid_argument,
                     "TargetLog RGB video input requires the Vulkan backend");
+    }
+
+    void write_video(VulkanCameraRgbInput input,
+                     [[maybe_unused]] std::int64_t timestamp_ns,
+                     [[maybe_unused]] std::size_t frame_index) {
+        if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
+        rethrow_pipeline_error();
+        input.image.validate();
+        if (!std::isfinite(input.exposure_offset_stops) ||
+            !std::isfinite(input.input_scale) || input.input_scale <= 0.0 ||
+            !std::isfinite(input.capture_sharpening) ||
+            input.capture_sharpening < 0.0 ||
+            !std::isfinite(input.capture_sharpening_threshold) ||
+            input.capture_sharpening_threshold < 0.0 ||
+            !std::all_of(input.camera_to_target.v.begin(),
+                         input.camera_to_target.v.end(),
+                         [](double value) { return std::isfinite(value); })) {
+            throw Error(ErrorCode::invalid_argument,
+                        "Camera RGB Vulkan parameters must be finite and valid");
+        }
+        record_pipeline_entry("camera_rgb_f32");
+#if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
+        if (video_backend == VideoBackend::vulkan) {
+            enqueue_vulkan_video(std::move(input), timestamp_ns, frame_index);
+            return;
+        }
+#endif
+        throw Error(ErrorCode::invalid_argument,
+                    "Camera RGB video input requires the Vulkan backend");
     }
 
     void write_audio(const AudioChunk& chunk) {
@@ -410,6 +445,18 @@ public:
     [[nodiscard]] FfmpegWriterTelemetry telemetry() const {
         FfmpegWriterTelemetry result;
         result.video_packets = video_packet_count.load();
+        result.pipeline_entry = pipeline_entry;
+        if (pipeline_entry == "target_log_f32" ||
+            pipeline_entry == "camera_rgb_f32") {
+            result.pipeline_precision = "fp32/precise";
+            result.demosaic_location = "cpu";
+            result.color_solution_location = "cpu_fp64";
+        } else if (pipeline_entry == "yuv422p10_cpu" ||
+                   pipeline_entry == "yuv422p10_cpu_upload") {
+            result.pipeline_precision = "cpu_reference";
+            result.demosaic_location = "cpu";
+            result.color_solution_location = "cpu_fp64";
+        }
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
         if (video_backend == VideoBackend::vulkan && vulkan_encoder && vulkan_runtime) {
             const auto counters = vulkan_encoder->telemetry();
@@ -423,6 +470,13 @@ public:
                 const auto frame_counters = vulkan_frame_writer->telemetry();
                 result.rgb_upload_bytes = frame_counters.rgb_upload_bytes;
                 result.fp32_rgb_upload_bytes = frame_counters.rgb_upload_bytes;
+                if (pipeline_entry == "target_log_f32") {
+                    result.target_log_fp32_upload_bytes =
+                        frame_counters.rgb_upload_bytes;
+                } else if (pipeline_entry == "camera_rgb_f32") {
+                    result.camera_rgb_fp32_upload_bytes =
+                        frame_counters.rgb_upload_bytes;
+                }
                 result.backpressure_waits = frame_counters.backpressure_waits +
                                             vulkan_backpressure_waits;
                 result.backpressure_wait_ms = frame_counters.backpressure_wait_ms +
@@ -459,6 +513,17 @@ public:
     }
 
 private:
+    void record_pipeline_entry(std::string_view entry) {
+        if (pipeline_entry == "uninitialized") {
+            pipeline_entry = entry;
+            return;
+        }
+        if (pipeline_entry != entry) {
+            throw Error(ErrorCode::invalid_argument,
+                        "video pipeline input entry changed within one MOV");
+        }
+    }
+
     struct EncodeJob {
         std::uint64_t sequence{};
         AVFrame* frame{};
@@ -466,7 +531,8 @@ private:
     };
 
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
-    using VulkanInput = std::variant<Yuv422P10, TargetLogRgbF32>;
+    using VulkanInput = std::variant<Yuv422P10, TargetLogRgbF32,
+                                     VulkanCameraRgbInput>;
 
     struct VulkanJob {
         VulkanInput input;
@@ -486,13 +552,29 @@ private:
         enqueue_vulkan_job({std::move(input), timestamp_ns, frame_index});
     }
 
+    void enqueue_vulkan_video(VulkanCameraRgbInput input,
+                              std::int64_t timestamp_ns,
+                              std::size_t frame_index) {
+        enqueue_vulkan_job({std::move(input), timestamp_ns, frame_index});
+    }
+
     void enqueue_vulkan_job(VulkanJob job) {
         if (!vulkan_frames || !vulkan_encoder || !vulkan_frame_writer) {
             throw Error(ErrorCode::encode_failed, "Vulkan video pipeline is not initialized");
         }
         const auto dimensions_match = std::visit([this](const auto& input) {
-            return input.width == static_cast<std::uint32_t>(vulkan_frames->width()) &&
-                   input.height == static_cast<std::uint32_t>(vulkan_frames->height());
+            using Input = std::decay_t<decltype(input)>;
+            if constexpr (std::is_same_v<Input, VulkanCameraRgbInput>) {
+                return input.image.width ==
+                           static_cast<std::uint32_t>(vulkan_frames->width()) &&
+                       input.image.height ==
+                           static_cast<std::uint32_t>(vulkan_frames->height());
+            } else {
+                return input.width ==
+                           static_cast<std::uint32_t>(vulkan_frames->width()) &&
+                       input.height ==
+                           static_cast<std::uint32_t>(vulkan_frames->height());
+            }
         }, job.input);
         if (!dimensions_match) {
             throw Error(ErrorCode::invalid_argument,
@@ -557,10 +639,12 @@ private:
             attach_vector_plane(frame.get(), 2, std::move(yuv->cr), yuv->width / 2U);
             vulkan_encoder->send(CpuVideoFrame{metadata, AV_PIX_FMT_YUV422P10LE,
                                                std::move(frame)});
-        } else {
-            auto& rgb = std::get<TargetLogRgbF32>(job.input);
+        } else if (auto* rgb = std::get_if<TargetLogRgbF32>(&job.input)) {
             vulkan_encoder->send(vulkan_frame_writer->pack(
-                rgb, job.frame_index, metadata));
+                *rgb, job.frame_index, metadata));
+        } else {
+            throw Error(ErrorCode::unsupported_format,
+                        "Camera RGB Vulkan entry requires the Stage 1B color pass");
         }
         enqueue_vulkan_packets(vulkan_encoder->drain());
     }
@@ -898,6 +982,7 @@ private:
     std::vector<std::thread> workers;
     VideoBackend video_backend{VideoBackend::cpu};
     std::atomic<std::uint64_t> video_packet_count{};
+    std::string pipeline_entry{"uninitialized"};
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
     std::unique_ptr<VulkanRuntime> vulkan_runtime;
     std::unique_ptr<FfmpegVulkanFrameContext> vulkan_frames;
@@ -948,6 +1033,11 @@ void FfmpegWriter::write_video(Yuv422P10 frame, std::int64_t timestamp_ns) {
     impl_->write_video(std::move(frame), timestamp_ns);
 }
 void FfmpegWriter::write_video(TargetLogRgbF32 frame,
+                               std::int64_t timestamp_ns,
+                               std::size_t frame_index) {
+    impl_->write_video(std::move(frame), timestamp_ns, frame_index);
+}
+void FfmpegWriter::write_video(VulkanCameraRgbInput frame,
                                std::int64_t timestamp_ns,
                                std::size_t frame_index) {
     impl_->write_video(std::move(frame), timestamp_ns, frame_index);

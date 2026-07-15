@@ -8,6 +8,7 @@
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/pixel_types.hpp>
 #include <mcraw/io/mcraw_reader.hpp>
+#include <mcraw/processing/color.hpp>
 
 namespace mcraw {
 
@@ -63,6 +64,25 @@ struct FfmpegWriterTelemetry {
     std::string gpu_name;
     std::string gpu_uuid;
     std::string gpu_driver;
+    std::string pipeline_entry{"uninitialized"};
+    std::string pipeline_precision{"not_applicable"};
+    std::string demosaic_location{"not_applicable"};
+    std::string color_solution_location{"not_applicable"};
+    std::uint64_t target_log_fp32_upload_bytes{};
+    std::uint64_t camera_rgb_fp32_upload_bytes{};
+};
+
+// A semantic wrapper is required because CameraRgbF32 and TargetLogRgbF32
+// currently share the same storage alias. Stage 1A establishes the job/API
+// boundary; Stage 1B supplies the first pixel-processing pass.
+struct VulkanCameraRgbInput {
+    CameraRgbF32 image;
+    Matrix3d camera_to_target;
+    double exposure_offset_stops{};
+    double input_scale{1.0 / 65535.0};
+    double capture_sharpening{};
+    double capture_sharpening_threshold{};
+    NegativePolicy negative_policy{NegativePolicy::preserve_by_curve};
 };
 
 class FfmpegWriter {
@@ -83,6 +103,9 @@ public:
 
     void write_video(Yuv422P10 frame, std::int64_t timestamp_ns);
     void write_video(TargetLogRgbF32 frame,
+                     std::int64_t timestamp_ns,
+                     std::size_t frame_index);
+    void write_video(VulkanCameraRgbInput frame,
                      std::int64_t timestamp_ns,
                      std::size_t frame_index);
     void write_audio(const AudioChunk& chunk);

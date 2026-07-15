@@ -222,6 +222,12 @@ TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
     CHECK(telemetry.u16_raw_upload_bytes == 0U);
     CHECK(telemetry.fp16_rgb_upload_bytes == 0U);
     CHECK(telemetry.fp32_rgb_upload_bytes == telemetry.rgb_upload_bytes);
+    CHECK(telemetry.pipeline_entry == "target_log_f32");
+    CHECK(telemetry.pipeline_precision == "fp32/precise");
+    CHECK(telemetry.demosaic_location == "cpu");
+    CHECK(telemetry.color_solution_location == "cpu_fp64");
+    CHECK(telemetry.target_log_fp32_upload_bytes == telemetry.rgb_upload_bytes);
+    CHECK(telemetry.camera_rgb_fp32_upload_bytes == 0U);
     CHECK(telemetry.compressed_packet_download_bytes == telemetry.mux_bytes);
     CHECK(telemetry.video_packets == frame_count);
     CHECK(telemetry.gpu_queue_capacity >= 4U);
@@ -252,4 +258,22 @@ TEST_CASE("Vulkan worker failure cancels bounded queues and reaches the caller")
     writer.write_video(test_rgb_frame(width, height, 0), 1'000'000'000LL, 0);
     writer.write_video(test_rgb_frame(width, height, 1), 1'000'000'000LL, 1);
     CHECK_THROWS_AS(writer.finish(), mcraw::Error);
+}
+
+TEST_CASE("Vulkan Camera RGB job is distinct and fails before Stage 1B") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-camera-stage1a-" + std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 4, false});
+    mcraw::VulkanCameraRgbInput input;
+    input.image = test_rgb_frame(width, height, 0);
+    input.camera_to_target = mcraw::Matrix3d::identity();
+    input.capture_sharpening = 0.4;
+    input.capture_sharpening_threshold = 0.002;
+    writer.write_video(std::move(input), 1'000'000'000LL, 0);
+    CHECK_THROWS_AS(writer.finish(), mcraw::Error);
+    CHECK(writer.telemetry().pipeline_entry == "camera_rgb_f32");
 }

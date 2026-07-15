@@ -59,6 +59,12 @@ struct PipelineBackendReport {
     std::string gpu_driver;
     std::string ffmpeg_version;
     std::string ffmpeg_configuration;
+    std::string pipeline_entry{"uninitialized"};
+    std::string pipeline_precision{"not_applicable"};
+    std::string demosaic_location{"not_applicable"};
+    std::string color_solution_location{"not_applicable"};
+    std::uint64_t target_log_fp32_upload_bytes{};
+    std::uint64_t camera_rgb_fp32_upload_bytes{};
 };
 
 void write_sidecar(const std::filesystem::path& path,

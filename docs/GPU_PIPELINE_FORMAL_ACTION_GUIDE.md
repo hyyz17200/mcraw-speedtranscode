@@ -519,11 +519,11 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
 
 正式行动建议从以下顺序开始：
 
-- [ ] 批准本文作为下一阶段实施总纲；
-- [ ] 确认最低性能目标是 24 fps，30 fps 为扩展目标，或记录其他阈值；
-- [ ] 确认 precise 保持 ≤1 LSB，fast 使用独立 preset/sidecar 身份；
-- [ ] 执行 Stage 0：冻结 baseline manifest、quality corpus 和 GPU timestamp；
-- [ ] 为 Stage 1 写独立技术设计，冻结 Camera RGB input format、shader pass、uniform 和
+- [x] 批准本文作为下一阶段实施总纲；
+- [x] 确认最低性能目标是 24 fps，30 fps 为扩展目标；
+- [x] 确认 precise 保持 ≤1 LSB，fast 使用独立 preset/sidecar 身份；
+- [x] 执行 Stage 0：冻结 baseline manifest、quality corpus 和 GPU timestamp；
+- [x] 为 Stage 1 写独立技术设计，冻结 Camera RGB input format、shader pass、uniform 和
       golden boundary；
 - [ ] 实施并验收 Stage 1，不同时启用 FP16；
 - [ ] 用 Stage 1 profiler 决定 pass fusion 与 Stage 2 优先级；
@@ -535,4 +535,3 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
 第一项实际工程任务应当是 **Stage 0 基线与 profiler 合约**，而不是直接开始写 FP16 或
 融合 shader。第一项处理像素的工程任务应当是 **Stage 1 Camera RGB→DWG→sharpening→DI
 的 FP32 Vulkan precise 路径**。
-

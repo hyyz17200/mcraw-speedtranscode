@@ -10,11 +10,20 @@ namespace mcraw {
 
 CpuPipeline::CpuPipeline(EffectiveConfig config,
                          std::size_t worker_threads,
-                         bool output_target_log)
+                         CpuPipelineOutput output)
     : config_(std::move(config)),
       worker_threads_(std::clamp<std::size_t>(worker_threads, 1U, 256U)),
-      output_target_log_(output_target_log) {
+      output_(output) {
     config_.validate();
+}
+
+std::string_view to_string(CpuPipelineOutput value) noexcept {
+    switch (value) {
+    case CpuPipelineOutput::packed_yuv: return "packed_yuv";
+    case CpuPipelineOutput::target_log_rgb: return "target_log_rgb";
+    case CpuPipelineOutput::camera_rgb: return "camera_rgb";
+    }
+    return "unknown";
 }
 
 ProcessedFrame CpuPipeline::process(const McrawReader& reader,
@@ -48,7 +57,9 @@ ProcessedFrame CpuPipeline::process(const McrawReader& reader,
         StageTimer timer(timings, "color_solution");
         result.color_solution = build_camera_color_solution(result.metadata);
     }
-    if (output_target_log_) {
+    if (output_ == CpuPipelineOutput::camera_rgb) {
+        result.camera_rgb = std::move(camera_rgb);
+    } else if (output_ == CpuPipelineOutput::target_log_rgb) {
         StageTimer timer(timings, "camera_to_dwg_di_rgb");
         auto target_linear = camera_to_dwg(
             camera_rgb, result.color_solution, config_.exposure_offset_stops,
