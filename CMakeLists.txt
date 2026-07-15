@@ -64,7 +64,7 @@ endif()
 
 if(MCRAW_ENABLE_FFMPEG)
   list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
-  find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil swresample swscale)
+  find_package(FFmpeg REQUIRED COMPONENTS avcodec avformat avutil)
 endif()
 
 if(MCRAW_ENABLE_VULKAN)
@@ -170,7 +170,7 @@ if(MCRAW_ENABLE_FFMPEG)
   )
   target_link_libraries(mcraw_core
     PUBLIC FFmpeg::avcodec FFmpeg::avutil
-    PRIVATE FFmpeg::avformat FFmpeg::swresample FFmpeg::swscale
+    PRIVATE FFmpeg::avformat
   )
 endif()
 

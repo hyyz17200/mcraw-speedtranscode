@@ -2,7 +2,7 @@ include(FindPackageHandleStandardArgs)
 
 set(_FFMPEG_REQUIRED_COMPONENTS ${FFmpeg_FIND_COMPONENTS})
 if(NOT _FFMPEG_REQUIRED_COMPONENTS)
-  set(_FFMPEG_REQUIRED_COMPONENTS avcodec avformat avutil swresample swscale)
+  set(_FFMPEG_REQUIRED_COMPONENTS avcodec avformat avutil)
 endif()
 
 find_path(FFmpeg_INCLUDE_DIR libavcodec/avcodec.h)
@@ -33,4 +33,3 @@ mark_as_advanced(FFmpeg_INCLUDE_DIR)
 foreach(_component IN LISTS _FFMPEG_REQUIRED_COMPONENTS)
   mark_as_advanced(FFmpeg_${_component}_LIBRARY)
 endforeach()
-
