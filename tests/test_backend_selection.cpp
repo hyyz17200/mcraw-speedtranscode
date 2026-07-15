@@ -71,7 +71,7 @@ TEST_CASE("GPU backend configuration is serialized without changing CPU defaults
     CHECK(json.at("gpu_selector") == "auto");
     CHECK(json.at("async_depth") == 8);
     CHECK(json.at("fallback") == "prores_ks");
-    CHECK(json.at("precision") == "fp32");
+    CHECK_FALSE(json.contains("precision"));
     CHECK(json.at("gpu_performance_mode") == "precise");
 }
 

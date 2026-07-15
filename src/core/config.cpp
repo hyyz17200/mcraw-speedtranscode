@@ -127,7 +127,7 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
         "preserve_source_timestamps", "preserve_audio", "max_frames",
         "cpu_threads", "max_parallel_frames",
         "target_profile", "prores_profile", "backend", "gpu_selector",
-        "async_depth", "fallback", "precision", "gpu_performance_mode"
+        "async_depth", "fallback", "gpu_performance_mode"
     };
     for (const auto& [key, ignored] : value.items()) {
         static_cast<void>(ignored);
@@ -158,8 +158,6 @@ EffectiveConfig load_config(const std::filesystem::path& path) {
     config.async_depth = value.value("async_depth", config.async_depth);
     config.fallback = parse_enum<GpuFallback>(value.value(
         "fallback", std::string(to_string(config.fallback))));
-    config.precision = parse_enum<GpuPrecision>(value.value(
-        "precision", std::string(to_string(config.precision))));
     config.gpu_performance_mode = parse_enum<GpuPerformanceMode>(value.value(
         "gpu_performance_mode",
         std::string(to_string(config.gpu_performance_mode))));
@@ -189,7 +187,6 @@ nlohmann::json config_to_json(const EffectiveConfig& config) {
         {"gpu_selector", config.gpu_selector},
         {"async_depth", config.async_depth},
         {"fallback", to_string(config.fallback)},
-        {"precision", to_string(config.precision)},
         {"gpu_performance_mode", to_string(config.gpu_performance_mode)},
         {"packing", {
             {"pixel_format", "yuv422p10le"},

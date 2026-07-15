@@ -42,7 +42,6 @@ struct EffectiveConfig {
     std::string gpu_selector{"auto"};
     std::size_t async_depth{8};
     GpuFallback fallback{GpuFallback::prores_ks};
-    GpuPrecision precision{GpuPrecision::fp32};
     GpuPerformanceMode gpu_performance_mode{GpuPerformanceMode::precise};
 
     void validate() const;

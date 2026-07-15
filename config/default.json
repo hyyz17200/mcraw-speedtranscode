@@ -18,6 +18,5 @@
   "gpu_selector": "auto",
   "async_depth": 8,
   "fallback": "prores_ks",
-  "precision": "fp32",
   "gpu_performance_mode": "precise"
 }

@@ -28,7 +28,6 @@
     "gpu_selector": {"type": "string", "minLength": 1, "default": "auto"},
     "async_depth": {"type": "integer", "minimum": 1, "maximum": 64, "default": 8},
     "fallback": {"enum": ["prores_ks", "none"], "default": "prores_ks"},
-    "precision": {"enum": ["fp32", "fp16"], "default": "fp32"},
     "gpu_performance_mode": {
       "enum": ["precise", "balanced", "fast"],
       "default": "precise"

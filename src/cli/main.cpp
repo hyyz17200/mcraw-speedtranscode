@@ -685,7 +685,7 @@ int command_convert(const Arguments& args) {
             static_cast<int>(first_metadata.height),
             std::clamp<std::size_t>(config.async_depth * 2U + 4U, 8U, 64U),
             config.chroma_filter, config.deterministic_dither,
-            config.precision);
+            mcraw::GpuPrecision::fp32);
     const auto backend = mcraw::select_backend(config, capabilities);
     const auto frame_limit = std::min(reader.frames().size(), config.max_frames == 0U
         ? reader.frames().size() : config.max_frames);

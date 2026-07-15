@@ -17,6 +17,6 @@
   "backend": "vulkan",
   "gpu_selector": "auto",
   "async_depth": 8,
-  "fallback": "prores_ks",
-  "gpu_performance_mode": "precise"
+  "fallback": "none",
+  "gpu_performance_mode": "balanced"
 }
