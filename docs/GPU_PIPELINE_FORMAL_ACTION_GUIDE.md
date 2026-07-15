@@ -531,7 +531,9 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
       全帧重复扫描及 pack/encoder 串行，而非 shader fusion；修正后瓶颈回到 CPU producer；
 - [x] 实施 Stage 2A/2B，把生产上传切换到 U16 RAW；Stage 2E 中位数
       `37.747 fps`，相对 Stage 1G `+173.710%`，final YUV `<=1 LSB`；
-- [ ] precise 完成后才开始 mixed/fast A/B；
+- [x] precise 完成后才开始 mixed/fast A/B；Batch D 最终 precise/balanced/fast
+      中位数为 `34.776/36.126/36.857 fps`；合入 FP16 intermediate storage 与
+      analytic DI，拒绝 dither-off 和质量不合格的 bilinear demosaic；
 - [ ] Stage 2/3 完成后重新评估 GPU MCRAW decoder ROI；
 - [ ] 性能开发期间持续推进 NLE/硬件/长时间发布 gates。
 

@@ -1,5 +1,14 @@
 # v0.1 Implementation Status
 
+## GPU Stage 3F / Batch D accepted
+
+- Published `config/vulkan-precise.json`, `vulkan-balanced.json`, and
+  `vulkan-fast.json`; the CPU backend remains default.
+- Final medians are 34.776, 36.126, and 36.857 fps. Balanced/fast reduce sampled
+  VRAM delta by about 288 MiB versus precise.
+- All modes retain U16-only upload, zero pixel/YUV readback, precise RCD, quality
+  chroma, and deterministic dither. See `GPU_STAGE3F_E2E_BENCHMARK.md`.
+
 ## GPU Stage 3B balanced FP16 storage
 
 - `gpu_performance_mode` provides stable precise/balanced/fast identities and
