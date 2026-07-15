@@ -12,6 +12,15 @@
 - See `GPU_STAGE3_PERFORMANCE_MODES_TECHNICAL_DESIGN.md` and
   `GPU_STAGE3B_FP16_STORAGE_VALIDATION.md`.
 
+## GPU Stage 3C fast analytic DI
+
+- Fast mode retains balanced FP16 storage but evaluates the DI curve
+  analytically in FP32; balanced continues to use the FP32 LUT.
+- Fixed real frames remain max/P99 1 LSB and RMSE below 0.202 LSB.
+- Median throughput improved from 35.577 to 36.770 fps (+3.353%); DI stage mean
+  fell from 0.907 to 0.497 ms.
+- See `GPU_STAGE3C_ANALYTIC_DI_VALIDATION.md`.
+
 ## 已实现源码边界
 
 - CMake/vcpkg/MSVC 2022 构建骨架

@@ -425,10 +425,13 @@ TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames")
     mcraw::FfmpegVulkanFrameContext frames(
         runtime, {static_cast<int>(width), static_cast<int>(height), 4});
     const bool fp16_storage = std::getenv("MCRAW_STAGE3_FP16_STORAGE") != nullptr;
+    const bool analytic_di = std::getenv("MCRAW_STAGE3_ANALYTIC_DI") != nullptr;
     mcraw::VulkanRgbToYuvFrameWriter writer(
         runtime, frames, {width, height, mcraw::ChromaFilter::quality, true,
                           fp16_storage ? mcraw::GpuPrecision::fp16
-                                       : mcraw::GpuPrecision::fp32, 1});
+                                       : mcraw::GpuPrecision::fp32, 1,
+                          analytic_di ? mcraw::GpuPerformanceMode::fast
+                                      : mcraw::GpuPerformanceMode::balanced});
     const mcraw::DaVinciIntermediateLut curve;
 
     for (const auto frame_index : frame_indices) {

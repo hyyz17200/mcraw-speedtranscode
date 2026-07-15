@@ -20,6 +20,7 @@ struct VulkanRgbToYuvConfig {
     bool deterministic_dither{true};
     GpuPrecision precision{GpuPrecision::fp32};
     std::size_t slots{1};
+    GpuPerformanceMode performance_mode{GpuPerformanceMode::precise};
 };
 
 struct VulkanRgbToYuvTelemetry {

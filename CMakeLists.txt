@@ -340,6 +340,9 @@ if(MCRAW_ENABLE_VULKAN)
   mcraw_compile_embedded_shader(davinci_intermediate_fp16_storage
     src/vulkan/shaders/davinci_intermediate_fp16_storage.comp.glsl
     davinci_intermediate_fp16_storage_spv)
+  mcraw_compile_embedded_shader(davinci_intermediate_fp16_analytic
+    src/vulkan/shaders/davinci_intermediate_fp16_analytic.comp.glsl
+    davinci_intermediate_fp16_analytic_spv)
   mcraw_compile_embedded_shader(rgb_to_yuv_422_image_fp16_storage
     src/vulkan/shaders/rgb_to_yuv_422_image_fp16_storage.comp.glsl
     rgb_to_yuv_422_image_fp16_storage_spv)
@@ -351,6 +354,7 @@ if(MCRAW_ENABLE_VULKAN)
     "${camera_to_dwg_fp16_storage_HEADER}"
     "${sharpen_target_linear_fp16_storage_HEADER}"
     "${davinci_intermediate_fp16_storage_HEADER}"
+    "${davinci_intermediate_fp16_analytic_HEADER}"
     "${rgb_to_yuv_422_image_fp16_storage_HEADER}")
   add_dependencies(mcraw_core mcraw_vulkan_shaders)
   target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")

@@ -157,7 +157,8 @@ public:
                 *vulkan_runtime, *vulkan_frames,
                 VulkanRgbToYuvConfig{width, height, backend_config.chroma_filter,
                                      backend_config.deterministic_dither,
-                                     backend_config.precision, slot_count});
+                                     backend_config.precision, slot_count,
+                                     backend_config.performance_mode});
             vulkan_encoder = std::make_unique<VulkanProResEncoder>(
                 *vulkan_frames,
                 VulkanProResEncoderConfig{static_cast<int>(width), static_cast<int>(height),
@@ -490,7 +491,8 @@ public:
         result.pipeline_entry = pipeline_entry;
         result.performance_mode = std::string(to_string(performance_mode));
         result.intermediate_storage = "fp32";
-        result.di_implementation = "fp32_lut";
+        result.di_implementation = performance_mode == GpuPerformanceMode::fast
+            ? "fp32_analytic" : "fp32_lut";
         result.dither_mode = deterministic_dither ? "deterministic" : "disabled";
         if (pipeline_entry == "target_log_f32" ||
             pipeline_entry == "camera_rgb_f32") {

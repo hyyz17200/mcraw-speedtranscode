@@ -21,6 +21,7 @@ extern "C" {
 #include <mcraw/vulkan/calibrate_raw_spv.hpp>
 #include <mcraw/vulkan/davinci_intermediate_spv.hpp>
 #include <mcraw/vulkan/davinci_intermediate_fp16_storage_spv.hpp>
+#include <mcraw/vulkan/davinci_intermediate_fp16_analytic_spv.hpp>
 #include <mcraw/vulkan/rgb_to_yuv_422_image_spv.hpp>
 #include <mcraw/vulkan/rgb_to_yuv_422_image_fp16_storage_spv.hpp>
 #include <mcraw/vulkan/rcd_demosaic_spv.hpp>
@@ -650,11 +651,14 @@ public:
             camera_descriptor_layout, sizeof(SharpenPushConstants),
             sharpen_pipeline_layout, sharpen_pipeline,
             "create resident TargetLinear sharpening pipeline");
+        const bool analytic = config.performance_mode == GpuPerformanceMode::fast;
         create_camera_pipeline(
-            fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.data()
-                         : generated::davinci_intermediate_spv.data(),
-            fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.size()
-                         : generated::davinci_intermediate_spv.size(), di_descriptor_layout,
+            analytic ? generated::davinci_intermediate_fp16_analytic_spv.data()
+                     : fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.data()
+                                    : generated::davinci_intermediate_spv.data(),
+            analytic ? generated::davinci_intermediate_fp16_analytic_spv.size()
+                     : fp16_storage ? generated::davinci_intermediate_fp16_storage_spv.size()
+                                    : generated::davinci_intermediate_spv.size(), di_descriptor_layout,
             sizeof(DiPushConstants), di_pipeline_layout, di_pipeline,
             "create resident DaVinci Intermediate pipeline");
     }
