@@ -57,7 +57,7 @@ The Stage 1 input is the existing `CameraRgbF32`/`PlanarRgbF32` ABI:
 | plane length | exactly `width * height` |
 | sample domain | unnormalized librtprocess working scale, nominally 0..65535 |
 | row order | top-to-bottom, `index = y * width + x` |
-| exceptional values | shape is checked by `PlanarRgbF32::validate()`; Stage 1 production must add an explicit finite-value check before upload |
+| exceptional values | shape is checked by `PlanarRgbF32::validate()`; the resident DI shader detects propagated non-finite values and raises the per-slot control-status fault before publication |
 
 Negative and super-white values must not be clipped at the Camera RGB or color
 pass boundary. The only normalization is the existing `1/65535` factor applied
@@ -151,7 +151,8 @@ new approximate curve:
 - values above the LUT high range use the analytic DI formula;
 - `preserve_by_curve`, `clamp_zero` and `error` remain distinct policies.
 
-For `NegativePolicy::error` and any shader-created non-finite value, shaders set
+For `NegativePolicy::error` and any uploaded or shader-created non-finite value,
+the resident chain propagates the value to the DI validation boundary and sets
 a per-slot control-status flag. The flag is read only after that slot's fence
 signals (including during final drain). Detection aborts the Vulkan pipeline
 and causes normal partial-file cleanup; an invalid final MOV must never be

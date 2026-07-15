@@ -525,9 +525,10 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
 - [x] 执行 Stage 0：冻结 baseline manifest、quality corpus 和 GPU timestamp；
 - [x] 为 Stage 1 写独立技术设计，冻结 Camera RGB input format、shader pass、uniform 和
       golden boundary；
-- [ ] 实施并验收 Stage 1，不同时启用 FP16；实现与正确性已完成，Stage 1F 性能
-      `-27.685%`，未通过 `+20%` gate，保持 NO-GO/opt-in；
-- [ ] 用 Stage 1 profiler 决定 pass fusion 与 Stage 2 优先级；
+- [x] 实施并验收 Stage 1，不同时启用 FP16；Stage 1G 中位数 `13.791 fps`，相对
+      重建 Stage 0 为 `+100.943%`，通过 `+20%` gate；
+- [x] 用 Stage 1 profiler 决定 pass fusion 与 Stage 2 优先级；回退根因是 CPU finite
+      全帧重复扫描及 pack/encoder 串行，而非 shader fusion；修正后瓶颈回到 CPU producer；
 - [ ] 实施 Stage 2A/2B，把生产上传切换到 U16 RAW；
 - [ ] precise 完成后才开始 mixed/fast A/B；
 - [ ] Stage 2/3 完成后重新评估 GPU MCRAW decoder ROI；

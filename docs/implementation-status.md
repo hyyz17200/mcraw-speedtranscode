@@ -173,3 +173,21 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - Stage 1A-1F 已完成为独立 rollback points，但 Stage 1 未通过性能验收，Vulkan
   继续 opt-in；禁止直接融合 shader 或进入 Stage 2。详细报告见
   `GPU_STAGE1F_E2E_BENCHMARK.md`。
+
+## 2026-07-15 GPU Stage 1G performance recovery
+
+- 新遥测将 job/slot/packet 背压、frame pack、encoder send/receive、frame allocation、
+  queue lock/submit 分开，证明 Stage 1F 的 `prores_submit_wait` 主要是 job queue 外显，
+  slot、frame pool、queue lock、packet 和 mux 均非主瓶颈。
+- Vulkan frame preparation 与 ProRes submission 改为两个有界 worker 并行；删除每帧
+  上传前对 151 MB Camera RGB 的 CPU finite 重复扫描，非有限值改由已有 DI
+  control-status 在发布前失败，并增加 production E2E fault test。
+- ProRes `async_depth=8` 与 resident preparation ring 解耦；正式路径保留 encoder depth
+  八，但只分配两个昂贵 FP32 resident slots。prepared queue peak 为 2，三轮所有
+  backpressure 均为 0。
+- clean `042e179` 在同一 RTX 3060、相同 input/config 下的一次 warm-up + 三次 official
+  中位数为 `13.791 fps`（13.429-13.873），相对重建 Stage 0 `6.863 fps` 为
+  `+100.943%`，相对旧 Stage 1 `4.963 fps` 为 `+177.871%`，通过 Stage 1 `+20%` gate。
+- VRAM delta 中位数由 3,782 MiB 降至 2,032 MiB；最终 MOV hash 与 Stage 1F 完全
+  相同。默认 Release 63 tests 为 58 passed/5 opt-in skipped；真实帧 0/120/239 的
+  Y/Cb/Cr 最大误差均为 1 LSB。详细报告见 `GPU_STAGE1G_PERFORMANCE_RECOVERY.md`。

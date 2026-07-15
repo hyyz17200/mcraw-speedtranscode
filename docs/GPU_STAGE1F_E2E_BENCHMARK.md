@@ -1,5 +1,9 @@
 # GPU Stage 1F E2E and Benchmark Decision
 
+> Historical decision: superseded by the accepted Stage 1G performance
+> recovery in `GPU_STAGE1G_PERFORMANCE_RECOVERY.md`. This report remains the
+> evidence for the rejected serialized implementation.
+
 Date: 2026-07-15
 
 Status: Stage 1 implementation and correctness validation complete; performance
