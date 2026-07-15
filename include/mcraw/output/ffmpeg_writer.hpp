@@ -221,6 +221,7 @@ private:
 
 // Reopens a completed temporary MOV and verifies the minimum contract before
 // the caller is allowed to rename it to the requested final path.
+void validate_prores_mov_metadata(const std::filesystem::path& path);
 void validate_prores_mov(const std::filesystem::path& path,
                          std::uint64_t expected_video_packets);
 

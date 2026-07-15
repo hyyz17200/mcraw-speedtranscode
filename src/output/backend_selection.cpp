@@ -57,14 +57,12 @@ BackendCapabilities probe_backend_capabilities(std::string_view gpu_selector,
     if (!result.prores_ks_vulkan_available) return result;
     try {
         VulkanRuntime runtime({std::string(gpu_selector), false});
-        FfmpegVulkanFrameContext frames(runtime, {width, height, pool_size});
-        VulkanProResEncoder actual_encoder(
-            frames, {width, height, {1, 90'000}, {30, 1}, "hq", 1});
-        static_cast<void>(actual_encoder);
-
-        // A small functional smoke exercises shader creation/dispatch, direct
-        // frame handoff, encoder send/drain/flush, and cleanup on the selected
-        // logical device without allocating another full-resolution RGB input.
+        // The functional smoke below is intentionally small.  The full-sized
+        // frame pool and encoder are owned by the real writer; constructing
+        // them here would duplicate the expensive preflight allocation.
+        static_cast<void>(width);
+        static_cast<void>(height);
+        static_cast<void>(pool_size);
         constexpr int smoke_width = 64;
         constexpr int smoke_height = 32;
         FfmpegVulkanFrameContext smoke_frames(runtime, {smoke_width, smoke_height, 4});

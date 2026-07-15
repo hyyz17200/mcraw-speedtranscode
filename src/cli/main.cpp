@@ -669,6 +669,7 @@ int command_convert(const Arguments& args) {
     static_cast<void>(args);
     throw Error(ErrorCode::unsupported_format, "this build has no FFmpeg support");
 #else
+    const auto process_start = std::chrono::steady_clock::now();
     const std::filesystem::path input{std::string(args.at(2))};
     const std::filesystem::path output{std::string(args.at(3))};
     if (std::filesystem::exists(output) && !args.flag("--overwrite")) {
@@ -687,6 +688,8 @@ int command_convert(const Arguments& args) {
             config.chroma_filter, config.deterministic_dither,
             mcraw::GpuPrecision::fp32);
     const auto backend = mcraw::select_backend(config, capabilities);
+    const auto startup_preflight_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - process_start).count();
     const auto frame_limit = std::min(reader.frames().size(), config.max_frames == 0U
         ? reader.frames().size() : config.max_frames);
     if (frame_limit == 0U) throw Error(ErrorCode::invalid_argument, "conversion selected zero frames");
@@ -820,10 +823,20 @@ int command_convert(const Arguments& args) {
         writer.finish();
         writer_telemetry = writer.telemetry();
     }
-    mcraw::validate_prores_mov(partial, frame_limit);
-    const auto conversion_wall_ms = std::chrono::duration<double, std::milli>(
+    const auto conversion_core_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - conversion_start).count();
-    timings.add("end_to_end", conversion_wall_ms);
+    timings.add("startup_preflight", startup_preflight_ms);
+    timings.add("conversion_core", conversion_core_ms);
+    {
+        mcraw::StageTimer timer(timings, "output_validation");
+        mcraw::validate_prores_mov_metadata(partial);
+        if (args.flag("--verify-output")) {
+            mcraw::validate_prores_mov(partial, frame_limit);
+        } else if (writer_telemetry.video_packets != frame_limit) {
+            throw Error(ErrorCode::encode_failed,
+                        "writer video packet count does not match submitted frames");
+        }
+    }
     std::cerr << '\n';
     if (std::filesystem::exists(output)) std::filesystem::remove(output);
     std::filesystem::rename(partial, output);
@@ -1012,13 +1025,16 @@ int command_convert(const Arguments& args) {
         writer_telemetry.prepared_frame_queue_capacity;
     pipeline_report.prepared_frame_queue_max_depth =
         writer_telemetry.prepared_frame_queue_max_depth;
+    const auto process_wall_ms = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - process_start).count();
+    timings.add("process_wall", process_wall_ms);
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
                                 {"sidecar", sidecar.string()}, {"frames", frame_limit},
-                                {"wall_ms", conversion_wall_ms},
+                                {"wall_ms", process_wall_ms},
                                 {"throughput_fps", static_cast<double>(frame_limit) *
-                                    1000.0 / conversion_wall_ms},
+                                    1000.0 / process_wall_ms},
                                 {"pipeline", {
                                     {"backend", pipeline_report.backend},
                                     {"entry", pipeline_report.pipeline_entry},
@@ -1149,7 +1165,7 @@ void print_help() {
         "mcraw-transcoder 0.1.0\n"
         "Usage:\n"
         "  mcraw-transcoder inspect <input.mcraw> [--raw-json]\n"
-        "  mcraw-transcoder convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite] [--validation]\n"
+        "  mcraw-transcoder convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite] [--validation] [--verify-output]\n"
         "  mcraw-transcoder extract-frame <input.mcraw> --frame N --stage STAGE --output PATH\n"
         "  mcraw-transcoder validate <input.mcraw> [--frame N] [--compare-fused] [--config file.json]\n"
         "  mcraw-transcoder benchmark <input.mcraw> [--frames N] [--config file.json]\n"

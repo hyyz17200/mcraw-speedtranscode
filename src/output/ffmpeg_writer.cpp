@@ -232,6 +232,16 @@ public:
     }
 
     // Synchronous encode+mux used for audio frames and end-of-stream flushes.
+    void validate_video_packet(const AVPacket* packet) {
+        if (packet == nullptr || packet->pts == AV_NOPTS_VALUE ||
+            (previous_video_pts != AV_NOPTS_VALUE && packet->pts <= previous_video_pts) ||
+            packet->duration <= 0) {
+            throw Error(ErrorCode::encode_failed,
+                        "encoded video packet has invalid PTS or duration");
+        }
+        previous_video_pts = packet->pts;
+    }
+
     void write_packet(AVCodecContext* codec, AVStream* stream, AVFrame* frame) {
         const auto input_duration = frame != nullptr ? frame->duration : 0;
         require_ffmpeg(avcodec_send_frame(codec, frame), frame == nullptr ? "flush encoder" : "send frame");
@@ -252,6 +262,7 @@ public:
             int write_result;
             {
                 std::scoped_lock lock(mux_mutex);
+                if (stream == video_stream) validate_video_packet(packet);
                 write_result = av_interleaved_write_frame(format, packet);
             }
             av_packet_unref(packet);
@@ -961,6 +972,7 @@ private:
             const auto packet_bytes = static_cast<std::uint64_t>(packet->size);
             av_packet_rescale_ts(packet, encoded.time_base, video_stream->time_base);
             packet->stream_index = video_stream->index;
+            validate_video_packet(packet);
             int result;
             {
                 std::scoped_lock lock(mux_mutex);
@@ -1252,6 +1264,7 @@ private:
                     int write_result;
                     {
                         std::scoped_lock mux(mux_mutex);
+                        validate_video_packet(item);
                         write_result = av_interleaved_write_frame(format, item);
                     }
                     av_packet_free(&item);
@@ -1318,6 +1331,7 @@ private:
     std::vector<std::thread> workers;
     VideoBackend video_backend{VideoBackend::cpu};
     std::atomic<std::uint64_t> video_packet_count{};
+    std::int64_t previous_video_pts{AV_NOPTS_VALUE};
     std::string pipeline_entry{"uninitialized"};
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
     std::unique_ptr<VulkanRuntime> vulkan_runtime;
@@ -1411,6 +1425,32 @@ void FfmpegWriter::write_video(VulkanRawMosaicInput frame,
 void FfmpegWriter::write_audio(const AudioChunk& chunk) { impl_->write_audio(chunk); }
 void FfmpegWriter::finish() { impl_->finish(); }
 FfmpegWriterTelemetry FfmpegWriter::telemetry() const { return impl_->telemetry(); }
+
+void validate_prores_mov_metadata(const std::filesystem::path& path) {
+    AVFormatContext* input = nullptr;
+    const auto path_utf8 = path.u8string();
+    const std::string path_string(path_utf8.begin(), path_utf8.end());
+    require_ffmpeg(avformat_open_input(&input, path_string.c_str(), nullptr, nullptr),
+                   "reopen completed MOV");
+    struct InputCloser {
+        AVFormatContext*& value;
+        ~InputCloser() { avformat_close_input(&value); }
+    } closer{input};
+    require_ffmpeg(avformat_find_stream_info(input, nullptr), "read completed MOV stream info");
+    const int stream_index = av_find_best_stream(input, AVMEDIA_TYPE_VIDEO, -1, -1,
+                                                 nullptr, 0);
+    require_ffmpeg(stream_index, "find completed MOV video stream");
+    const auto* parameters = input->streams[stream_index]->codecpar;
+    if (parameters->codec_id != AV_CODEC_ID_PRORES ||
+        parameters->codec_tag != MKTAG('a', 'p', 'c', 'h') ||
+        parameters->color_range != AVCOL_RANGE_MPEG ||
+        parameters->color_space != AVCOL_SPC_BT2020_NCL ||
+        parameters->color_primaries != AVCOL_PRI_UNSPECIFIED ||
+        parameters->color_trc != AVCOL_TRC_UNSPECIFIED) {
+        throw Error(ErrorCode::encode_failed,
+                    "completed MOV does not match the ProRes HQ/color metadata contract");
+    }
+}
 
 void validate_prores_mov(const std::filesystem::path& path,
                          std::uint64_t expected_video_packets) {
