@@ -93,3 +93,18 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - writer telemetry/sidecar 开始记录实际 `pipeline.entry`、precision、demosaic/color
   solution location，并分别统计 TargetLog 与 Camera RGB FP32 upload bytes。
 - 本批次没有 color/sharpen/DI shader，不改变 Stage 0 输出像素或 fallback 行为。
+
+## 2026-07-15 GPU Stage 1B color/exposure
+
+- 新增独立 `camera_to_dwg.comp.glsl` FP32 pass；CPU 继续完成 FP64 color solution，
+  GPU 只接收最终 3x3 row-major matrix 和独立 exposure scale。
+- 64-byte push-constant ABI 已用 C++ size/offset assertions 冻结；每 slot 使用三张
+  Camera input 和 ping A 三张 TargetLinear output 的六 binding descriptor set。
+- test-only readback 使用 compute→transfer→host 明确 barriers；production 仍不分配
+  readback buffer。
+- synthetic golden max/RMSE 为 `2.38419e-7 / 1.87853e-8`；真实 4096×3072
+  Stage 0 首帧为 `2.38419e-7 / 1.57234e-8`，均通过 `2e-5 / 1e-6` 门槛。
+- color pass 已有独立 GPU timestamp summary；validation-enabled 4K 单样本为
+  `11.9165 ms`，仅作为 shader 验证数据，不作为性能承诺。
+- 本批次仍不切换 production writer；详细报告见
+  `GPU_STAGE1B_COLOR_VALIDATION.md`。

@@ -260,7 +260,7 @@ TEST_CASE("Vulkan worker failure cancels bounded queues and reaches the caller")
     CHECK_THROWS_AS(writer.finish(), mcraw::Error);
 }
 
-TEST_CASE("Vulkan Camera RGB job is distinct and fails before Stage 1B") {
+TEST_CASE("Vulkan Camera RGB job stays unavailable until the resident chain") {
     constexpr std::uint32_t width = 64;
     constexpr std::uint32_t height = 32;
     const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();

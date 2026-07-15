@@ -644,7 +644,7 @@ private:
                 *rgb, job.frame_index, metadata));
         } else {
             throw Error(ErrorCode::unsupported_format,
-                        "Camera RGB Vulkan entry requires the Stage 1B color pass");
+                        "Camera RGB Vulkan entry is not connected to the production writer before the Stage 1E resident chain");
         }
         enqueue_vulkan_packets(vulkan_encoder->drain());
     }

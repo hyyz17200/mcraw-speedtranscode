@@ -184,6 +184,8 @@ if(MCRAW_ENABLE_VULKAN)
   set(MCRAW_RGB_TO_YUV_HEADER "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422_spv.hpp")
   set(MCRAW_RGB_TO_YUV_IMAGE_SPV "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422_image.comp.spv")
   set(MCRAW_RGB_TO_YUV_IMAGE_HEADER "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422_image_spv.hpp")
+  set(MCRAW_CAMERA_TO_DWG_SPV "${MCRAW_GENERATED_SHADER_DIR}/camera_to_dwg.comp.spv")
+  set(MCRAW_CAMERA_TO_DWG_HEADER "${MCRAW_GENERATED_SHADER_DIR}/camera_to_dwg_spv.hpp")
   add_custom_command(
     OUTPUT "${MCRAW_RGB_TO_YUV_SPV}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
@@ -217,8 +219,26 @@ if(MCRAW_ENABLE_VULKAN)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     DEPENDS "${MCRAW_RGB_TO_YUV_IMAGE_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_CAMERA_TO_DWG_SPV}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
+    COMMAND "${MCRAW_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+            -o "${MCRAW_CAMERA_TO_DWG_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/camera_to_dwg.comp.glsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/camera_to_dwg.comp.glsl"
+    VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_CAMERA_TO_DWG_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${MCRAW_CAMERA_TO_DWG_SPV}"
+            "-DOUTPUT=${MCRAW_CAMERA_TO_DWG_HEADER}"
+            "-DSYMBOL=camera_to_dwg_spv"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    DEPENDS "${MCRAW_CAMERA_TO_DWG_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    VERBATIM)
   add_custom_target(mcraw_vulkan_shaders DEPENDS
-    "${MCRAW_RGB_TO_YUV_HEADER}" "${MCRAW_RGB_TO_YUV_IMAGE_HEADER}")
+    "${MCRAW_RGB_TO_YUV_HEADER}" "${MCRAW_RGB_TO_YUV_IMAGE_HEADER}"
+    "${MCRAW_CAMERA_TO_DWG_HEADER}")
   add_dependencies(mcraw_core mcraw_vulkan_shaders)
   target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_sources(mcraw_core PRIVATE
