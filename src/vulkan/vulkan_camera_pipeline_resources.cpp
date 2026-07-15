@@ -16,6 +16,7 @@ extern "C" {
 
 #include <mcraw/core/error.hpp>
 #include <mcraw/vulkan/camera_to_dwg_spv.hpp>
+#include <mcraw/vulkan/sharpen_target_linear_spv.hpp>
 
 namespace mcraw {
 namespace {
@@ -72,6 +73,14 @@ static_assert(sizeof(CameraToDwgPushConstants) == 64U);
 static_assert(offsetof(CameraToDwgPushConstants, matrix_row_0) == 16U);
 static_assert(offsetof(CameraToDwgPushConstants, matrix_row_1) == 32U);
 static_assert(offsetof(CameraToDwgPushConstants, matrix_row_2) == 48U);
+
+struct SharpenPushConstants {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    float amount{};
+    float threshold{};
+};
+static_assert(sizeof(SharpenPushConstants) == 16U);
 
 double percentile(const std::vector<double>& sorted, double p) {
     if (sorted.empty()) return 0.0;
@@ -135,7 +144,9 @@ public:
         VkCommandBuffer command{VK_NULL_HANDLE};
         VkFence fence{VK_NULL_HANDLE};
         VkDescriptorSet color_descriptor{VK_NULL_HANDLE};
+        VkDescriptorSet sharpen_descriptor{VK_NULL_HANDLE};
         std::uint32_t timestamp_query_base{};
+        std::uint32_t sharpen_timestamp_query_base{};
         bool in_flight{};
     };
 
@@ -175,6 +186,7 @@ public:
             create_buffers();
             create_descriptor_resources();
             create_color_pipeline();
+            create_sharpen_pipeline();
             create_timestamp_queries();
             create_commands();
         } catch (...) {
@@ -273,17 +285,17 @@ public:
                               "create Camera RGB color descriptor layout");
 
         VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-                                  static_cast<std::uint32_t>(slots.size() * 6U)};
+                                  static_cast<std::uint32_t>(slots.size() * 12U)};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool.maxSets = static_cast<std::uint32_t>(slots.size());
+        pool.maxSets = static_cast<std::uint32_t>(slots.size() * 2U);
         pool.poolSizeCount = 1;
         pool.pPoolSizes = &size;
         require_camera_vulkan(vkCreateDescriptorPool(device, &pool, allocator,
                                                      &descriptor_pool),
                               "create Camera RGB descriptor pool");
-        std::vector<VkDescriptorSetLayout> layouts(slots.size(),
+        std::vector<VkDescriptorSetLayout> layouts(slots.size() * 2U,
                                                    color_descriptor_layout);
-        std::vector<VkDescriptorSet> sets(slots.size());
+        std::vector<VkDescriptorSet> sets(layouts.size());
         VkDescriptorSetAllocateInfo allocation{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         allocation.descriptorPool = descriptor_pool;
@@ -295,18 +307,25 @@ public:
         for (std::size_t slot_index = 0; slot_index < slots.size(); ++slot_index) {
             auto& slot = slots[slot_index];
             slot.color_descriptor = sets[slot_index];
-            std::array<VkDescriptorBufferInfo, 6> infos{};
-            std::array<VkWriteDescriptorSet, 6> writes{};
+            slot.sharpen_descriptor = sets[slots.size() + slot_index];
+            std::array<VkDescriptorBufferInfo, 12> infos{};
+            std::array<VkWriteDescriptorSet, 12> writes{};
             for (std::size_t plane = 0; plane < 3U; ++plane) {
                 infos[plane] = {slot.upload[plane].handle, 0, slot.upload[plane].size};
                 infos[plane + 3U] = {slot.intermediate[0][plane].handle, 0,
                                      slot.intermediate[0][plane].size};
+                infos[plane + 6U] = {slot.intermediate[0][plane].handle, 0,
+                                     slot.intermediate[0][plane].size};
+                infos[plane + 9U] = {slot.intermediate[1][plane].handle, 0,
+                                     slot.intermediate[1][plane].size};
             }
             for (std::uint32_t binding = 0; binding < writes.size(); ++binding) {
                 auto& write = writes[binding];
                 write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-                write.dstSet = slot.color_descriptor;
-                write.dstBinding = binding;
+                const bool sharpen = binding >= 6U;
+                write.dstSet = sharpen ? slot.sharpen_descriptor
+                                       : slot.color_descriptor;
+                write.dstBinding = sharpen ? binding - 6U : binding;
                 write.descriptorCount = 1;
                 write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
                 write.pBufferInfo = &infos[binding];
@@ -350,6 +369,41 @@ public:
         require_camera_vulkan(result, "create Camera RGB color compute pipeline");
     }
 
+    void create_sharpen_pipeline() {
+        VkPushConstantRange push{};
+        push.stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        push.size = sizeof(SharpenPushConstants);
+        VkPipelineLayoutCreateInfo layout{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        layout.setLayoutCount = 1;
+        layout.pSetLayouts = &color_descriptor_layout;
+        layout.pushConstantRangeCount = 1;
+        layout.pPushConstantRanges = &push;
+        require_camera_vulkan(vkCreatePipelineLayout(device, &layout, allocator,
+                                                     &sharpen_pipeline_layout),
+                              "create TargetLinear sharpening pipeline layout");
+        VkShaderModuleCreateInfo module_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        module_info.codeSize = generated::sharpen_target_linear_spv.size() *
+                               sizeof(std::uint32_t);
+        module_info.pCode = generated::sharpen_target_linear_spv.data();
+        VkShaderModule module{VK_NULL_HANDLE};
+        require_camera_vulkan(vkCreateShaderModule(device, &module_info, allocator,
+                                                   &module),
+                              "create TargetLinear sharpening shader module");
+        VkComputePipelineCreateInfo pipeline{
+            VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipeline.layout = sharpen_pipeline_layout;
+        pipeline.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+        pipeline.stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        pipeline.stage.module = module;
+        pipeline.stage.pName = "main";
+        const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                                     &pipeline, allocator,
+                                                     &sharpen_pipeline);
+        vkDestroyShaderModule(device, module, allocator);
+        require_camera_vulkan(result,
+                              "create TargetLinear sharpening compute pipeline");
+    }
+
     void create_timestamp_queries() {
         std::uint32_t family_count = 0;
         vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
@@ -367,7 +421,7 @@ public:
         timestamp_period_ns = properties.limits.timestampPeriod;
         VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        info.queryCount = static_cast<std::uint32_t>(slots.size() * 2U);
+        info.queryCount = static_cast<std::uint32_t>(slots.size() * 4U);
         require_camera_vulkan(vkCreateQueryPool(device, &info, allocator,
                                                 &timestamp_query_pool),
                               "create Camera RGB color timestamp queries");
@@ -393,7 +447,9 @@ public:
         VkFenceCreateInfo fence{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         for (std::size_t index = 0; index < slots.size(); ++index) {
             slots[index].command = commands[index];
-            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 2U);
+            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 4U);
+            slots[index].sharpen_timestamp_query_base =
+                slots[index].timestamp_query_base + 2U;
             require_camera_vulkan(vkCreateFence(device, &fence, allocator,
                                                 &slots[index].fence),
                                   "create Camera RGB slot fence");
@@ -472,6 +528,37 @@ public:
         counters.camera_to_dwg_gpu_p99_ms = percentile(sorted, 0.99);
         counters.camera_to_dwg_gpu_min_ms = sorted.front();
         counters.camera_to_dwg_gpu_max_ms = sorted.back();
+    }
+
+    void record_sharpen_timestamp(const Slot& slot) {
+        if (timestamp_query_pool == VK_NULL_HANDLE) return;
+        std::array<std::uint64_t, 2> values{};
+        require_camera_vulkan(vkGetQueryPoolResults(
+                                  device, timestamp_query_pool,
+                                  slot.sharpen_timestamp_query_base, 2,
+                                  sizeof(values), values.data(),
+                                  sizeof(std::uint64_t),
+                                  VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                              "read TargetLinear sharpening timestamps");
+        const auto ticks = timestamp_delta(values[0], values[1],
+                                           timestamp_valid_bits);
+        const double milliseconds = static_cast<double>(ticks) *
+                                    timestamp_period_ns / 1'000'000.0;
+        sharpen_timestamp_samples.push_back(milliseconds);
+        counters.capture_sharpening_last_gpu_ms = milliseconds;
+        counters.capture_sharpening_timestamp_samples =
+            sharpen_timestamp_samples.size();
+        counters.capture_sharpening_gpu_total_ms += milliseconds;
+        counters.capture_sharpening_gpu_mean_ms =
+            counters.capture_sharpening_gpu_total_ms /
+            static_cast<double>(sharpen_timestamp_samples.size());
+        auto sorted = sharpen_timestamp_samples;
+        std::sort(sorted.begin(), sorted.end());
+        counters.capture_sharpening_gpu_p50_ms = percentile(sorted, 0.50);
+        counters.capture_sharpening_gpu_p95_ms = percentile(sorted, 0.95);
+        counters.capture_sharpening_gpu_p99_ms = percentile(sorted, 0.99);
+        counters.capture_sharpening_gpu_min_ms = sorted.front();
+        counters.capture_sharpening_gpu_max_ms = sorted.back();
     }
 
     TargetLinearRgbF32 camera_to_dwg_for_test(
@@ -599,6 +686,168 @@ public:
         return output;
     }
 
+    TargetLinearRgbF32 camera_to_dwg_sharpen_for_test(
+        const CameraRgbF32& input,
+        const Matrix3d& camera_to_target,
+        double exposure_offset_stops,
+        double sharpening_amount,
+        double sharpening_threshold,
+        double input_scale) {
+        if (!config.enable_test_readback) {
+            throw Error(ErrorCode::unsupported_format,
+                        "Camera RGB test readback was not enabled");
+        }
+        input.validate();
+        const auto finite_plane = [](const std::vector<float>& plane) {
+            return std::all_of(plane.begin(), plane.end(),
+                               [](float value) { return std::isfinite(value); });
+        };
+        if (input.width != config.width || input.height != config.height ||
+            !std::all_of(input.planes.begin(), input.planes.end(), finite_plane) ||
+            !std::all_of(camera_to_target.v.begin(), camera_to_target.v.end(),
+                         [](double value) { return std::isfinite(value); }) ||
+            !std::isfinite(exposure_offset_stops) ||
+            !std::isfinite(input_scale) || input_scale <= 0.0 ||
+            !std::isfinite(sharpening_amount) || sharpening_amount < 0.0 ||
+            !std::isfinite(sharpening_threshold) || sharpening_threshold < 0.0) {
+            throw Error(ErrorCode::invalid_argument,
+                        "Camera RGB sharpening inputs must be finite and valid");
+        }
+        const double exposure = std::exp2(exposure_offset_stops) * input_scale;
+        if (!std::isfinite(exposure)) {
+            throw Error(ErrorCode::invalid_argument,
+                        "Camera RGB exposure scale is not finite");
+        }
+        auto& slot = slots[next_slot];
+        next_slot = (next_slot + 1U) % slots.size();
+        wait_slot(slot);
+        for (std::size_t plane = 0; plane < 3U; ++plane) {
+            upload_plane(slot.upload[plane], input.planes[plane]);
+        }
+        require_camera_vulkan(vkResetFences(device, 1, &slot.fence),
+                              "reset Camera RGB sharpening slot fence");
+        require_camera_vulkan(vkResetCommandBuffer(slot.command, 0),
+                              "reset Camera RGB sharpening command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        require_camera_vulkan(vkBeginCommandBuffer(slot.command, &begin),
+                              "begin Camera RGB sharpening command buffer");
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(slot.command, timestamp_query_pool,
+                                slot.timestamp_query_base, 4);
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestamp_query_pool, slot.timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          color_pipeline);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                color_pipeline_layout, 0, 1,
+                                &slot.color_descriptor, 0, nullptr);
+        CameraToDwgPushConstants color_push;
+        color_push.width = config.width;
+        color_push.height = config.height;
+        color_push.exposure_scale = static_cast<float>(exposure);
+        for (std::size_t column = 0; column < 3U; ++column) {
+            color_push.matrix_row_0[column] = static_cast<float>(
+                camera_to_target.v[column]);
+            color_push.matrix_row_1[column] = static_cast<float>(
+                camera_to_target.v[3U + column]);
+            color_push.matrix_row_2[column] = static_cast<float>(
+                camera_to_target.v[6U + column]);
+        }
+        vkCmdPushConstants(slot.command, color_pipeline_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(color_push), &color_push);
+        const auto pixels = static_cast<std::uint64_t>(config.width) * config.height;
+        vkCmdDispatch(slot.command,
+                      static_cast<std::uint32_t>((pixels + 255U) / 256U), 1, 1);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                timestamp_query_pool,
+                                slot.timestamp_query_base + 1U);
+        }
+
+        std::array<VkBufferMemoryBarrier, 3> barriers{};
+        for (std::size_t plane = 0; plane < barriers.size(); ++plane) {
+            auto& barrier = barriers[plane];
+            barrier.sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = slot.intermediate[0][plane].handle;
+            barrier.offset = 0;
+            barrier.size = VK_WHOLE_SIZE;
+        }
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
+                             static_cast<std::uint32_t>(barriers.size()),
+                             barriers.data(), 0, nullptr);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool,
+                                slot.sharpen_timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          sharpen_pipeline);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                sharpen_pipeline_layout, 0, 1,
+                                &slot.sharpen_descriptor, 0, nullptr);
+        const SharpenPushConstants sharpen_push{
+            config.width, config.height,
+            static_cast<float>(sharpening_amount),
+            static_cast<float>(sharpening_threshold)};
+        vkCmdPushConstants(slot.command, sharpen_pipeline_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(sharpen_push), &sharpen_push);
+        vkCmdDispatch(slot.command, (config.width + 15U) / 16U,
+                      (config.height + 15U) / 16U, 1);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool,
+                                slot.sharpen_timestamp_query_base + 1U);
+        }
+        for (std::size_t plane = 0; plane < barriers.size(); ++plane) {
+            auto& barrier = barriers[plane];
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
+            barrier.buffer = slot.intermediate[1][plane].handle;
+        }
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr,
+                             static_cast<std::uint32_t>(barriers.size()),
+                             barriers.data(), 0, nullptr);
+        VkBufferCopy copy{0, 0, plane_bytes};
+        for (std::size_t plane = 0; plane < 3U; ++plane) {
+            vkCmdCopyBuffer(slot.command, slot.intermediate[1][plane].handle,
+                            slot.readback[plane].handle, 1, &copy);
+        }
+        for (std::size_t plane = 0; plane < barriers.size(); ++plane) {
+            auto& barrier = barriers[plane];
+            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+            barrier.dstAccessMask = VK_ACCESS_HOST_READ_BIT;
+            barrier.buffer = slot.readback[plane].handle;
+        }
+        vkCmdPipelineBarrier(slot.command, VK_PIPELINE_STAGE_TRANSFER_BIT,
+                             VK_PIPELINE_STAGE_HOST_BIT, 0, 0, nullptr,
+                             static_cast<std::uint32_t>(barriers.size()),
+                             barriers.data(), 0, nullptr);
+        require_camera_vulkan(vkEndCommandBuffer(slot.command),
+                              "end Camera RGB sharpening command buffer");
+        submit_and_wait(slot, "submit Camera RGB color and sharpening passes");
+        record_color_timestamp(slot);
+        record_sharpen_timestamp(slot);
+
+        TargetLinearRgbF32 output{config.width, config.height, {}};
+        for (std::size_t plane = 0; plane < 3U; ++plane) {
+            output.planes[plane] = readback_plane(slot.readback[plane]);
+        }
+        const auto frame_bytes = static_cast<std::uint64_t>(plane_bytes) * 3U;
+        counters.test_upload_bytes += frame_bytes;
+        counters.test_readback_bytes += frame_bytes;
+        return output;
+    }
+
     CameraRgbF32 round_trip_for_test(const CameraRgbF32& input) {
         if (!config.enable_test_readback) {
             throw Error(ErrorCode::unsupported_format,
@@ -710,6 +959,14 @@ public:
             vkDestroyPipelineLayout(device, color_pipeline_layout, allocator);
             color_pipeline_layout = VK_NULL_HANDLE;
         }
+        if (sharpen_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, sharpen_pipeline, allocator);
+            sharpen_pipeline = VK_NULL_HANDLE;
+        }
+        if (sharpen_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, sharpen_pipeline_layout, allocator);
+            sharpen_pipeline_layout = VK_NULL_HANDLE;
+        }
         if (descriptor_pool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descriptor_pool, allocator);
             descriptor_pool = VK_NULL_HANDLE;
@@ -742,12 +999,15 @@ public:
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
     VkPipelineLayout color_pipeline_layout{VK_NULL_HANDLE};
     VkPipeline color_pipeline{VK_NULL_HANDLE};
+    VkPipelineLayout sharpen_pipeline_layout{VK_NULL_HANDLE};
+    VkPipeline sharpen_pipeline{VK_NULL_HANDLE};
     VkQueryPool timestamp_query_pool{VK_NULL_HANDLE};
     std::uint32_t timestamp_valid_bits{};
     double timestamp_period_ns{};
     std::vector<Slot> slots;
     std::size_t next_slot{};
     std::vector<double> color_timestamp_samples;
+    std::vector<double> sharpen_timestamp_samples;
     VulkanCameraPipelineResourceTelemetry counters;
 };
 
@@ -772,6 +1032,19 @@ TargetLinearRgbF32 VulkanCameraPipelineResources::camera_to_dwg_for_test(
     double input_scale) {
     return impl_->camera_to_dwg_for_test(input, camera_to_target,
                                          exposure_offset_stops, input_scale);
+}
+
+TargetLinearRgbF32
+VulkanCameraPipelineResources::camera_to_dwg_sharpen_for_test(
+    const CameraRgbF32& input,
+    const Matrix3d& camera_to_target,
+    double exposure_offset_stops,
+    double sharpening_amount,
+    double sharpening_threshold,
+    double input_scale) {
+    return impl_->camera_to_dwg_sharpen_for_test(
+        input, camera_to_target, exposure_offset_stops,
+        sharpening_amount, sharpening_threshold, input_scale);
 }
 
 VulkanCameraPipelineResourceTelemetry

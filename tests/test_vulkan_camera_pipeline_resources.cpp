@@ -146,6 +146,76 @@ TEST_CASE("Vulkan Camera RGB color pass rejects non-finite input") {
                     mcraw::Error);
 }
 
+TEST_CASE("Vulkan TargetLinear sharpening matches edge threshold and negative semantics") {
+    constexpr std::uint32_t width = 40;
+    constexpr std::uint32_t height = 40;
+    mcraw::CameraRgbF32 camera{width, height, {}};
+    const auto pixels = static_cast<std::size_t>(width) * height;
+    for (auto& plane : camera.planes) plane.assign(pixels, 0.10F);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = width / 2U; x < width; ++x) {
+            const auto pixel = static_cast<std::size_t>(y) * width + x;
+            camera.planes[0][pixel] = 0.75F;
+            camera.planes[1][pixel] = 0.40F;
+            camera.planes[2][pixel] = 0.20F;
+        }
+    }
+    camera.planes[0][0] = -0.05F;
+    camera.planes[1][width - 1U] = 1.25F;
+    camera.planes[2][pixels - 1U] = -0.02F;
+    camera.planes[0][static_cast<std::size_t>(height / 2U) * width + width / 2U] = 1.5F;
+
+    mcraw::CameraColorSolution solution;
+    solution.camera_to_target = mcraw::Matrix3d::identity();
+    constexpr double amount = 0.4;
+    constexpr double threshold = 0.002;
+    auto expected = mcraw::camera_to_dwg(camera, solution, 0.0, 1.0, 1);
+    expected = mcraw::sharpen_target_linear(
+        std::move(expected), amount, threshold, 1);
+
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(
+        runtime, {width, height, 2, true});
+    const auto actual = resources.camera_to_dwg_sharpen_for_test(
+        camera, solution.camera_to_target, 0.0, amount, threshold, 1.0);
+    const auto error = compare_rgb(expected, actual);
+    INFO("sharpen max abs=" << error.maximum << ", rmse=" << error.rmse);
+    CHECK(error.maximum <= 3.0e-5);
+    CHECK(error.rmse <= 2.0e-6);
+    CHECK(camera.planes[0][0] == -0.05F);
+    const auto telemetry = resources.telemetry();
+    CHECK(telemetry.camera_to_dwg_timestamp_samples == 1U);
+    CHECK(telemetry.capture_sharpening_timestamp_samples == 1U);
+    CHECK(telemetry.capture_sharpening_last_gpu_ms > 0.0);
+}
+
+TEST_CASE("Vulkan TargetLinear zero sharpening preserves the color output") {
+    constexpr std::uint32_t width = 8;
+    constexpr std::uint32_t height = 4;
+    const auto camera = camera_pattern(width, height, -2.0F);
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(runtime, {width, height, 1, true});
+    const auto color = resources.camera_to_dwg_for_test(
+        camera, mcraw::Matrix3d::identity(), 0.0, 1.0);
+    const auto sharpened = resources.camera_to_dwg_sharpen_for_test(
+        camera, mcraw::Matrix3d::identity(), 0.0, 0.0, 0.002, 1.0);
+    CHECK(sharpened.planes == color.planes);
+}
+
+TEST_CASE("Vulkan TargetLinear sharpening rejects invalid parameters") {
+    const auto camera = camera_pattern(8, 4, 0.0F);
+    mcraw::VulkanRuntime runtime;
+    mcraw::VulkanCameraPipelineResources resources(runtime, {8, 4, 1, true});
+    CHECK_THROWS_AS(resources.camera_to_dwg_sharpen_for_test(
+                        camera, mcraw::Matrix3d::identity(), 0.0,
+                        -0.1, 0.002, 1.0),
+                    mcraw::Error);
+    CHECK_THROWS_AS(resources.camera_to_dwg_sharpen_for_test(
+                        camera, mcraw::Matrix3d::identity(), 0.0,
+                        0.4, -0.001, 1.0),
+                    mcraw::Error);
+}
+
 TEST_CASE("Vulkan Camera RGB color pass matches a real Stage 0 frame") {
     const char* sample_path = std::getenv("MCRAW_STAGE1_REAL_SAMPLE");
     if (sample_path == nullptr || *sample_path == '\0') {
@@ -175,4 +245,40 @@ TEST_CASE("Vulkan Camera RGB color pass matches a real Stage 0 frame") {
     INFO("real frame GPU ms=" << telemetry.camera_to_dwg_last_gpu_ms);
     CHECK(telemetry.camera_to_dwg_timestamp_samples == 1U);
     CHECK(telemetry.camera_to_dwg_last_gpu_ms > 0.0);
+}
+
+TEST_CASE("Vulkan TargetLinear sharpening matches a real Stage 0 frame") {
+    const char* sample_path = std::getenv("MCRAW_STAGE1_REAL_SAMPLE");
+    if (sample_path == nullptr || *sample_path == '\0') {
+        SKIP("set MCRAW_STAGE1_REAL_SAMPLE to run the 4K Stage 1C golden");
+    }
+    mcraw::McrawReader reader{std::filesystem::path(sample_path)};
+    const auto decoded = reader.load_reference_frame_with_metadata(0);
+    const auto calibrated = mcraw::calibrate_raw_for_demosaic(
+        decoded.raw, decoded.metadata, 16);
+    const auto camera = mcraw::demosaic_unnormalized(
+        calibrated, mcraw::DemosaicAlgorithm::rcd, 16);
+    const auto solution = mcraw::build_camera_color_solution(decoded.metadata);
+    constexpr double input_scale = 1.0 / 65535.0;
+    constexpr double amount = 0.4;
+    constexpr double threshold = 0.002;
+    auto expected = mcraw::camera_to_dwg(
+        camera, solution, 0.0, input_scale, 16);
+    expected = mcraw::sharpen_target_linear(
+        std::move(expected), amount, threshold, 16);
+    const bool validation = std::getenv("MCRAW_VULKAN_VALIDATION") != nullptr;
+    mcraw::VulkanRuntime runtime({"auto", validation});
+    mcraw::VulkanCameraPipelineResources resources(
+        runtime, {camera.width, camera.height, 1, true});
+    const auto actual = resources.camera_to_dwg_sharpen_for_test(
+        camera, solution.camera_to_target, 0.0, amount, threshold, input_scale);
+    const auto error = compare_rgb(expected, actual);
+    const auto telemetry = resources.telemetry();
+    INFO("real sharpen max abs=" << error.maximum << ", rmse=" << error.rmse);
+    INFO("real sharpen GPU ms=" << telemetry.capture_sharpening_last_gpu_ms);
+    CHECK(error.maximum <= 3.0e-5);
+    CHECK(error.rmse <= 2.0e-6);
+    CHECK(telemetry.camera_to_dwg_timestamp_samples == 1U);
+    CHECK(telemetry.capture_sharpening_timestamp_samples == 1U);
+    CHECK(telemetry.capture_sharpening_last_gpu_ms > 0.0);
 }

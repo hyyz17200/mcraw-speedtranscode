@@ -108,3 +108,19 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
   `11.9165 ms`，仅作为 shader 验证数据，不作为性能承诺。
 - 本批次仍不切换 production writer；详细报告见
   `GPU_STAGE1B_COLOR_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 1C sharpening
+
+- 新增独立 `sharpen_target_linear.comp.glsl` FP32 pass，从 device-local ping A
+  读取并写入 ping B，不做原地更新、clamp、FP16 或 pass fusion。
+- 保持 CPU 的 BT.2020 luma、四邻域 cross blur、边缘坐标钳制、soft threshold
+  和同量 RGB delta 语义；16-byte push-constant ABI 已冻结。
+- color→sharpen 使用 compute write/read barrier；仅 test route 再把 ping B
+  barrier 到 transfer readback，production 仍无中间图像回读。
+- synthetic edge/threshold/negative golden max/RMSE 为
+  `5.96046e-8 / 2.00631e-9`；真实 4096×3072 Stage 0 首帧为
+  `2.38419e-7 / 1.94043e-8`，均通过 `3e-5 / 2e-6` 门槛。
+- sharpening pass 已有独立 GPU timestamp summary；validation-enabled 4K
+  单样本为 `4.3264 ms`，仅作为 shader 验证数据，不作为性能承诺。
+- 本批次仍不切换 production writer；详细报告见
+  `GPU_STAGE1C_SHARPENING_VALIDATION.md`。

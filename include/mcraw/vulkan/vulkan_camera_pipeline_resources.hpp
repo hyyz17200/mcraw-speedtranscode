@@ -35,6 +35,15 @@ struct VulkanCameraPipelineResourceTelemetry {
     double camera_to_dwg_gpu_min_ms{};
     double camera_to_dwg_gpu_max_ms{};
     double camera_to_dwg_last_gpu_ms{};
+    std::uint64_t capture_sharpening_timestamp_samples{};
+    double capture_sharpening_gpu_total_ms{};
+    double capture_sharpening_gpu_mean_ms{};
+    double capture_sharpening_gpu_p50_ms{};
+    double capture_sharpening_gpu_p95_ms{};
+    double capture_sharpening_gpu_p99_ms{};
+    double capture_sharpening_gpu_min_ms{};
+    double capture_sharpening_gpu_max_ms{};
+    double capture_sharpening_last_gpu_ms{};
 };
 
 // Stage 1A owns only the Camera RGB upload and two device-local FP32 ping-pong
@@ -56,6 +65,13 @@ public:
         const CameraRgbF32& input,
         const Matrix3d& camera_to_target,
         double exposure_offset_stops,
+        double input_scale = 1.0 / 65535.0);
+    [[nodiscard]] TargetLinearRgbF32 camera_to_dwg_sharpen_for_test(
+        const CameraRgbF32& input,
+        const Matrix3d& camera_to_target,
+        double exposure_offset_stops,
+        double sharpening_amount,
+        double sharpening_threshold,
         double input_scale = 1.0 / 65535.0);
     [[nodiscard]] VulkanCameraPipelineResourceTelemetry telemetry() const noexcept;
 

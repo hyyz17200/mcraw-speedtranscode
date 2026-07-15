@@ -186,6 +186,8 @@ if(MCRAW_ENABLE_VULKAN)
   set(MCRAW_RGB_TO_YUV_IMAGE_HEADER "${MCRAW_GENERATED_SHADER_DIR}/rgb_to_yuv_422_image_spv.hpp")
   set(MCRAW_CAMERA_TO_DWG_SPV "${MCRAW_GENERATED_SHADER_DIR}/camera_to_dwg.comp.spv")
   set(MCRAW_CAMERA_TO_DWG_HEADER "${MCRAW_GENERATED_SHADER_DIR}/camera_to_dwg_spv.hpp")
+  set(MCRAW_SHARPEN_TARGET_LINEAR_SPV "${MCRAW_GENERATED_SHADER_DIR}/sharpen_target_linear.comp.spv")
+  set(MCRAW_SHARPEN_TARGET_LINEAR_HEADER "${MCRAW_GENERATED_SHADER_DIR}/sharpen_target_linear_spv.hpp")
   add_custom_command(
     OUTPUT "${MCRAW_RGB_TO_YUV_SPV}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
@@ -236,9 +238,26 @@ if(MCRAW_ENABLE_VULKAN)
             -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     DEPENDS "${MCRAW_CAMERA_TO_DWG_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
     VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_SHARPEN_TARGET_LINEAR_SPV}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
+    COMMAND "${MCRAW_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+            -o "${MCRAW_SHARPEN_TARGET_LINEAR_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/sharpen_target_linear.comp.glsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/sharpen_target_linear.comp.glsl"
+    VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_SHARPEN_TARGET_LINEAR_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${MCRAW_SHARPEN_TARGET_LINEAR_SPV}"
+            "-DOUTPUT=${MCRAW_SHARPEN_TARGET_LINEAR_HEADER}"
+            "-DSYMBOL=sharpen_target_linear_spv"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    DEPENDS "${MCRAW_SHARPEN_TARGET_LINEAR_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    VERBATIM)
   add_custom_target(mcraw_vulkan_shaders DEPENDS
     "${MCRAW_RGB_TO_YUV_HEADER}" "${MCRAW_RGB_TO_YUV_IMAGE_HEADER}"
-    "${MCRAW_CAMERA_TO_DWG_HEADER}")
+    "${MCRAW_CAMERA_TO_DWG_HEADER}" "${MCRAW_SHARPEN_TARGET_LINEAR_HEADER}")
   add_dependencies(mcraw_core mcraw_vulkan_shaders)
   target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_sources(mcraw_core PRIVATE
