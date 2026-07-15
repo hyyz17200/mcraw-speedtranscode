@@ -4,7 +4,8 @@ param(
     [string]$Corpus = ".\config\gpu-stage0-corpus.json",
     [string]$OutputDirectory = ".\test-output\gpu-stage0-benchmark",
     [int]$OfficialRuns = 3,
-    [int]$PollMilliseconds = 500
+    [int]$PollMilliseconds = 500,
+    [switch]$ValidateStage2Raw
 )
 
 $ErrorActionPreference = "Stop"
@@ -37,6 +38,7 @@ $samplePath = Resolve-RepoPath $sampleSpec.path
 $configPath = Resolve-RepoPath $contract.production_config
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $moviePath = Join-Path $outputPath "stage0-vulkan.mov"
+$benchmarkLabel = if ($ValidateStage2Raw) { "Stage 2" } else { "Stage 0" }
 $logicalProcessors = [Environment]::ProcessorCount
 $nvidiaSmi = Get-Command nvidia-smi -ErrorAction SilentlyContinue
 
@@ -108,16 +110,36 @@ function Invoke-Conversion([string]$Kind, [int]$Index) {
         throw "conversion failed with exit code $($process.ExitCode); see $stderrFile"
     }
     $result = $stdout | ConvertFrom-Json -Depth 100
-    if ($result.pipeline.backend -ne "prores_ks_vulkan" -or
+    $commonInvalid = $result.pipeline.backend -ne "prores_ks_vulkan" -or
         -not $result.pipeline.gpu_resident -or
         -not $result.pipeline.gpu_timestamps_supported -or
         [int64]$result.pipeline.gpu_stages.rgb_to_yuv_422.samples -ne [int64]$result.frames -or
         [int64]$result.pipeline.transfers.compressed_input_upload_bytes -ne 0 -or
-        [int64]$result.pipeline.transfers.u16_raw_upload_bytes -ne 0 -or
         [int64]$result.pipeline.transfers.fp16_rgb_upload_bytes -ne 0 -or
-        [int64]$result.pipeline.transfers.fp32_rgb_upload_bytes -ne
-            [int64]$result.pipeline.rgb_upload_bytes -or
-        [int64]$result.pipeline.transfers.compressed_packet_download_bytes -le 0) {
+        [int64]$result.pipeline.transfers.compressed_packet_download_bytes -le 0
+    $stage2Invalid = $false
+    if ($script:ValidateStage2Raw) {
+        $expectedRawBytes = [int64]$script:sampleSpec.width *
+            [int64]$script:sampleSpec.height * 2L * [int64]$result.frames
+        $stage2Invalid = $result.pipeline.entry -ne "raw_mosaic_u16" -or
+            $result.pipeline.demosaic_location -ne "gpu_rcd_precise" -or
+            [int64]$result.pipeline.transfers.u16_raw_upload_bytes -ne $expectedRawBytes -or
+            [int64]$result.pipeline.transfers.fp32_rgb_upload_bytes -ne 0 -or
+            [int64]$result.pipeline.transfers.camera_rgb_fp32_upload_bytes -ne 0 -or
+            [int64]$result.pipeline.transfers.target_log_fp32_upload_bytes -ne 0 -or
+            [int64]$result.pipeline.transfers.control_status_read_bytes -ne
+                (4L * [int64]$result.frames) -or
+            [int64]$result.pipeline.control_status_failures -ne 0 -or
+            [int64]$result.pipeline.gpu_stages.raw_calibration.samples -ne
+                [int64]$result.frames -or
+            [int64]$result.pipeline.gpu_stages.rcd_demosaic.samples -ne
+                [int64]$result.frames
+    } else {
+        $stage2Invalid = [int64]$result.pipeline.transfers.u16_raw_upload_bytes -ne 0 -or
+            [int64]$result.pipeline.transfers.fp32_rgb_upload_bytes -ne
+                [int64]$result.pipeline.rgb_upload_bytes
+    }
+    if ($commonInvalid -or $stage2Invalid) {
         throw "conversion did not satisfy the forced Vulkan/timestamp invariants"
     }
     $sidecarPath = "$script:moviePath.json"
@@ -159,10 +181,10 @@ function Invoke-Conversion([string]$Kind, [int]$Index) {
 }
 
 $runs = @()
-Write-Host "Stage 0 warm-up run"
+Write-Host "$benchmarkLabel warm-up run"
 $runs += Invoke-Conversion "warmup" 0
 for ($run = 1; $run -le $OfficialRuns; ++$run) {
-    Write-Host "Stage 0 official run $run/$OfficialRuns"
+    Write-Host "$benchmarkLabel official run $run/$OfficialRuns"
     $runs += Invoke-Conversion "official" $run
 }
 
@@ -182,7 +204,11 @@ if ($null -ne $ffprobe) {
 }
 
 $report = [ordered]@{
-    schema = "mcraw-gpu-stage0-benchmark-v1"
+    schema = if ($ValidateStage2Raw) {
+        "mcraw-gpu-stage2-benchmark-v1"
+    } else {
+        "mcraw-gpu-stage0-benchmark-v1"
+    }
     captured_at_utc = [DateTime]::UtcNow.ToString("o")
     commit = (& git -C $repoRoot rev-parse HEAD).Trim()
     dirty = @(& git -C $repoRoot status --porcelain=v1).Count -ne 0
@@ -219,4 +245,4 @@ $report = [ordered]@{
 
 $reportFile = Join-Path $outputPath "benchmark-report.json"
 $report | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $reportFile -Encoding utf8
-Write-Host "Stage 0 benchmark report: $reportFile"
+Write-Host "$benchmarkLabel benchmark report: $reportFile"
