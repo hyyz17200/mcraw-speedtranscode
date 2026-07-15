@@ -2,6 +2,7 @@
 param(
     [string]$Executable = ".\build\msvc-release\Release\mcraw-transcoder.exe",
     [string]$Corpus = ".\config\gpu-stage0-corpus.json",
+    [string]$Config = "",
     [string]$OutputDirectory = ".\test-output\gpu-stage0-benchmark",
     [int]$OfficialRuns = 3,
     [int]$PollMilliseconds = 500,
@@ -35,7 +36,14 @@ $outputPath = Resolve-RepoPath $OutputDirectory
 $contract = Get-Content -LiteralPath $contractPath -Raw | ConvertFrom-Json -Depth 100
 $sampleSpec = @($contract.real_samples)[0]
 $samplePath = Resolve-RepoPath $sampleSpec.path
-$configPath = Resolve-RepoPath $contract.production_config
+$configPath = Resolve-RepoPath $(if ($Config) { $Config } else { $contract.production_config })
+$effectiveConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json -Depth 100
+$expectedPerformanceMode = if ($effectiveConfig.PSObject.Properties.Name -contains
+    "gpu_performance_mode") { [string]$effectiveConfig.gpu_performance_mode } else { "precise" }
+$expectedIntermediateStorage = if ($expectedPerformanceMode -eq "precise") { "fp32" } else { "fp16" }
+$expectedDiImplementation = if ($expectedPerformanceMode -eq "fast") {
+    "fp32_analytic"
+} else { "fp32_lut" }
 New-Item -ItemType Directory -Path $outputPath -Force | Out-Null
 $moviePath = Join-Path $outputPath $(if ($ValidateStage2Raw) {
     "stage2-vulkan.mov"
@@ -127,6 +135,13 @@ function Invoke-Conversion([string]$Kind, [int]$Index) {
             [int64]$script:sampleSpec.height * 2L * [int64]$result.frames
         $stage2Invalid = $result.pipeline.entry -ne "raw_mosaic_u16" -or
             $result.pipeline.demosaic_location -ne "gpu_rcd_precise" -or
+            $result.pipeline.demosaic_implementation -ne "gpu_rcd_precise" -or
+            $result.pipeline.performance_mode -ne $script:expectedPerformanceMode -or
+            $result.pipeline.intermediate_storage -ne $script:expectedIntermediateStorage -or
+            $result.pipeline.di_implementation -ne $script:expectedDiImplementation -or
+            $result.pipeline.dither_mode -ne $(if ($script:effectiveConfig.deterministic_dither) {
+                "deterministic"
+            } else { "disabled" }) -or
             [int64]$result.pipeline.transfers.u16_raw_upload_bytes -ne $expectedRawBytes -or
             [int64]$result.pipeline.transfers.fp32_rgb_upload_bytes -ne 0 -or
             [int64]$result.pipeline.transfers.camera_rgb_fp32_upload_bytes -ne 0 -or
