@@ -401,6 +401,7 @@ int command_print_effective_config(const Arguments& args) {
 
 int command_extract(const Arguments& args) {
     mcraw::McrawReader reader(std::filesystem::path(std::string(args.at(2))));
+    const auto config = effective_config(args);
     const auto frame = parse_size(args.option("--frame").value_or("0"), "--frame");
     const auto stage = args.option("--stage").value_or("raw-u16");
     const auto output_option = args.option("--output");
@@ -415,6 +416,52 @@ int command_extract(const Arguments& args) {
     const auto raw = reader.load_reference_frame(frame);
     if (stage == "raw-u16") {
         write_bytes(output, raw.pixels.data(), raw.pixels.size() * sizeof(std::uint16_t));
+        return 0;
+    }
+    if (stage == "calibrated-mosaic-f32" || stage == "camera-rgb-f32" ||
+        stage == "target-linear-production-f32" ||
+        stage == "target-log-production-f32" ||
+        stage == "yuv422p10-production") {
+        const auto calibrated = mcraw::calibrate_raw_for_demosaic(raw, metadata, 1);
+        if (stage == "calibrated-mosaic-f32") {
+            write_bytes(output, calibrated.pixels.data(),
+                        calibrated.pixels.size() * sizeof(float));
+            return 0;
+        }
+        const auto camera = mcraw::demosaic_unnormalized(calibrated, config.demosaic, 1);
+        if (stage == "camera-rgb-f32") {
+            write_pfm(output, camera);
+            return 0;
+        }
+        const auto solution = mcraw::build_camera_color_solution(metadata);
+        auto target_linear = mcraw::camera_to_dwg(
+            camera, solution, config.exposure_offset_stops, 1.0 / 65535.0, 1);
+        target_linear = mcraw::sharpen_target_linear(
+            std::move(target_linear), config.capture_sharpening,
+            config.capture_sharpening_threshold, 1);
+        if (stage == "target-linear-production-f32") {
+            write_pfm(output, target_linear);
+            return 0;
+        }
+        mcraw::DaVinciIntermediateLut curve;
+        const auto target_log = mcraw::encode_davinci_intermediate_lut(
+            std::move(target_linear), config.negative_policy, curve, 1);
+        if (stage == "target-log-production-f32") {
+            write_pfm(output, target_log);
+            return 0;
+        }
+        const auto packed = mcraw::pack_dwg_log_to_yuv422p10(
+            target_log, config.chroma_filter, config.deterministic_dither, frame);
+        std::ofstream stream(output, std::ios::binary | std::ios::trunc);
+        if (!stream) throw Error(ErrorCode::io_failed, "cannot create production YUV output");
+        for (const auto* plane : {&packed.image.y, &packed.image.cb, &packed.image.cr}) {
+            stream.write(reinterpret_cast<const char*>(plane->data()),
+                         static_cast<std::streamsize>(plane->size() * sizeof(std::uint16_t)));
+        }
+        if (!stream) {
+            throw Error(ErrorCode::io_failed,
+                        "failed while writing production YUV output");
+        }
         return 0;
     }
     const auto normalized = mcraw::calibrate_raw(raw, metadata);
@@ -777,11 +824,25 @@ int command_convert(const Arguments& args) {
         writer_telemetry.gpu_resident,
         writer_telemetry.upload_frames, writer_telemetry.readback_frames,
         writer_telemetry.direct_frames, writer_telemetry.rgb_upload_bytes,
+        writer_telemetry.compressed_input_upload_bytes,
+        writer_telemetry.u16_raw_upload_bytes,
+        writer_telemetry.fp16_rgb_upload_bytes,
+        writer_telemetry.fp32_rgb_upload_bytes,
+        writer_telemetry.compressed_packet_download_bytes,
         writer_telemetry.video_packets,
         writer_telemetry.gpu_queue_capacity, writer_telemetry.gpu_queue_max_depth,
         writer_telemetry.packet_queue_capacity, writer_telemetry.packet_queue_max_depth,
         writer_telemetry.backpressure_waits, writer_telemetry.backpressure_wait_ms,
         writer_telemetry.mux_bytes, writer_telemetry.mux_megabytes_per_second,
+        writer_telemetry.gpu_timestamps_supported,
+        writer_telemetry.rgb_to_yuv_gpu_timestamp_samples,
+        writer_telemetry.rgb_to_yuv_gpu_total_ms,
+        writer_telemetry.rgb_to_yuv_gpu_mean_ms,
+        writer_telemetry.rgb_to_yuv_gpu_p50_ms,
+        writer_telemetry.rgb_to_yuv_gpu_p95_ms,
+        writer_telemetry.rgb_to_yuv_gpu_p99_ms,
+        writer_telemetry.rgb_to_yuv_gpu_min_ms,
+        writer_telemetry.rgb_to_yuv_gpu_max_ms,
         writer_telemetry.gpu_name,
         writer_telemetry.gpu_uuid, writer_telemetry.gpu_driver,
         capabilities.ffmpeg_version, capabilities.ffmpeg_configuration};
@@ -803,13 +864,34 @@ int command_convert(const Arguments& args) {
                                     {"readback_frames", pipeline_report.readback_frames},
                                     {"direct_frames", pipeline_report.direct_frames},
                                     {"rgb_upload_bytes", pipeline_report.rgb_upload_bytes},
+                                    {"transfers", {
+                                        {"compressed_input_upload_bytes", pipeline_report.compressed_input_upload_bytes},
+                                        {"u16_raw_upload_bytes", pipeline_report.u16_raw_upload_bytes},
+                                        {"fp16_rgb_upload_bytes", pipeline_report.fp16_rgb_upload_bytes},
+                                        {"fp32_rgb_upload_bytes", pipeline_report.fp32_rgb_upload_bytes},
+                                        {"compressed_packet_download_bytes", pipeline_report.compressed_packet_download_bytes},
+                                        {"gpu_image_to_image_counted_as_pcie", false}
+                                    }},
                                     {"video_packets", pipeline_report.video_packets},
                                     {"gpu_queue_max_depth", pipeline_report.gpu_queue_max_depth},
                                     {"packet_queue_max_depth", pipeline_report.packet_queue_max_depth},
                                     {"backpressure_waits", pipeline_report.backpressure_waits},
                                     {"mux_megabytes_per_second", pipeline_report.mux_megabytes_per_second},
                                     {"gpu_name", pipeline_report.gpu_name},
-                                    {"gpu_uuid", pipeline_report.gpu_uuid}
+                                    {"gpu_uuid", pipeline_report.gpu_uuid},
+                                    {"gpu_timestamps_supported", pipeline_report.gpu_timestamps_supported},
+                                    {"gpu_stages", {
+                                        {"rgb_to_yuv_422", {
+                                            {"samples", pipeline_report.rgb_to_yuv_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.rgb_to_yuv_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.rgb_to_yuv_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.rgb_to_yuv_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.rgb_to_yuv_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.rgb_to_yuv_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.rgb_to_yuv_gpu_min_ms},
+                                            {"max_ms", pipeline_report.rgb_to_yuv_gpu_max_ms}
+                                        }}
+                                    }}
                                 }},
                                 {"execution", {
                                     {"cpu_threads", execution.total_threads},

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -43,6 +44,23 @@ struct PushConstants {
 };
 static_assert(sizeof(PushConstants) == 24U);
 
+double timestamp_percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty()) return 0.0;
+    const double index = p * static_cast<double>(sorted.size() - 1U);
+    const auto lo = static_cast<std::size_t>(std::floor(index));
+    const auto hi = static_cast<std::size_t>(std::ceil(index));
+    const double fraction = index - static_cast<double>(lo);
+    return sorted[lo] * (1.0 - fraction) + sorted[hi] * fraction;
+}
+
+std::uint64_t timestamp_delta(std::uint64_t start,
+                              std::uint64_t end,
+                              std::uint32_t valid_bits) {
+    if (valid_bits >= 64U) return end - start;
+    const auto mask = (std::uint64_t{1} << valid_bits) - 1U;
+    return (end - start) & mask;
+}
+
 } // namespace
 
 class VulkanRgbToYuv422::Impl {
@@ -81,6 +99,7 @@ public:
             create_descriptors();
             create_pipeline();
             create_commands();
+            create_timestamp_queries();
         } catch (...) {
             cleanup();
             throw;
@@ -242,6 +261,29 @@ public:
                        "create RGB-to-YUV fence");
     }
 
+    void create_timestamp_queries() {
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count,
+                                                 families.data());
+        if (queue_family >= families.size() ||
+            families[queue_family].timestampValidBits == 0U) {
+            counters.gpu_timestamps_supported = false;
+            return;
+        }
+        timestamp_valid_bits = families[queue_family].timestampValidBits;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physical_device, &properties);
+        timestamp_period_ns = properties.limits.timestampPeriod;
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = 2;
+        require_vulkan(vkCreateQueryPool(device, &info, nullptr, &timestamp_query_pool),
+                       "create RGB-to-YUV timestamp query pool");
+        counters.gpu_timestamps_supported = true;
+    }
+
     void upload(std::size_t buffer_index, const std::vector<float>& values) {
         const auto bytes = checked_bytes(values.size(), sizeof(float));
         if (bytes != buffers[buffer_index].size) {
@@ -295,6 +337,11 @@ public:
         begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         require_vulkan(vkBeginCommandBuffer(command_buffer, &begin),
                        "begin RGB-to-YUV command buffer");
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(command_buffer, timestamp_query_pool, 0, 2);
+            vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                timestamp_query_pool, 0);
+        }
         vkCmdBindPipeline(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
         vkCmdBindDescriptorSets(command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
                                 pipeline_layout, 0, 1, &descriptor_set, 0, nullptr);
@@ -306,6 +353,10 @@ public:
                            0, sizeof(push), &push);
         const auto pairs = config.width / 2U;
         vkCmdDispatch(command_buffer, (pairs + 63U) / 64U, config.height, 1);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                timestamp_query_pool, 1);
+        }
         require_vulkan(vkEndCommandBuffer(command_buffer),
                        "end RGB-to-YUV command buffer");
         VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -315,8 +366,31 @@ public:
         require_vulkan(vkQueueSubmit(queue, 1, &submit, fence), "submit RGB-to-YUV compute");
         require_vulkan(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX),
                        "wait for RGB-to-YUV compute");
-        counters.last_dispatch_ms = std::chrono::duration<double, std::milli>(
+        counters.last_dispatch_wall_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - start).count();
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            std::array<std::uint64_t, 2> values{};
+            require_vulkan(vkGetQueryPoolResults(
+                device, timestamp_query_pool, 0, 2, sizeof(values), values.data(),
+                sizeof(std::uint64_t), VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                "read RGB-to-YUV GPU timestamps");
+            const auto ticks = timestamp_delta(values[0], values[1], timestamp_valid_bits);
+            const double milliseconds = static_cast<double>(ticks) *
+                                        static_cast<double>(timestamp_period_ns) / 1.0e6;
+            gpu_timestamp_ms.push_back(milliseconds);
+            counters.last_gpu_dispatch_ms = milliseconds;
+            counters.gpu_total_ms += milliseconds;
+            counters.gpu_timestamp_samples = gpu_timestamp_ms.size();
+            counters.gpu_mean_ms = counters.gpu_total_ms /
+                                   static_cast<double>(counters.gpu_timestamp_samples);
+            if (counters.gpu_timestamp_samples == 1U) {
+                counters.gpu_min_ms = milliseconds;
+                counters.gpu_max_ms = milliseconds;
+            } else {
+                counters.gpu_min_ms = std::min(counters.gpu_min_ms, milliseconds);
+                counters.gpu_max_ms = std::max(counters.gpu_max_ms, milliseconds);
+            }
+        }
         ++counters.dispatches;
 
         const auto pixels = static_cast<std::size_t>(config.width) * config.height;
@@ -334,6 +408,9 @@ public:
         if (device == VK_NULL_HANDLE) return;
         if (fence != VK_NULL_HANDLE) vkDestroyFence(device, fence, nullptr);
         if (command_pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, command_pool, nullptr);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device, timestamp_query_pool, nullptr);
+        }
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, nullptr);
         if (pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipeline_layout, nullptr);
@@ -366,7 +443,23 @@ public:
     VkCommandPool command_pool{VK_NULL_HANDLE};
     VkCommandBuffer command_buffer{VK_NULL_HANDLE};
     VkFence fence{VK_NULL_HANDLE};
+    VkQueryPool timestamp_query_pool{VK_NULL_HANDLE};
+    std::uint32_t timestamp_valid_bits{};
+    float timestamp_period_ns{};
+    std::vector<double> gpu_timestamp_ms;
     VulkanRgbToYuvTelemetry counters;
+
+    [[nodiscard]] VulkanRgbToYuvTelemetry telemetry() const {
+        auto result = counters;
+        if (!gpu_timestamp_ms.empty()) {
+            auto sorted = gpu_timestamp_ms;
+            std::sort(sorted.begin(), sorted.end());
+            result.gpu_p50_ms = timestamp_percentile(sorted, 0.50);
+            result.gpu_p95_ms = timestamp_percentile(sorted, 0.95);
+            result.gpu_p99_ms = timestamp_percentile(sorted, 0.99);
+        }
+        return result;
+    }
 };
 
 VulkanRgbToYuv422::VulkanRgbToYuv422(VulkanRuntime& runtime,
@@ -379,8 +472,8 @@ Yuv422P10 VulkanRgbToYuv422::pack(const TargetLogRgbF32& input,
                                   std::size_t frame_index) {
     return impl_->pack(input, frame_index);
 }
-VulkanRgbToYuvTelemetry VulkanRgbToYuv422::telemetry() const noexcept {
-    return impl_->counters;
+VulkanRgbToYuvTelemetry VulkanRgbToYuv422::telemetry() const {
+    return impl_->telemetry();
 }
 
 } // namespace mcraw

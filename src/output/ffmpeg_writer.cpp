@@ -422,16 +422,29 @@ public:
             if (vulkan_frame_writer) {
                 const auto frame_counters = vulkan_frame_writer->telemetry();
                 result.rgb_upload_bytes = frame_counters.rgb_upload_bytes;
+                result.fp32_rgb_upload_bytes = frame_counters.rgb_upload_bytes;
                 result.backpressure_waits = frame_counters.backpressure_waits +
                                             vulkan_backpressure_waits;
                 result.backpressure_wait_ms = frame_counters.backpressure_wait_ms +
-                                              vulkan_backpressure_wait_ms;
+                                               vulkan_backpressure_wait_ms;
+                result.gpu_timestamps_supported =
+                    frame_counters.gpu_timestamps_supported;
+                result.rgb_to_yuv_gpu_timestamp_samples =
+                    frame_counters.gpu_timestamp_samples;
+                result.rgb_to_yuv_gpu_total_ms = frame_counters.gpu_total_ms;
+                result.rgb_to_yuv_gpu_mean_ms = frame_counters.gpu_mean_ms;
+                result.rgb_to_yuv_gpu_p50_ms = frame_counters.gpu_p50_ms;
+                result.rgb_to_yuv_gpu_p95_ms = frame_counters.gpu_p95_ms;
+                result.rgb_to_yuv_gpu_p99_ms = frame_counters.gpu_p99_ms;
+                result.rgb_to_yuv_gpu_min_ms = frame_counters.gpu_min_ms;
+                result.rgb_to_yuv_gpu_max_ms = frame_counters.gpu_max_ms;
             }
             result.gpu_queue_capacity = vulkan_job_capacity;
             result.gpu_queue_max_depth = vulkan_job_max_depth;
             result.packet_queue_capacity = vulkan_packet_capacity;
             result.packet_queue_max_depth = vulkan_packet_max_depth;
             result.mux_bytes = vulkan_mux_bytes;
+            result.compressed_packet_download_bytes = vulkan_mux_bytes;
             if (vulkan_mux_wall_ms > 0.0) {
                 result.mux_megabytes_per_second =
                     (static_cast<double>(vulkan_mux_bytes) / (1024.0 * 1024.0)) /

@@ -24,7 +24,17 @@ struct VulkanRgbToYuvTelemetry {
     std::uint64_t dispatches{};
     std::uint64_t upload_bytes{};
     std::uint64_t download_bytes{};
-    double last_dispatch_ms{};
+    double last_dispatch_wall_ms{};
+    bool gpu_timestamps_supported{};
+    std::uint64_t gpu_timestamp_samples{};
+    double gpu_total_ms{};
+    double gpu_mean_ms{};
+    double gpu_p50_ms{};
+    double gpu_p95_ms{};
+    double gpu_p99_ms{};
+    double gpu_min_ms{};
+    double gpu_max_ms{};
+    double last_gpu_dispatch_ms{};
 };
 
 class VulkanRgbToYuv422 {
@@ -41,7 +51,7 @@ public:
 
     [[nodiscard]] Yuv422P10 pack(const TargetLogRgbF32& input,
                                  std::size_t frame_index);
-    [[nodiscard]] VulkanRgbToYuvTelemetry telemetry() const noexcept;
+    [[nodiscard]] VulkanRgbToYuvTelemetry telemetry() const;
 
 private:
     class Impl;
@@ -59,7 +69,17 @@ struct VulkanRgbToYuvFrameTelemetry {
     std::size_t max_in_flight{};
     std::uint64_t backpressure_waits{};
     double backpressure_wait_ms{};
-    double last_dispatch_ms{};
+    double last_dispatch_wall_ms{};
+    bool gpu_timestamps_supported{};
+    std::uint64_t gpu_timestamp_samples{};
+    double gpu_total_ms{};
+    double gpu_mean_ms{};
+    double gpu_p50_ms{};
+    double gpu_p95_ms{};
+    double gpu_p99_ms{};
+    double gpu_min_ms{};
+    double gpu_max_ms{};
+    double last_gpu_dispatch_ms{};
 };
 
 class VulkanRgbToYuvFrameWriter {
@@ -79,7 +99,7 @@ public:
                                         std::size_t frame_index,
                                         FrameMetadata metadata);
     void wait();
-    [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const noexcept;
+    [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const;
 
 private:
     class Impl;

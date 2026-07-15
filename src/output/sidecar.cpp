@@ -76,6 +76,15 @@ void write_sidecar(const std::filesystem::path& path,
             {"readback_frames", pipeline.readback_frames},
             {"direct_frames", pipeline.direct_frames},
             {"rgb_upload_bytes", pipeline.rgb_upload_bytes},
+            {"transfers", {
+                {"compressed_input_upload_bytes", pipeline.compressed_input_upload_bytes},
+                {"u16_raw_upload_bytes", pipeline.u16_raw_upload_bytes},
+                {"fp16_rgb_upload_bytes", pipeline.fp16_rgb_upload_bytes},
+                {"fp32_rgb_upload_bytes", pipeline.fp32_rgb_upload_bytes},
+                {"compressed_packet_download_bytes",
+                 pipeline.compressed_packet_download_bytes},
+                {"gpu_image_to_image_counted_as_pcie", false}
+            }},
             {"video_packets", pipeline.video_packets},
             {"queues", {
                 {"gpu_capacity", pipeline.gpu_queue_capacity},
@@ -92,7 +101,20 @@ void write_sidecar(const std::filesystem::path& path,
             {"gpu", {
                 {"name", pipeline.gpu_name},
                 {"uuid", pipeline.gpu_uuid},
-                {"driver", pipeline.gpu_driver}
+                {"driver", pipeline.gpu_driver},
+                {"timestamps_supported", pipeline.gpu_timestamps_supported},
+                {"stages", {
+                    {"rgb_to_yuv_422", {
+                        {"samples", pipeline.rgb_to_yuv_gpu_timestamp_samples},
+                        {"total_ms", pipeline.rgb_to_yuv_gpu_total_ms},
+                        {"mean_ms", pipeline.rgb_to_yuv_gpu_mean_ms},
+                        {"p50_ms", pipeline.rgb_to_yuv_gpu_p50_ms},
+                        {"p95_ms", pipeline.rgb_to_yuv_gpu_p95_ms},
+                        {"p99_ms", pipeline.rgb_to_yuv_gpu_p99_ms},
+                        {"min_ms", pipeline.rgb_to_yuv_gpu_min_ms},
+                        {"max_ms", pipeline.rgb_to_yuv_gpu_max_ms}
+                    }}
+                }}
             }},
             {"ffmpeg", {
                 {"version", pipeline.ffmpeg_version},

@@ -218,6 +218,11 @@ TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
     CHECK(telemetry.readback_frames == 0U);
     CHECK(telemetry.rgb_upload_bytes ==
           static_cast<std::uint64_t>(width) * height * 3U * sizeof(float) * frame_count);
+    CHECK(telemetry.compressed_input_upload_bytes == 0U);
+    CHECK(telemetry.u16_raw_upload_bytes == 0U);
+    CHECK(telemetry.fp16_rgb_upload_bytes == 0U);
+    CHECK(telemetry.fp32_rgb_upload_bytes == telemetry.rgb_upload_bytes);
+    CHECK(telemetry.compressed_packet_download_bytes == telemetry.mux_bytes);
     CHECK(telemetry.video_packets == frame_count);
     CHECK(telemetry.gpu_queue_capacity >= 4U);
     CHECK(telemetry.gpu_queue_max_depth > 0U);
@@ -227,6 +232,11 @@ TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
     CHECK(telemetry.packet_queue_max_depth <= telemetry.packet_queue_capacity);
     CHECK(telemetry.mux_bytes > 0U);
     CHECK(telemetry.mux_megabytes_per_second > 0.0);
+    CHECK(telemetry.gpu_timestamps_supported);
+    CHECK(telemetry.rgb_to_yuv_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.rgb_to_yuv_gpu_total_ms > 0.0);
+    CHECK(telemetry.rgb_to_yuv_gpu_mean_ms > 0.0);
+    CHECK(telemetry.rgb_to_yuv_gpu_p95_ms > 0.0);
     mcraw::validate_prores_mov(output.path, frame_count);
     CHECK(decode_video_frames(output.path) == frame_count);
 }

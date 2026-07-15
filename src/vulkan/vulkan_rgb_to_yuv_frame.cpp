@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <chrono>
+#include <cmath>
 #include <cstring>
 #include <limits>
 #include <string>
@@ -60,6 +61,23 @@ VkImageAspectFlags plane_aspect(std::size_t plane, std::size_t image_count) {
     }
 }
 
+double timestamp_percentile(const std::vector<double>& sorted, double p) {
+    if (sorted.empty()) return 0.0;
+    const double index = p * static_cast<double>(sorted.size() - 1U);
+    const auto lo = static_cast<std::size_t>(std::floor(index));
+    const auto hi = static_cast<std::size_t>(std::ceil(index));
+    const double fraction = index - static_cast<double>(lo);
+    return sorted[lo] * (1.0 - fraction) + sorted[hi] * fraction;
+}
+
+std::uint64_t timestamp_delta(std::uint64_t start,
+                              std::uint64_t end,
+                              std::uint32_t valid_bits) {
+    if (valid_bits >= 64U) return end - start;
+    const auto mask = (std::uint64_t{1} << valid_bits) - 1U;
+    return (end - start) & mask;
+}
+
 // FFmpeg 8 still exposes these compatibility callbacks for devices that were
 // not created with VK_KHR_internally_synchronized_queues. Keeping all queue
 // submissions behind the owner-provided mutex is safe for either device kind.
@@ -107,6 +125,7 @@ public:
         VkCommandBuffer command_buffer{VK_NULL_HANDLE};
         VkFence fence{VK_NULL_HANDLE};
         std::array<VkImageView, 3> views{};
+        std::uint32_t timestamp_query_base{};
         bool in_flight{};
         std::chrono::steady_clock::time_point submitted_at{};
     };
@@ -154,6 +173,7 @@ public:
             create_input_buffers();
             create_descriptor_resources();
             create_pipeline();
+            create_timestamp_queries();
             create_commands();
         } catch (...) {
             cleanup();
@@ -305,10 +325,34 @@ public:
         VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         for (std::size_t index = 0; index < slots.size(); ++index) {
             slots[index].command_buffer = commands[index];
+            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 2U);
             require_frame_vulkan(vkCreateFence(device, &fence_info, allocator,
                                                &slots[index].fence),
                                  "create direct-frame fence");
         }
+    }
+
+    void create_timestamp_queries() {
+        std::uint32_t family_count = 0;
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count, nullptr);
+        std::vector<VkQueueFamilyProperties> families(family_count);
+        vkGetPhysicalDeviceQueueFamilyProperties(physical_device, &family_count,
+                                                 families.data());
+        if (queue_family >= families.size() ||
+            families[queue_family].timestampValidBits == 0U) {
+            counters.gpu_timestamps_supported = false;
+            return;
+        }
+        timestamp_valid_bits = families[queue_family].timestampValidBits;
+        VkPhysicalDeviceProperties properties{};
+        vkGetPhysicalDeviceProperties(physical_device, &properties);
+        timestamp_period_ns = properties.limits.timestampPeriod;
+        VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        info.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        info.queryCount = static_cast<std::uint32_t>(slots.size() * 2U);
+        require_frame_vulkan(vkCreateQueryPool(device, &info, allocator, &timestamp_query_pool),
+                             "create direct-frame timestamp query pool");
+        counters.gpu_timestamps_supported = true;
     }
 
     void upload(Slot& slot, std::size_t plane, const std::vector<float>& values) {
@@ -400,8 +444,32 @@ public:
         } else {
             require_frame_vulkan(status, "query direct-frame slot fence");
         }
-        counters.last_dispatch_ms = std::chrono::duration<double, std::milli>(
+        counters.last_dispatch_wall_ms = std::chrono::duration<double, std::milli>(
             std::chrono::steady_clock::now() - slot.submitted_at).count();
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            std::array<std::uint64_t, 2> values{};
+            require_frame_vulkan(vkGetQueryPoolResults(
+                device, timestamp_query_pool, slot.timestamp_query_base, 2,
+                sizeof(values), values.data(), sizeof(std::uint64_t),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+                "read direct-frame GPU timestamps");
+            const auto ticks = timestamp_delta(values[0], values[1], timestamp_valid_bits);
+            const double milliseconds = static_cast<double>(ticks) *
+                                        static_cast<double>(timestamp_period_ns) / 1.0e6;
+            gpu_timestamp_ms.push_back(milliseconds);
+            counters.last_gpu_dispatch_ms = milliseconds;
+            counters.gpu_total_ms += milliseconds;
+            counters.gpu_timestamp_samples = gpu_timestamp_ms.size();
+            counters.gpu_mean_ms = counters.gpu_total_ms /
+                                   static_cast<double>(counters.gpu_timestamp_samples);
+            if (counters.gpu_timestamp_samples == 1U) {
+                counters.gpu_min_ms = milliseconds;
+                counters.gpu_max_ms = milliseconds;
+            } else {
+                counters.gpu_min_ms = std::min(counters.gpu_min_ms, milliseconds);
+                counters.gpu_max_ms = std::max(counters.gpu_max_ms, milliseconds);
+            }
+        }
         for (auto& view : slot.views) {
             if (view != VK_NULL_HANDLE) vkDestroyImageView(device, view, allocator);
             view = VK_NULL_HANDLE;
@@ -478,6 +546,12 @@ public:
             begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
             require_frame_vulkan(vkBeginCommandBuffer(slot.command_buffer, &begin),
                                  "begin direct-frame command buffer");
+            if (timestamp_query_pool != VK_NULL_HANDLE) {
+                vkCmdResetQueryPool(slot.command_buffer, timestamp_query_pool,
+                                    slot.timestamp_query_base, 2);
+                vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT,
+                                    timestamp_query_pool, slot.timestamp_query_base);
+            }
             vkCmdPipelineBarrier(slot.command_buffer, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                  VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, 0, nullptr,
                                  0, nullptr, static_cast<std::uint32_t>(image_count),
@@ -494,6 +568,11 @@ public:
                                0, sizeof(push), &push);
             const auto pairs = config.width / 2U;
             vkCmdDispatch(slot.command_buffer, (pairs + 63U) / 64U, config.height, 1);
+            if (timestamp_query_pool != VK_NULL_HANDLE) {
+                vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT,
+                                    timestamp_query_pool,
+                                    slot.timestamp_query_base + 1U);
+            }
             require_frame_vulkan(vkEndCommandBuffer(slot.command_buffer),
                                  "end direct-frame command buffer");
             VkTimelineSemaphoreSubmitInfo timeline{
@@ -571,6 +650,9 @@ public:
             if (slot.fence != VK_NULL_HANDLE) vkDestroyFence(device, slot.fence, allocator);
         }
         if (command_pool != VK_NULL_HANDLE) vkDestroyCommandPool(device, command_pool, allocator);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkDestroyQueryPool(device, timestamp_query_pool, allocator);
+        }
         if (pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, pipeline, allocator);
         if (pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, pipeline_layout, allocator);
@@ -611,7 +693,23 @@ public:
     VkPipelineLayout pipeline_layout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
     VkCommandPool command_pool{VK_NULL_HANDLE};
+    VkQueryPool timestamp_query_pool{VK_NULL_HANDLE};
+    std::uint32_t timestamp_valid_bits{};
+    float timestamp_period_ns{};
+    std::vector<double> gpu_timestamp_ms;
     VulkanRgbToYuvFrameTelemetry counters;
+
+    [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const {
+        auto result = counters;
+        if (!gpu_timestamp_ms.empty()) {
+            auto sorted = gpu_timestamp_ms;
+            std::sort(sorted.begin(), sorted.end());
+            result.gpu_p50_ms = timestamp_percentile(sorted, 0.50);
+            result.gpu_p95_ms = timestamp_percentile(sorted, 0.95);
+            result.gpu_p99_ms = timestamp_percentile(sorted, 0.99);
+        }
+        return result;
+    }
 };
 
 VulkanRgbToYuvFrameWriter::VulkanRgbToYuvFrameWriter(
@@ -630,8 +728,8 @@ VulkanVideoFrame VulkanRgbToYuvFrameWriter::pack(const TargetLogRgbF32& input,
     return impl_->pack(input, frame_index, metadata);
 }
 void VulkanRgbToYuvFrameWriter::wait() { impl_->wait(); }
-VulkanRgbToYuvFrameTelemetry VulkanRgbToYuvFrameWriter::telemetry() const noexcept {
-    return impl_->counters;
+VulkanRgbToYuvFrameTelemetry VulkanRgbToYuvFrameWriter::telemetry() const {
+    return impl_->telemetry();
 }
 
 } // namespace mcraw

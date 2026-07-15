@@ -37,6 +37,11 @@ struct FfmpegWriterTelemetry {
     std::uint64_t readback_frames{};
     std::uint64_t direct_frames{};
     std::uint64_t rgb_upload_bytes{};
+    std::uint64_t compressed_input_upload_bytes{};
+    std::uint64_t u16_raw_upload_bytes{};
+    std::uint64_t fp16_rgb_upload_bytes{};
+    std::uint64_t fp32_rgb_upload_bytes{};
+    std::uint64_t compressed_packet_download_bytes{};
     std::uint64_t video_packets{};
     std::size_t gpu_queue_capacity{};
     std::size_t gpu_queue_max_depth{};
@@ -46,6 +51,15 @@ struct FfmpegWriterTelemetry {
     double backpressure_wait_ms{};
     std::uint64_t mux_bytes{};
     double mux_megabytes_per_second{};
+    bool gpu_timestamps_supported{};
+    std::uint64_t rgb_to_yuv_gpu_timestamp_samples{};
+    double rgb_to_yuv_gpu_total_ms{};
+    double rgb_to_yuv_gpu_mean_ms{};
+    double rgb_to_yuv_gpu_p50_ms{};
+    double rgb_to_yuv_gpu_p95_ms{};
+    double rgb_to_yuv_gpu_p99_ms{};
+    double rgb_to_yuv_gpu_min_ms{};
+    double rgb_to_yuv_gpu_max_ms{};
     std::string gpu_name;
     std::string gpu_uuid;
     std::string gpu_driver;

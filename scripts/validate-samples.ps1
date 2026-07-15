@@ -73,7 +73,14 @@ foreach ($sample in $samples) {
             $gpuResult.pipeline.direct_frames -ne $selectedFrames -or
             $gpuResult.pipeline.upload_frames -ne 0 -or
             $gpuResult.pipeline.readback_frames -ne 0 -or
-            $gpuResult.pipeline.video_packets -ne $selectedFrames) {
+            $gpuResult.pipeline.video_packets -ne $selectedFrames -or
+            $gpuResult.pipeline.transfers.compressed_input_upload_bytes -ne 0 -or
+            $gpuResult.pipeline.transfers.u16_raw_upload_bytes -ne 0 -or
+            $gpuResult.pipeline.transfers.fp16_rgb_upload_bytes -ne 0 -or
+            $gpuResult.pipeline.transfers.fp32_rgb_upload_bytes -ne
+                $gpuResult.pipeline.rgb_upload_bytes -or
+            -not $gpuResult.pipeline.gpu_timestamps_supported -or
+            $gpuResult.pipeline.gpu_stages.rgb_to_yuv_422.samples -ne $selectedFrames) {
             throw "direct Vulkan telemetry invariant failed for $($sample.FullName)"
         }
 

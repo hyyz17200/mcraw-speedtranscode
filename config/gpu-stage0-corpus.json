@@ -1,0 +1,60 @@
+{
+  "schema": "mcraw-gpu-stage0-corpus-v1",
+  "product_targets": {
+    "minimum_fps": 24,
+    "extended_fps": 30,
+    "precise_final_yuv_max_error_lsb": 1,
+    "precision": "fp32/precise"
+  },
+  "production_config": "config/vulkan-stage0-baseline.json",
+  "real_samples": [
+    {
+      "id": "motioncam-4k-compression7-240f",
+      "path": "mcraw_sample/260710_142121_VIDEO_49mm.mcraw",
+      "sha256": "2B4066B21E63458B9BCFCB9B503B58D241FFE3AE99E021BF330E3F612F17F706",
+      "bytes": 2409170717,
+      "width": 4096,
+      "height": 3072,
+      "frames": 240,
+      "compression": 7,
+      "cfa": "grbg",
+      "audio": {
+        "sample_rate": 48000,
+        "channels": 2,
+        "chunks": 377
+      },
+      "golden_frames": [0, 120, 239]
+    }
+  ],
+  "golden_stages": [
+    "compressed",
+    "raw-u16",
+    "calibrated-mosaic-f32",
+    "camera-rgb-f32",
+    "target-linear-production-f32",
+    "target-log-production-f32",
+    "yuv422p10-production"
+  ],
+  "synthetic_cases": [
+    {
+      "id": "cfa-edge-and-impulse-v1",
+      "width": 40,
+      "height": 40,
+      "cfa_patterns": ["rggb", "bggr", "grbg", "gbrg"],
+      "features": ["image-border", "cfa-border", "single-pixel-impulse", "diagonal-edge"]
+    },
+    {
+      "id": "calibration-range-v1",
+      "width": 8,
+      "height": 8,
+      "cfa_patterns": ["rggb", "bggr", "grbg", "gbrg"],
+      "features": ["black", "white", "negative-after-black", "super-white", "four-position-levels"]
+    },
+    {
+      "id": "color-and-frequency-v1",
+      "width": 128,
+      "height": 36,
+      "features": ["saturated-colors", "fine-lines", "diagonal-edge", "zone-plate", "high-frequency-chroma", "negative-toe"]
+    }
+  ]
+}

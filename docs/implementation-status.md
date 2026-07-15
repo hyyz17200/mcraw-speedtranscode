@@ -57,3 +57,25 @@ Capture Sharpening `0.25` 为 2.655 fps。两者均为 4096×3072 ProRes 422 HQ
 
 - DaVinci Resolve chart、chroma siting 与手动 Input Color Space 工作流实测
 - 完整 240 帧输出的人工播放/画面检查（自动解码和流参数检查已通过）
+
+## 2026-07-14 GPU 下一阶段 Stage 0
+
+- 正式采用 24 fps 最低目标、30 fps 扩展目标和 `fp32/precise` 最终 YUV
+  最大差异不超过 1 LSB 的行动口径。
+- 已建立固定 corpus 合约：真实 4096×3072 / 240 帧 compression 7 样本的
+  首帧、中间帧和末帧，以及四 CFA、校准范围、饱和色和高频图案定义。
+- 新增与生产 `CpuPipeline` 相同边界的 calibrated mosaic、Camera RGB、
+  sharpened TargetLinear、TargetLog 和 YUV extract stages。
+- Vulkan RGB→YUV 已使用 timestamp query；CPU fence wall time 不再冒充 GPU
+  execution time。sidecar/CLI 输出样本数、total/mean/P50/P95/P99/min/max。
+- 初次重复 capture 的 21 个 artifact hash 全部稳定。
+- 初次强制 Vulkan 完整基准完成一次 warm-up 和三次正式运行：中位数
+  7.133 fps，范围 7.098–7.412 fps；每次 240 个 GPU timestamp，RGB→YUV
+  GPU mean 的 run median 为 13.007 ms/frame；device-global GPU 平均利用率约
+  18.3%，job queue peak 7、packet queue peak 1、backpressure 0。
+- Release build、43 项 CTest、GPU-assisted RGB→YUV golden、30 帧 CPU/Vulkan
+  全流解码、auto fallback、forced Vulkan cleanup 全部通过。
+
+本轮 manifest 正确记录 `dirty=true`，因此属于实施验证基线，不是最终冻结的
+rollback point。Stage 1 开始前仍需在提交后重跑 capture，并确认 manifest
+`dirty=false`；详细合约见 `GPU_STAGE0_BASELINE.md`。

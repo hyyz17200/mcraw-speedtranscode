@@ -201,6 +201,10 @@ TEST_CASE("Vulkan ProRes consumes shader-written pool frames without YUV transfe
     CHECK(writer_telemetry.slot_count == 8U);
     CHECK(writer_telemetry.in_flight == 0U);
     CHECK(writer_telemetry.max_in_flight == 8U);
+    CHECK(writer_telemetry.gpu_timestamps_supported);
+    CHECK(writer_telemetry.gpu_timestamp_samples == frame_count);
+    CHECK(writer_telemetry.gpu_mean_ms > 0.0);
+    CHECK(writer_telemetry.gpu_p95_ms > 0.0);
     const auto encoder_telemetry = encoder.telemetry();
     CHECK(encoder_telemetry.gpu_resident);
     CHECK(encoder_telemetry.direct_frames == frame_count);

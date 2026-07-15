@@ -168,4 +168,7 @@ fallback 和耗时写在 `output.mov.json`。
 
 架构依据见 [docs/MCRAW_ProRes_RouteB_Architecture_Spec_CN.md](docs/MCRAW_ProRes_RouteB_Architecture_Spec_CN.md)，
 冻结决策见 [docs/adr/README.md](docs/adr/README.md)，Vulkan 实测结果、兼容性矩阵和
-未关闭的发布门槛见 [docs/GPU_PHASE8_PRODUCTION.md](docs/GPU_PHASE8_PRODUCTION.md)。
+未关闭的发布门槛见 [docs/GPU_PHASE8_PRODUCTION.md](docs/GPU_PHASE8_PRODUCTION.md)，
+下一阶段的正式路线与当前 Stage 0 基线合约分别见
+[docs/GPU_PIPELINE_FORMAL_ACTION_GUIDE.md](docs/GPU_PIPELINE_FORMAL_ACTION_GUIDE.md) 和
+[docs/GPU_STAGE0_BASELINE.md](docs/GPU_STAGE0_BASELINE.md)。

@@ -116,7 +116,13 @@ void check_against_reference(mcraw::ChromaFilter filter, bool dither) {
     CHECK(telemetry.dispatches == 1U);
     CHECK(telemetry.upload_bytes == static_cast<std::uint64_t>(width) * height * 3U * 4U);
     CHECK(telemetry.download_bytes == static_cast<std::uint64_t>(width) * height * 2U * 4U);
-    CHECK(telemetry.last_dispatch_ms > 0.0);
+    CHECK(telemetry.last_dispatch_wall_ms > 0.0);
+    CHECK(telemetry.gpu_timestamps_supported);
+    CHECK(telemetry.gpu_timestamp_samples == 1U);
+    CHECK(telemetry.gpu_total_ms > 0.0);
+    CHECK(telemetry.gpu_mean_ms > 0.0);
+    CHECK(telemetry.gpu_p50_ms > 0.0);
+    CHECK(telemetry.last_gpu_dispatch_ms > 0.0);
 }
 
 } // namespace
@@ -207,10 +213,14 @@ TEST_CASE("Vulkan RGB-to-YUV writes the FFmpeg encoder frame pool directly") {
     CHECK(compare_readback(0, reference.y, width).maximum <= 1);
     CHECK(compare_readback(1, reference.cb, width / 2U).maximum <= 1);
     CHECK(compare_readback(2, reference.cr, width / 2U).maximum <= 1);
+    writer.wait();
     const auto telemetry = writer.telemetry();
     CHECK(telemetry.output_frames == 1U);
     CHECK(telemetry.yuv_upload_frames == 0U);
     CHECK(telemetry.yuv_readback_frames == 0U);
+    CHECK(telemetry.gpu_timestamps_supported);
+    CHECK(telemetry.gpu_timestamp_samples == 1U);
+    CHECK(telemetry.gpu_mean_ms > 0.0);
 }
 
 TEST_CASE("Vulkan RGB-to-YUV packs the 4K sample dimensions") {
