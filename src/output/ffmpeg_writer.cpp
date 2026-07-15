@@ -135,6 +135,7 @@ public:
             const auto slot_count = std::clamp<std::size_t>(backend_config.async_depth, 1U, 32U);
             const auto pool_size = std::clamp<std::size_t>(slot_count * 2U + 4U, 8U, 64U);
             vulkan_job_capacity = std::clamp<std::size_t>(slot_count + 2U, 4U, 64U);
+            vulkan_frame_capacity = slot_count;
             vulkan_packet_capacity = std::clamp<std::size_t>(slot_count * 2U, 8U, 128U);
             vulkan_runtime = std::make_unique<VulkanRuntime>(VulkanRuntimeConfig{
                 backend_config.gpu_selector, backend_config.enable_validation});
@@ -652,6 +653,12 @@ private:
         std::chrono::steady_clock::time_point queued_at{};
     };
 
+    struct VulkanPreparedJob {
+        VideoFrame frame;
+        std::int64_t pts{};
+        std::int64_t duration{};
+    };
+
     void enqueue_vulkan_video(Yuv422P10 input,
                               std::int64_t timestamp_ns,
                               std::size_t frame_index) {
@@ -727,14 +734,13 @@ private:
             ? av_rescale_q(1, AVRational{1, 30}, time_base)
             : pts - last_video_pts;
         last_video_pts = pts;
-        vulkan_packet_durations[pts] = duration;
         return {vulkan_frames->width(), vulkan_frames->height(), pts, duration, time_base,
                 AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED,
                 AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG,
                 AVCHROMA_LOC_UNSPECIFIED};
     }
 
-    void process_vulkan_job(VulkanJob job) {
+    VulkanPreparedJob prepare_vulkan_job(VulkanJob job) {
         auto metadata = make_vulkan_metadata(job.timestamp_ns);
         if (auto* yuv = std::get_if<Yuv422P10>(&job.input)) {
             auto frame = make_av_frame();
@@ -750,13 +756,8 @@ private:
             attach_vector_plane(frame.get(), 0, std::move(yuv->y), yuv->width);
             attach_vector_plane(frame.get(), 1, std::move(yuv->cb), yuv->width / 2U);
             attach_vector_plane(frame.get(), 2, std::move(yuv->cr), yuv->width / 2U);
-            const auto send_start = std::chrono::steady_clock::now();
-            vulkan_encoder->send(CpuVideoFrame{metadata, AV_PIX_FMT_YUV422P10LE,
-                                               std::move(frame)});
-            record_wall_sample(std::chrono::duration<double, std::milli>(
-                                   std::chrono::steady_clock::now() - send_start).count(),
-                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
-                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
+            return {CpuVideoFrame{metadata, AV_PIX_FMT_YUV422P10LE,
+                                  std::move(frame)}, metadata.pts, metadata.duration};
         } else if (auto* rgb = std::get_if<TargetLogRgbF32>(&job.input)) {
             const auto pack_start = std::chrono::steady_clock::now();
             auto frame = vulkan_frame_writer->pack(*rgb, job.frame_index, metadata);
@@ -764,12 +765,7 @@ private:
                                    std::chrono::steady_clock::now() - pack_start).count(),
                                vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
                                vulkan_frame_pack_mean_ms, vulkan_frame_pack_max_ms);
-            const auto send_start = std::chrono::steady_clock::now();
-            vulkan_encoder->send(std::move(frame));
-            record_wall_sample(std::chrono::duration<double, std::milli>(
-                                   std::chrono::steady_clock::now() - send_start).count(),
-                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
-                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
+            return {std::move(frame), metadata.pts, metadata.duration};
         } else if (auto* camera = std::get_if<VulkanCameraRgbInput>(&job.input)) {
             const auto pack_start = std::chrono::steady_clock::now();
             auto frame = vulkan_frame_writer->pack_camera_rgb(
@@ -782,16 +778,21 @@ private:
                                    std::chrono::steady_clock::now() - pack_start).count(),
                                vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
                                vulkan_frame_pack_mean_ms, vulkan_frame_pack_max_ms);
-            const auto send_start = std::chrono::steady_clock::now();
-            vulkan_encoder->send(std::move(frame));
-            record_wall_sample(std::chrono::duration<double, std::milli>(
-                                   std::chrono::steady_clock::now() - send_start).count(),
-                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
-                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
+            return {std::move(frame), metadata.pts, metadata.duration};
         } else {
             throw Error(ErrorCode::unsupported_format,
                         "unsupported Vulkan writer input variant");
         }
+    }
+
+    void process_vulkan_frame(VulkanPreparedJob prepared) {
+        vulkan_packet_durations[prepared.pts] = prepared.duration;
+        const auto send_start = std::chrono::steady_clock::now();
+        vulkan_encoder->send(std::move(prepared.frame));
+        record_wall_sample(std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - send_start).count(),
+                           vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
+                           vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
         const auto receive_start = std::chrono::steady_clock::now();
         auto packets = vulkan_encoder->drain();
         record_wall_sample(std::chrono::duration<double, std::milli>(
@@ -859,8 +860,24 @@ private:
     }
 
     void start_vulkan_threads() {
+        vulkan_prepare_thread = std::thread([this] { vulkan_prepare_main(); });
         vulkan_gpu_thread = std::thread([this] { vulkan_gpu_main(); });
         vulkan_packet_thread = std::thread([this] { vulkan_packet_main(); });
+    }
+
+    void enqueue_vulkan_frame(VulkanPreparedJob prepared) {
+        std::unique_lock lock(vulkan_mutex);
+        vulkan_frame_space_cv.wait(lock, [this] {
+            return vulkan_abort || vulkan_frames_ready.size() < vulkan_frame_capacity;
+        });
+        if (vulkan_abort) {
+            throw Error(ErrorCode::encode_failed, "Vulkan pipeline was cancelled");
+        }
+        vulkan_frames_ready.push_back(std::move(prepared));
+        vulkan_frame_max_depth = std::max(vulkan_frame_max_depth,
+                                          vulkan_frames_ready.size());
+        lock.unlock();
+        vulkan_frame_cv.notify_one();
     }
 
     void fail_vulkan_pipeline(std::exception_ptr error) noexcept {
@@ -870,15 +887,18 @@ private:
             vulkan_failed = true;
             vulkan_abort = true;
             vulkan_jobs.clear();
+            vulkan_frames_ready.clear();
             vulkan_packets.clear();
         }
         vulkan_job_cv.notify_all();
         vulkan_job_space_cv.notify_all();
+        vulkan_frame_cv.notify_all();
+        vulkan_frame_space_cv.notify_all();
         vulkan_packet_cv.notify_all();
         vulkan_packet_space_cv.notify_all();
     }
 
-    void vulkan_gpu_main() noexcept {
+    void vulkan_prepare_main() noexcept {
         try {
             for (;;) {
                 VulkanJob job;
@@ -902,10 +922,41 @@ private:
                                    vulkan_job_queue_latency_total_ms,
                                    vulkan_job_queue_latency_mean_ms,
                                    vulkan_job_queue_latency_max_ms);
-                process_vulkan_job(std::move(job));
+                enqueue_vulkan_frame(prepare_vulkan_job(std::move(job)));
+            }
+            vulkan_frame_writer->wait();
+            {
+                std::scoped_lock lock(vulkan_mutex);
+                vulkan_prepare_done = true;
+            }
+            vulkan_frame_cv.notify_all();
+        } catch (...) {
+            fail_vulkan_pipeline(std::current_exception());
+        }
+    }
+
+    void vulkan_gpu_main() noexcept {
+        try {
+            for (;;) {
+                VulkanPreparedJob prepared;
+                {
+                    std::unique_lock lock(vulkan_mutex);
+                    vulkan_frame_cv.wait(lock, [this] {
+                        return vulkan_abort || vulkan_prepare_done ||
+                               !vulkan_frames_ready.empty();
+                    });
+                    if (vulkan_abort) return;
+                    if (vulkan_frames_ready.empty()) {
+                        if (vulkan_prepare_done) break;
+                        continue;
+                    }
+                    prepared = std::move(vulkan_frames_ready.front());
+                    vulkan_frames_ready.pop_front();
+                }
+                vulkan_frame_space_cv.notify_all();
+                process_vulkan_frame(std::move(prepared));
             }
             enqueue_vulkan_packets(vulkan_encoder->flush());
-            vulkan_frame_writer->wait();
             {
                 std::scoped_lock lock(vulkan_mutex);
                 vulkan_gpu_done = true;
@@ -945,16 +996,26 @@ private:
     }
 
     void stop_vulkan_threads(bool abort) noexcept {
-        if (!vulkan_gpu_thread.joinable() && !vulkan_packet_thread.joinable()) return;
+        if (!vulkan_prepare_thread.joinable() && !vulkan_gpu_thread.joinable() &&
+            !vulkan_packet_thread.joinable()) return;
         {
             std::scoped_lock lock(vulkan_mutex);
-            if (abort) vulkan_abort = true;
+            if (abort) {
+                vulkan_abort = true;
+                vulkan_jobs.clear();
+                vulkan_frames_ready.clear();
+                vulkan_packets.clear();
+            }
             vulkan_stop = true;
         }
         vulkan_job_cv.notify_all();
         vulkan_job_space_cv.notify_all();
+        vulkan_frame_cv.notify_all();
+        vulkan_frame_space_cv.notify_all();
         vulkan_packet_cv.notify_all();
         vulkan_packet_space_cv.notify_all();
+        if (vulkan_prepare_thread.joinable()) vulkan_prepare_thread.join();
+        vulkan_frame_cv.notify_all();
         if (vulkan_gpu_thread.joinable()) vulkan_gpu_thread.join();
         vulkan_packet_cv.notify_all();
         if (vulkan_packet_thread.joinable()) vulkan_packet_thread.join();
@@ -1152,15 +1213,21 @@ private:
     std::mutex vulkan_mutex;
     std::condition_variable vulkan_job_cv;
     std::condition_variable vulkan_job_space_cv;
+    std::condition_variable vulkan_frame_cv;
+    std::condition_variable vulkan_frame_space_cv;
     std::condition_variable vulkan_packet_cv;
     std::condition_variable vulkan_packet_space_cv;
     std::deque<VulkanJob> vulkan_jobs;
+    std::deque<VulkanPreparedJob> vulkan_frames_ready;
     std::deque<std::vector<EncodedPacket>> vulkan_packets;
+    std::thread vulkan_prepare_thread;
     std::thread vulkan_gpu_thread;
     std::thread vulkan_packet_thread;
     std::exception_ptr vulkan_worker_error;
     std::size_t vulkan_job_capacity{4};
     std::size_t vulkan_job_max_depth{};
+    std::size_t vulkan_frame_capacity{1};
+    std::size_t vulkan_frame_max_depth{};
     std::size_t vulkan_packet_capacity{8};
     std::size_t vulkan_packet_max_depth{};
     std::uint64_t vulkan_job_backpressure_waits{};
@@ -1188,6 +1255,7 @@ private:
     bool vulkan_stop{};
     bool vulkan_abort{};
     bool vulkan_failed{};
+    bool vulkan_prepare_done{};
     bool vulkan_gpu_done{};
 #endif
 };

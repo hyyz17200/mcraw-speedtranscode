@@ -859,13 +859,8 @@ public:
                         "direct Vulkan frame dimensions do not match RGB input");
         }
         if (camera_chain) {
-            const auto finite_plane = [](const std::vector<float>& plane) {
-                return std::all_of(plane.begin(), plane.end(),
-                                   [](float value) { return std::isfinite(value); });
-            };
-            if (!std::all_of(input.planes.begin(), input.planes.end(), finite_plane) ||
-                !std::all_of(camera_to_target->v.begin(), camera_to_target->v.end(),
-                             [](double value) { return std::isfinite(value); }) ||
+            if (!std::all_of(camera_to_target->v.begin(), camera_to_target->v.end(),
+                              [](double value) { return std::isfinite(value); }) ||
                 !std::isfinite(exposure_offset_stops) ||
                 !std::isfinite(input_scale) || input_scale <= 0.0 ||
                 !std::isfinite(sharpening_amount) || sharpening_amount < 0.0 ||

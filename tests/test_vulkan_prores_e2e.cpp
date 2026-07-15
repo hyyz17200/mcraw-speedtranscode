@@ -5,6 +5,7 @@
 #include <cstdlib>
 #include <cstdint>
 #include <filesystem>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -332,6 +333,25 @@ TEST_CASE("Vulkan Camera RGB resident policy failure reaches the caller") {
     input.camera_to_target = mcraw::Matrix3d::identity();
     input.input_scale = 1.0;
     input.negative_policy = mcraw::NegativePolicy::error;
+    writer.write_video(std::move(input), 1'000'000'000LL, 0);
+    CHECK_THROWS_AS(writer.finish(), mcraw::Error);
+    CHECK(writer.telemetry().control_status_failures == 1U);
+}
+
+TEST_CASE("Vulkan Camera RGB resident non-finite input reaches the caller") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-camera-non-finite-" +
+                         std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 2, false});
+    mcraw::VulkanCameraRgbInput input;
+    input.image = test_rgb_frame(width, height, 0);
+    input.image.planes[0][0] = std::numeric_limits<float>::quiet_NaN();
+    input.camera_to_target = mcraw::Matrix3d::identity();
+    input.input_scale = 1.0;
     writer.write_video(std::move(input), 1'000'000'000LL, 0);
     CHECK_THROWS_AS(writer.finish(), mcraw::Error);
     CHECK(writer.telemetry().control_status_failures == 1U);
