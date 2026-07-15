@@ -29,7 +29,7 @@
     "async_depth": {"type": "integer", "minimum": 1, "maximum": 64, "default": 8},
     "fallback": {"enum": ["prores_ks", "none"], "default": "prores_ks"},
     "gpu_performance_mode": {
-      "enum": ["precise", "balanced", "fast"],
+      "enum": ["precise", "fast"],
       "default": "precise"
     }
   }

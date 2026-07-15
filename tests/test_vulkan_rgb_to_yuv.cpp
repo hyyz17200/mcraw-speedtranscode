@@ -431,7 +431,7 @@ TEST_CASE("Vulkan resident U16 RAW chain matches real Stage 0 final YUV frames")
                           fp16_storage ? mcraw::GpuPrecision::fp16
                                        : mcraw::GpuPrecision::fp32, 1,
                           analytic_di ? mcraw::GpuPerformanceMode::fast
-                                      : mcraw::GpuPerformanceMode::balanced});
+                                      : mcraw::GpuPerformanceMode::precise});
     const mcraw::DaVinciIntermediateLut curve;
 
     for (const auto frame_index : frame_indices) {

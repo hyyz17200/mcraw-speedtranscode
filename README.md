@@ -91,10 +91,9 @@ $exe = '.\build\msvc-release\Release\mcraw-transcoder.exe'
 存在输出；需要时显式添加 `--overwrite`。
 
 有效配置可从 [config/default.json](config/default.json) 开始修改。Vulkan opt-in
-预设为 `config/vulkan-precise.json`、`config/vulkan-balanced.json` 和
-`config/vulkan-fast.json`；CPU backend 仍是默认。precise 使用 FP32 intermediate，
-balanced 使用 FP16 storage + FP32 compute，fast 另外使用 FP32 analytic DI；三者均
-保留 precise GPU RCD、quality chroma 和 deterministic dither：
+预设为 `config/vulkan-precise.json` 和 `config/vulkan-fast.json`；CPU backend 仍是默认。
+precise 使用 FP32 intermediate，fast 使用 FP16 storage + FP32 compute 并采用 FP32
+analytic DI；两者均保留 precise GPU RCD、quality chroma 和 deterministic dither：
 
 ```powershell
 & $exe convert input.mcraw output.mov --config '.\config\default.json'

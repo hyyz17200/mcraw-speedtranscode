@@ -16,7 +16,7 @@ enum class ChromaFilter { fast, quality };
 enum class VideoBackend { automatic, cpu, vulkan };
 enum class GpuFallback { prores_ks, none };
 enum class GpuPrecision { fp32, fp16 };
-enum class GpuPerformanceMode { precise, balanced, fast };
+enum class GpuPerformanceMode { precise, fast };
 
 struct EffectiveConfig {
     std::uint32_t schema_version{1};

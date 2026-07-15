@@ -2,29 +2,29 @@
 
 ## GPU Stage 3F / Batch D accepted
 
-- Published `config/vulkan-precise.json`, `vulkan-balanced.json`, and
-  `vulkan-fast.json`; the CPU backend remains default.
-- Final medians are 34.776, 36.126, and 36.857 fps. Balanced/fast reduce sampled
+- Published `config/vulkan-precise.json` and `vulkan-fast.json`; the CPU backend
+  remains default. The former balanced preset was removed after Batch D.
+- Final public-preset medians are 34.776 and 36.857 fps. Fast reduces sampled
   VRAM delta by about 288 MiB versus precise.
-- All modes retain U16-only upload, zero pixel/YUV readback, precise RCD, quality
+- Both public modes retain U16-only upload, zero pixel/YUV readback, precise RCD, quality
   chroma, and deterministic dither. See `GPU_STAGE3F_E2E_BENCHMARK.md`.
 
-## GPU Stage 3B balanced FP16 storage
+## GPU Stage 3B FP16 storage experiment
 
-- `gpu_performance_mode` provides stable precise/balanced/fast identities and
+- `gpu_performance_mode` provides stable precise/fast identities and
   sidecars report actual intermediate storage, DI, dither, and demosaic choices.
-- Balanced mode stores post-RCD color/sharpen/DI planes as packed FP16 while
+- The former balanced experiment stores post-RCD color/sharpen/DI planes as packed FP16 while
   preserving FP32 computation, precise RCD, and FP32 final quantization.
 - Real frames 0/120/239 remain at max 1 LSB with RMSE below 0.202 LSB.
-- Matched median throughput improved from 34.901 to 35.577 fps (+1.938%); the
-  slowest balanced run exceeded the fastest precise run.
+- Matched median throughput improved from 34.901 to 35.577 fps (+1.938%); this
+  accepted storage path is retained by fast.
 - See `GPU_STAGE3_PERFORMANCE_MODES_TECHNICAL_DESIGN.md` and
   `GPU_STAGE3B_FP16_STORAGE_VALIDATION.md`.
 
 ## GPU Stage 3C fast analytic DI
 
-- Fast mode retains balanced FP16 storage but evaluates the DI curve
-  analytically in FP32; balanced continues to use the FP32 LUT.
+- Fast mode retains the accepted FP16 storage path and evaluates the DI curve
+  analytically in FP32; the former balanced LUT comparison is historical only.
 - Fixed real frames remain max/P99 1 LSB and RMSE below 0.202 LSB.
 - Median throughput improved from 35.577 to 36.770 fps (+3.353%); DI stage mean
   fell from 0.907 to 0.497 ms.
@@ -34,14 +34,14 @@
 
 - Disabling deterministic dither reduced isolated YUV time but improved median
   end-to-end throughput by only 0.063%, inside run noise.
-- The experiment is NO-GO; every shipped performance mode retains deterministic
+- The experiment is NO-GO; every public performance mode retains deterministic
   dither. See `GPU_STAGE3D_DITHER_EXPERIMENT.md`.
 
 ## GPU Stage 3E demosaic decision
 
 - A separately named bilinear prototype exceeded the fast quality budgets by
   wide margins (up to 473 LSB), so it was removed before merge.
-- Every GPU performance mode retains precise RCD. See
+- Every public GPU performance mode retains precise RCD. See
   `GPU_STAGE3E_FAST_DEMOSAIC_EXPERIMENT.md`.
 
 ## 已实现源码边界

@@ -26,7 +26,6 @@ identities:
 | Mode | Meaning | Initial error budget |
 |---|---|---:|
 | `precise` | Accepted Stage 2 semantics | max/P99 <= 1 LSB |
-| `balanced` | Only individually accepted mixed-precision experiments | max <= 4, P99 <= 1, RMSE <= 0.5 LSB |
 | `fast` | Only individually accepted approximations | max <= 8, P99 <= 2, RMSE <= 1.0 LSB |
 
 `precision=fp32|fp16` is replaced by this semantic mode before any approximate
@@ -47,7 +46,8 @@ variable:
 2. **D2 FP16 intermediate storage.** Evaluate 16-bit storage for post-RCD
    color/sharpen/DI intermediates while retaining FP32 arithmetic, matrix dot
    products, sharpening accumulation, DI evaluation, and YUV quantization.
-   Calibration and precise RCD stay FP32. This is a `balanced` candidate.
+   Calibration and precise RCD stay FP32. This is the mixed-precision basis of
+   the `fast` candidate.
 3. **D3 DI evaluation.** Compare the accepted FP32 LUT with analytic FP32 DI
    evaluation, without changing intermediate precision. This is accepted only
    if quality passes and end-to-end performance improves outside run spread.
@@ -58,7 +58,7 @@ variable:
    the preceding results still show demosaic as a material bottleneck. It must
    never be named RCD and requires the separate demosaic corpus/artifact review
    from the formal guide in addition to final-YUV statistics.
-6. **D6 acceptance.** Run matched Stage 2/precise/balanced/fast benchmarks and
+6. **D6 acceptance.** Run matched Stage 2/precise/fast benchmarks and
    publish accepted variables, rejected experiments, quality statistics, and
    the decoder-ROI input for Batch E.
 
@@ -79,7 +79,7 @@ The fixed quality set is:
 - decoded ProRes comparison and explicit visual-review status for any accepted
   approximation.
 
-Balanced and fast budgets are ceilings, not automatic acceptance. A candidate
+Fast budgets are ceilings, not automatic acceptance. A candidate
 that passes them but introduces structured clipping, zippering, moire, or edge
 artifacts is rejected.
 

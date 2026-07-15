@@ -475,7 +475,7 @@ MCRAW 可能记录 RGGB、BGGR、GRBG 或 GBRG。
 | 预设 | 建议 |
 |---|---|
 | `preview` | 快速去马赛克、关闭高开销修复 |
-| `balanced` | RCD，关闭高开销后处理 |
+| `balanced` | 历史预设名；当前 GPU 公开配置不再提供 |
 | `quality` | AMaZE，使用算法自身的高质量重建 |
 | `alternate` | IGV，用于用户比较 |
 | `reference` | CPU、FP32、单一确定版本 |

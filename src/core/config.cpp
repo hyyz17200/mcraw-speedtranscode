@@ -65,7 +65,6 @@ GpuPrecision parse_enum(std::string_view value) {
 template <>
 GpuPerformanceMode parse_enum(std::string_view value) {
     if (value == "precise") return GpuPerformanceMode::precise;
-    if (value == "balanced") return GpuPerformanceMode::balanced;
     if (value == "fast") return GpuPerformanceMode::fast;
     throw Error(ErrorCode::invalid_argument,
                 "unknown GPU performance mode: " + std::string(value));
@@ -253,7 +252,6 @@ std::string_view to_string(GpuPrecision value) noexcept {
 std::string_view to_string(GpuPerformanceMode value) noexcept {
     switch (value) {
     case GpuPerformanceMode::precise: return "precise";
-    case GpuPerformanceMode::balanced: return "balanced";
     case GpuPerformanceMode::fast: return "fast";
     }
     return "unknown";

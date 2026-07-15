@@ -2,7 +2,7 @@
 
 Date: 2026-07-15
 
-Status: **NO-GO**. Precise, balanced, and fast keep deterministic dither.
+Status: **NO-GO**. Precise and fast keep deterministic dither.
 
 The experiment changed only `deterministic_dither` from true to false on the
 accepted fast FP16-storage/analytic-DI pipeline. Both candidates used one
@@ -18,4 +18,4 @@ only 0.063% and the run ranges overlap substantially. This is below benchmark
 noise and does not justify removing dither or spending a quality variable.
 
 No production code or preset semantics changed. Sidecars continue to report
-`dither_mode=deterministic` for the shipped precise, balanced, and fast configs.
+`dither_mode=deterministic` for the shipped precise and fast configs.

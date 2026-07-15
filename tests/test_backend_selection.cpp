@@ -77,8 +77,7 @@ TEST_CASE("GPU backend configuration is serialized without changing CPU defaults
 
 TEST_CASE("GPU performance modes have stable serialized identities") {
     mcraw::EffectiveConfig config;
-    config.gpu_performance_mode = mcraw::GpuPerformanceMode::balanced;
-    CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "balanced");
+    CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "precise");
     config.gpu_performance_mode = mcraw::GpuPerformanceMode::fast;
     CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "fast");
 }

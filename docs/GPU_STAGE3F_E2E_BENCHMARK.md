@@ -2,15 +2,16 @@
 
 Date: 2026-07-15
 
-Status: **GO**. Batch D is complete. Precise, balanced, and fast are explicit,
+Status: **GO**. Batch D is complete. Precise and fast are the explicit,
 truthfully reported Vulkan presets; CPU/default and fallback policy are unchanged.
+The former balanced experiment is retained below as historical benchmark evidence,
+but is no longer a public preset or performance-mode identity.
 
 ## Accepted modes
 
 | Preset | Intermediate storage | DI | Dither | Demosaic |
 |---|---|---|---|---|
 | `vulkan-precise.json` | FP32 | FP32 LUT | deterministic | GPU precise RCD |
-| `vulkan-balanced.json` | packed FP16, FP32 compute | FP32 LUT | deterministic | GPU precise RCD |
 | `vulkan-fast.json` | packed FP16, FP32 compute | FP32 analytic | deterministic | GPU precise RCD |
 
 The old public `precision` placeholder was removed from schema v1. Sidecars
@@ -25,16 +26,14 @@ timing, one warm-up, and three official runs each.
 | Mode | Median fps | Min-max fps | Median wall ms | Sampled VRAM delta median |
 |---|---:|---:|---:|---:|
 | precise | 34.776 | 34.667-35.059 | 6,901.324 | 2,879 MiB |
-| balanced | 36.126 | 35.786-36.338 | 6,643.488 | 2,591 MiB |
 | fast | 36.857 | 36.463-37.064 | 6,511.638 | 2,591 MiB |
 
-Balanced is 3.88% faster than precise. Fast is 5.98% faster than precise and
-2.02% faster than balanced. All are above the 24/30 fps product targets.
+Fast is 5.98% faster than precise. Both public Vulkan presets are above the
+24/30 fps product targets.
 
 | Mode | RCD | Color | Sharpen | DI | YUV |
 |---|---:|---:|---:|---:|---:|
 | precise | 6.170 ms | 0.958 ms | 0.960 ms | 1.060 ms | 0.631 ms |
-| balanced | 6.085 ms | 0.751 ms | 0.640 ms | 0.904 ms | 0.627 ms |
 | fast | 6.081 ms | 0.705 ms | 0.661 ms | 0.494 ms | 0.646 ms |
 
 Every official run uploaded exactly 6,039,797,760 U16 RAW bytes, uploaded no
@@ -43,8 +42,9 @@ timestamp samples, retained precise RCD, and reported deterministic dither.
 
 ## Quality and rejected experiments
 
-- Balanced FP16 storage: real frames 0/120/239 had Y/Cb/Cr max and P99 1 LSB;
-  worst RMSE was 0.201 LSB.
+- Former balanced FP16-storage experiment: real frames 0/120/239 had Y/Cb/Cr
+  max and P99 1 LSB; worst RMSE was 0.201 LSB. Its accepted storage path is
+  retained by fast.
 - Fast analytic DI: the same max/P99 1 LSB and worst RMSE 0.201 LSB.
 - Dither removal: rejected because +0.063% median E2E was benchmark noise.
 - Bilinear fast demosaic: rejected before performance testing; max error reached
@@ -63,7 +63,6 @@ compression 6/7 implementation.
 
 ```powershell
 .\scripts\benchmark-gpu-stage0.ps1 -ValidateStage2Raw -Config config/vulkan-precise.json
-.\scripts\benchmark-gpu-stage0.ps1 -ValidateStage2Raw -Config config/vulkan-balanced.json
 .\scripts\benchmark-gpu-stage0.ps1 -ValidateStage2Raw -Config config/vulkan-fast.json
 ```
 

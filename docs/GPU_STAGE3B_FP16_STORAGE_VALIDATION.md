@@ -2,7 +2,9 @@
 
 Date: 2026-07-15
 
-Status: **GO** for the `balanced` performance mode.
+Status: **GO** for the FP16-storage experiment, now retained only as the
+implementation basis of the public `fast` performance mode. `balanced` is not
+a public mode.
 
 ## Boundary
 
@@ -24,7 +26,7 @@ optional native FP16 arithmetic or 16-bit storage features. The sidecar reports
 | 120 | 1 / 1 / 1 | 1 / 1 / 1 | 0.199 / 0.152 / 0.162 |
 | 239 | 1 / 1 / 1 | 1 / 1 / 1 | 0.201 / 0.155 / 0.163 |
 
-This passes the balanced max 4, P99 1, and RMSE 0.5 LSB budget and kept the
+This passed the former mixed-precision max 4, P99 1, and RMSE 0.5 LSB budget and kept the
 observed maximum at one LSB on the fixed real frames.
 
 ## Matched performance result
@@ -36,14 +38,14 @@ Each candidate ran one warm-up plus three official conversions.
 | Mode | Median fps | Min-max fps | Median wall ms |
 |---|---:|---:|---:|
 | precise FP32 | 34.901 | 34.868-35.050 | 6,876.618 |
-| balanced FP16 storage | 35.577 | 35.570-36.463 | 6,745.873 |
+| former balanced FP16 storage experiment | 35.577 | 35.570-36.463 | 6,745.873 |
 
-The median gain is 1.938%. The slowest balanced run exceeded the fastest
+The median gain was 1.938%. The slowest experiment run exceeded the fastest
 precise run. Median-of-run GPU stage means for color/sharpen/DI changed from
 approximately 0.97/0.99/1.09 ms to 0.69/0.64/0.91 ms. RCD and YUV were
 effectively unchanged.
 
-One first-pass balanced run completed all 240 frames and MOV validation but the
+One first-pass experiment run completed all 240 frames and MOV validation but the
 sync-drive briefly held the destination during the final rename. A fresh output
 directory then passed the full warm-up plus three-run sequence.
 

@@ -165,11 +165,11 @@ TargetLog FP32 RGB（当前）
 
 建议以以下数值作为**初始实验预算**，在固定 corpus 测量后再冻结正式阈值：
 
-| 指标 | Precise | Balanced 候选 | Fast 候选 |
-|---|---:|---:|---:|
-| 最终 10-bit max error | ≤1 LSB | ≤4 LSB | ≤8 LSB |
-| 最终 10-bit P99 error | ≤1 LSB | ≤1 LSB | ≤2 LSB |
-| 最终 10-bit RMSE | 记录 | ≤0.5 LSB | ≤1.0 LSB |
+| 指标 | Precise | Fast 候选 |
+|---|---:|---:|
+| 最终 10-bit max error | ≤1 LSB | ≤8 LSB |
+| 最终 10-bit P99 error | ≤1 LSB | ≤2 LSB |
+| 最终 10-bit RMSE | 记录 | ≤1.0 LSB |
 
 这些阈值不能替代图像检查。必须额外覆盖暗部、super-white、负值 toe、饱和颜色、细线、
 斜边、摩尔纹和高频 chroma。若 clipping 边界导致少量离群点，应记录坐标和原因，不能
@@ -531,9 +531,10 @@ metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 V
       全帧重复扫描及 pack/encoder 串行，而非 shader fusion；修正后瓶颈回到 CPU producer；
 - [x] 实施 Stage 2A/2B，把生产上传切换到 U16 RAW；Stage 2E 中位数
       `37.747 fps`，相对 Stage 1G `+173.710%`，final YUV `<=1 LSB`；
-- [x] precise 完成后才开始 mixed/fast A/B；Batch D 最终 precise/balanced/fast
-      中位数为 `34.776/36.126/36.857 fps`；合入 FP16 intermediate storage 与
-      analytic DI，拒绝 dither-off 和质量不合格的 bilinear demosaic；
+- [x] precise 完成后才开始 mixed/fast A/B；Batch D 最终 precise/fast
+      中位数为 `34.776/36.857 fps`；合入 FP16 intermediate storage 与
+      analytic DI，移除未作为公开模式的 balanced preset，拒绝 dither-off 和
+      质量不合格的 bilinear demosaic；
 - [ ] Stage 2/3 完成后重新评估 GPU MCRAW decoder ROI；
 - [ ] 性能开发期间持续推进 NLE/硬件/长时间发布 gates。
 
