@@ -28,6 +28,13 @@
 - The experiment is NO-GO; every shipped performance mode retains deterministic
   dither. See `GPU_STAGE3D_DITHER_EXPERIMENT.md`.
 
+## GPU Stage 3E demosaic decision
+
+- A separately named bilinear prototype exceeded the fast quality budgets by
+  wide margins (up to 473 LSB), so it was removed before merge.
+- Every GPU performance mode retains precise RCD. See
+  `GPU_STAGE3E_FAST_DEMOSAIC_EXPERIMENT.md`.
+
 ## 已实现源码边界
 
 - CMake/vcpkg/MSVC 2022 构建骨架
