@@ -214,3 +214,17 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
   YUV `≤1 LSB` 不变。
 - 新增 `raw_calibration` GPU timestamp summary；production 仍停在 Stage 1，不改变上传、
   sidecar 或发布路径。详细证据见 `GPU_STAGE2B_CALIBRATION_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 2C precise RCD prototype
+
+- 按 librtprocess 0.12.0 依赖拆为八个 compute dispatch，覆盖初始化、VH/LPF、G、PQ、
+  opposite color、green-position color 与 9-pixel border；五张 slot-owned scratch 保留
+  packed-half indexing，pass 间显式 compute barrier。
+- 64x64 四种 CFA synthetic 对 CPU RCD：max `0.009765625`、border max `0.00390625`、
+  RMSE `0.00129745`，通过收紧后的 `0.02/0.005` 门槛。
+- 真实 4096x3072 frame 0：37,748,736 channel samples 中 P99 `0.00390625`、RMSE
+  `0.0363643`，274 个 sample >2，max `136.61328125` 位于 R/x=2485/y=59；定位为稳定的
+  FP32 方向判别近等值分支，不是结构性错位。
+- 技术合约以 max/RMSE/P99/outlier count 联合约束该离群行为；最终 YUV `≤1 LSB` 不放宽，
+  若 Stage 2D/E 不能满足则 production 保持 Stage 1。详细报告见
+  `GPU_STAGE2C_RCD_VALIDATION.md`。

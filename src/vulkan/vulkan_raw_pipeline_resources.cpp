@@ -16,6 +16,7 @@ extern "C" {
 
 #include <mcraw/core/error.hpp>
 #include <mcraw/vulkan/calibrate_raw_spv.hpp>
+#include <mcraw/vulkan/rcd_demosaic_spv.hpp>
 
 namespace mcraw {
 namespace {
@@ -65,6 +66,14 @@ struct alignas(16) CalibrationPushConstants {
 static_assert(sizeof(CalibrationPushConstants) == 48U);
 static_assert(offsetof(CalibrationPushConstants, black) == 16U);
 static_assert(offsetof(CalibrationPushConstants, white) == 32U);
+
+struct RcdPushConstants {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t cfa_pattern{};
+    std::uint32_t pass_index{};
+};
+static_assert(sizeof(RcdPushConstants) == 16U);
 
 double percentile(const std::vector<double>& sorted, double p) {
     if (sorted.empty()) return 0.0;
@@ -125,10 +134,13 @@ public:
         std::vector<Buffer> scratch;
         Buffer readback;
         Buffer calibrated_readback;
+        std::vector<Buffer> camera_readback;
         VkCommandBuffer command{VK_NULL_HANDLE};
         VkFence fence{VK_NULL_HANDLE};
         VkDescriptorSet calibration_descriptor{VK_NULL_HANDLE};
+        VkDescriptorSet rcd_descriptor{VK_NULL_HANDLE};
         std::uint32_t timestamp_query_base{};
+        std::uint32_t rcd_timestamp_query_base{};
     };
 
     Impl(VulkanRuntime& runtime_owner, VulkanRawPipelineResourceConfig requested)
@@ -174,9 +186,12 @@ public:
             ? checked_capacity(raw_bytes, 1U, slots.size()) : 0U;
         counters.calibrated_test_readback_capacity_bytes = config.enable_test_readback
             ? checked_capacity(float_plane_bytes, 1U, slots.size()) : 0U;
+        counters.camera_rgb_test_readback_capacity_bytes = config.enable_test_readback
+            ? checked_capacity(float_plane_bytes, 3U, slots.size()) : 0U;
         try {
             create_buffers();
             create_calibration_pipeline();
+            create_rcd_pipeline();
             create_timestamp_queries();
             create_commands();
         } catch (...) {
@@ -256,6 +271,11 @@ public:
                 slot.readback = create_buffer(raw_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
                 slot.calibrated_readback = create_buffer(
                     float_plane_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host);
+                slot.camera_readback.reserve(3U);
+                for (std::size_t channel = 0; channel < 3U; ++channel) {
+                    slot.camera_readback.push_back(create_buffer(
+                        float_plane_bytes, VK_BUFFER_USAGE_TRANSFER_DST_BIT, host));
+                }
             }
         }
     }
@@ -345,6 +365,95 @@ public:
         require_raw_vulkan(result, "create RAW calibration pipeline");
     }
 
+    void create_rcd_pipeline() {
+        std::array<VkDescriptorSetLayoutBinding, 9> bindings{};
+        for (std::uint32_t index = 0; index < bindings.size(); ++index) {
+            bindings[index].binding = index;
+            bindings[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+            bindings[index].descriptorCount = 1;
+            bindings[index].stageFlags = VK_SHADER_STAGE_COMPUTE_BIT;
+        }
+        VkDescriptorSetLayoutCreateInfo layout_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        layout_info.bindingCount = static_cast<std::uint32_t>(bindings.size());
+        layout_info.pBindings = bindings.data();
+        require_raw_vulkan(vkCreateDescriptorSetLayout(
+            device, &layout_info, allocator, &rcd_descriptor_layout),
+            "create RCD descriptor layout");
+        VkDescriptorPoolSize pool_size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
+            static_cast<std::uint32_t>(slots.size() * bindings.size())};
+        VkDescriptorPoolCreateInfo pool_info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        pool_info.maxSets = static_cast<std::uint32_t>(slots.size());
+        pool_info.poolSizeCount = 1;
+        pool_info.pPoolSizes = &pool_size;
+        require_raw_vulkan(vkCreateDescriptorPool(device, &pool_info, allocator,
+                                                  &rcd_descriptor_pool),
+                           "create RCD descriptor pool");
+        std::vector<VkDescriptorSetLayout> layouts(slots.size(), rcd_descriptor_layout);
+        std::vector<VkDescriptorSet> descriptors(slots.size());
+        VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+        allocate.descriptorPool = rcd_descriptor_pool;
+        allocate.descriptorSetCount = static_cast<std::uint32_t>(layouts.size());
+        allocate.pSetLayouts = layouts.data();
+        require_raw_vulkan(vkAllocateDescriptorSets(device, &allocate, descriptors.data()),
+                           "allocate RCD descriptor sets");
+        for (std::size_t slot_index = 0; slot_index < slots.size(); ++slot_index) {
+            auto& slot = slots[slot_index];
+            slot.rcd_descriptor = descriptors[slot_index];
+            std::array<VkDescriptorBufferInfo, 9> buffers{{
+                {slot.calibrated.handle, 0, float_plane_bytes},
+                {slot.scratch[0].handle, 0, float_plane_bytes},
+                {slot.camera_rgb[0].handle, 0, float_plane_bytes},
+                {slot.camera_rgb[1].handle, 0, float_plane_bytes},
+                {slot.camera_rgb[2].handle, 0, float_plane_bytes},
+                {slot.scratch[1].handle, 0, float_plane_bytes},
+                {slot.scratch[2].handle, 0, float_plane_bytes},
+                {slot.scratch[3].handle, 0, float_plane_bytes},
+                {slot.scratch[4].handle, 0, float_plane_bytes},
+            }};
+            std::array<VkWriteDescriptorSet, 9> writes{};
+            for (std::uint32_t index = 0; index < writes.size(); ++index) {
+                writes[index].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                writes[index].dstSet = slot.rcd_descriptor;
+                writes[index].dstBinding = index;
+                writes[index].descriptorCount = 1;
+                writes[index].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                writes[index].pBufferInfo = &buffers[index];
+            }
+            vkUpdateDescriptorSets(device, static_cast<std::uint32_t>(writes.size()),
+                                   writes.data(), 0, nullptr);
+        }
+        VkPushConstantRange push_range{VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                                       sizeof(RcdPushConstants)};
+        VkPipelineLayoutCreateInfo pipeline_layout_info{
+            VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+        pipeline_layout_info.setLayoutCount = 1;
+        pipeline_layout_info.pSetLayouts = &rcd_descriptor_layout;
+        pipeline_layout_info.pushConstantRangeCount = 1;
+        pipeline_layout_info.pPushConstantRanges = &push_range;
+        require_raw_vulkan(vkCreatePipelineLayout(device, &pipeline_layout_info, allocator,
+                                                  &rcd_pipeline_layout),
+                           "create RCD pipeline layout");
+        VkShaderModuleCreateInfo shader_info{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+        shader_info.codeSize = generated::rcd_demosaic_spv.size() * sizeof(std::uint32_t);
+        shader_info.pCode = generated::rcd_demosaic_spv.data();
+        VkShaderModule shader = VK_NULL_HANDLE;
+        require_raw_vulkan(vkCreateShaderModule(device, &shader_info, allocator, &shader),
+                           "create RCD shader");
+        VkPipelineShaderStageCreateInfo stage{VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO};
+        stage.stage = VK_SHADER_STAGE_COMPUTE_BIT;
+        stage.module = shader;
+        stage.pName = "main";
+        VkComputePipelineCreateInfo pipeline_info{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
+        pipeline_info.stage = stage;
+        pipeline_info.layout = rcd_pipeline_layout;
+        const auto result = vkCreateComputePipelines(device, VK_NULL_HANDLE, 1,
+                                                     &pipeline_info, allocator,
+                                                     &rcd_pipeline);
+        vkDestroyShaderModule(device, shader, allocator);
+        require_raw_vulkan(result, "create RCD pipeline");
+    }
+
     void create_timestamp_queries() {
         VkPhysicalDeviceProperties properties{};
         vkGetPhysicalDeviceProperties(physical_device, &properties);
@@ -358,11 +467,13 @@ public:
         if (timestamp_valid_bits == 0U || timestamp_period_ns <= 0.0F) return;
         VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        info.queryCount = static_cast<std::uint32_t>(slots.size() * 2U);
+        info.queryCount = static_cast<std::uint32_t>(slots.size() * 4U);
         require_raw_vulkan(vkCreateQueryPool(device, &info, allocator, &timestamp_pool),
                            "create RAW calibration timestamp pool");
         for (std::size_t index = 0; index < slots.size(); ++index) {
-            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 2U);
+            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 4U);
+            slots[index].rcd_timestamp_query_base =
+                slots[index].timestamp_query_base + 2U;
         }
         counters.gpu_timestamps_supported = true;
     }
@@ -481,6 +592,118 @@ public:
         counters.raw_calibration_gpu_max_ms = sorted.back();
     }
 
+    void update_rcd_timestamp(const Slot& slot) {
+        if (timestamp_pool == VK_NULL_HANDLE) return;
+        std::array<std::uint64_t, 2> values{};
+        require_raw_vulkan(vkGetQueryPoolResults(
+            device, timestamp_pool, slot.rcd_timestamp_query_base, 2,
+            sizeof(values), values.data(), sizeof(std::uint64_t),
+            VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT),
+            "read RCD timestamp");
+        const double milliseconds = static_cast<double>(timestamp_delta(
+            values[0], values[1], timestamp_valid_bits)) *
+            static_cast<double>(timestamp_period_ns) / 1.0e6;
+        rcd_samples.push_back(milliseconds);
+        auto sorted = rcd_samples;
+        std::sort(sorted.begin(), sorted.end());
+        counters.rcd_demosaic_timestamp_samples = rcd_samples.size();
+        counters.rcd_demosaic_gpu_total_ms = 0.0;
+        for (const double sample : rcd_samples) counters.rcd_demosaic_gpu_total_ms += sample;
+        counters.rcd_demosaic_gpu_mean_ms = counters.rcd_demosaic_gpu_total_ms /
+            static_cast<double>(rcd_samples.size());
+        counters.rcd_demosaic_gpu_p50_ms = percentile(sorted, 0.50);
+        counters.rcd_demosaic_gpu_p95_ms = percentile(sorted, 0.95);
+        counters.rcd_demosaic_gpu_p99_ms = percentile(sorted, 0.99);
+        counters.rcd_demosaic_gpu_min_ms = sorted.front();
+        counters.rcd_demosaic_gpu_max_ms = sorted.back();
+    }
+
+    CalibrationPushConstants calibration_parameters(
+        const NormalizedCameraMetadata& metadata) const {
+        CalibrationPushConstants push;
+        push.width = config.width;
+        push.height = config.height;
+        push.pixel_count = static_cast<std::uint32_t>(pixels);
+        for (std::size_t index = 0; index < 4U; ++index) {
+            push.black[index] = static_cast<float>(metadata.black_level[index]);
+            push.white[index] = static_cast<float>(metadata.white_level[index]);
+        }
+        return push;
+    }
+
+    void record_calibration(Slot& slot, const CalibrationPushConstants& push) {
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          calibration_pipeline);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                calibration_pipeline_layout, 0, 1,
+                                &slot.calibration_descriptor, 0, nullptr);
+        vkCmdPushConstants(slot.command, calibration_pipeline_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+        vkCmdDispatch(slot.command,
+                      (static_cast<std::uint32_t>(pixels) + 255U) / 256U, 1, 1);
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.timestamp_query_base + 1U);
+        }
+    }
+
+    void shader_buffer_barrier(VkCommandBuffer command,
+                               const std::vector<VkBuffer>& buffers,
+                               VkAccessFlags destination_access =
+                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                               VkPipelineStageFlags destination_stage =
+                                   VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT) {
+        std::vector<VkBufferMemoryBarrier> barriers;
+        barriers.reserve(buffers.size());
+        for (const auto buffer : buffers) {
+            VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+            barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            barrier.dstAccessMask = destination_access;
+            barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            barrier.buffer = buffer;
+            barrier.size = VK_WHOLE_SIZE;
+            barriers.push_back(barrier);
+        }
+        vkCmdPipelineBarrier(command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             destination_stage, 0, 0, nullptr,
+                             static_cast<std::uint32_t>(barriers.size()),
+                             barriers.data(), 0, nullptr);
+    }
+
+    void record_rcd(Slot& slot, CfaPattern cfa_pattern) {
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.rcd_timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE, rcd_pipeline);
+        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                rcd_pipeline_layout, 0, 1, &slot.rcd_descriptor,
+                                0, nullptr);
+        std::vector<VkBuffer> written_buffers;
+        written_buffers.reserve(8U);
+        for (const auto& buffer : slot.camera_rgb) written_buffers.push_back(buffer.handle);
+        for (const auto& buffer : slot.scratch) written_buffers.push_back(buffer.handle);
+        RcdPushConstants push{config.width, config.height,
+                              static_cast<std::uint32_t>(cfa_pattern), 0U};
+        for (std::uint32_t pass = 0; pass < 8U; ++pass) {
+            push.pass_index = pass;
+            vkCmdPushConstants(slot.command, rcd_pipeline_layout,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
+            vkCmdDispatch(slot.command, (config.width + 15U) / 16U,
+                          (config.height + 15U) / 16U, 1);
+            shader_buffer_barrier(slot.command, written_buffers);
+        }
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_pool, slot.rcd_timestamp_query_base + 1U);
+        }
+    }
+
     RawDemosaicF32 calibrate(const RawMosaicU16& input,
                              const NormalizedCameraMetadata& metadata) {
         if (!config.enable_test_readback) {
@@ -503,14 +726,7 @@ public:
                            "reset RAW calibration slot");
         upload_raw(slot, input);
 
-        CalibrationPushConstants push;
-        push.width = config.width;
-        push.height = config.height;
-        push.pixel_count = static_cast<std::uint32_t>(pixels);
-        for (std::size_t index = 0; index < 4U; ++index) {
-            push.black[index] = static_cast<float>(metadata.black_level[index]);
-            push.white[index] = static_cast<float>(metadata.white_level[index]);
-        }
+        const auto push = calibration_parameters(metadata);
         require_raw_vulkan(vkResetCommandBuffer(slot.command, 0),
                            "reset RAW calibration command buffer");
         VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
@@ -522,19 +738,7 @@ public:
             vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                 timestamp_pool, slot.timestamp_query_base);
         }
-        vkCmdBindPipeline(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                          calibration_pipeline);
-        vkCmdBindDescriptorSets(slot.command, VK_PIPELINE_BIND_POINT_COMPUTE,
-                                calibration_pipeline_layout, 0, 1,
-                                &slot.calibration_descriptor, 0, nullptr);
-        vkCmdPushConstants(slot.command, calibration_pipeline_layout,
-                           VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
-        vkCmdDispatch(slot.command,
-                      (static_cast<std::uint32_t>(pixels) + 255U) / 256U, 1, 1);
-        if (timestamp_pool != VK_NULL_HANDLE) {
-            vkCmdWriteTimestamp(slot.command, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                timestamp_pool, slot.timestamp_query_base + 1U);
-        }
+        record_calibration(slot, push);
         VkBufferMemoryBarrier barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
         barrier.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
         barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
@@ -575,6 +779,84 @@ public:
         return output;
     }
 
+    CameraRgbF32 demosaic_rcd(const RawMosaicU16& input,
+                              const NormalizedCameraMetadata& metadata) {
+        if (!config.enable_test_readback) {
+            throw Error(ErrorCode::invalid_argument,
+                        "RCD test readback is disabled for production resources");
+        }
+        input.validate();
+        metadata.validate_for_raw();
+        if (config.width < 32U || config.height < 32U) {
+            throw Error(ErrorCode::invalid_argument,
+                        "precise RCD requires at least a 32x32 frame");
+        }
+        if (input.width != config.width || input.height != config.height ||
+            input.width != metadata.width || input.height != metadata.height ||
+            input.cfa != metadata.cfa) {
+            throw Error(ErrorCode::invalid_argument,
+                        "RCD input, metadata and Vulkan resources disagree");
+        }
+        auto& slot = slots[next_slot];
+        next_slot = (next_slot + 1U) % slots.size();
+        require_raw_vulkan(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX),
+                           "wait for RCD test slot");
+        require_raw_vulkan(vkResetFences(device, 1, &slot.fence),
+                           "reset RCD test slot");
+        upload_raw(slot, input);
+        require_raw_vulkan(vkResetCommandBuffer(slot.command, 0),
+                           "reset RCD command buffer");
+        VkCommandBufferBeginInfo begin{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
+        begin.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
+        require_raw_vulkan(vkBeginCommandBuffer(slot.command, &begin),
+                           "begin RCD command buffer");
+        if (timestamp_pool != VK_NULL_HANDLE) {
+            vkCmdResetQueryPool(slot.command, timestamp_pool,
+                                slot.timestamp_query_base, 4);
+        }
+        const auto calibration_push = calibration_parameters(metadata);
+        record_calibration(slot, calibration_push);
+        shader_buffer_barrier(slot.command, {slot.calibrated.handle},
+                              VK_ACCESS_SHADER_READ_BIT);
+        record_rcd(slot, input.cfa);
+        std::vector<VkBuffer> camera_buffers;
+        for (const auto& buffer : slot.camera_rgb) camera_buffers.push_back(buffer.handle);
+        shader_buffer_barrier(slot.command, camera_buffers,
+                              VK_ACCESS_TRANSFER_READ_BIT,
+                              VK_PIPELINE_STAGE_TRANSFER_BIT);
+        for (std::size_t channel = 0; channel < 3U; ++channel) {
+            VkBufferCopy copy{0, 0, float_plane_bytes};
+            vkCmdCopyBuffer(slot.command, slot.camera_rgb[channel].handle,
+                            slot.camera_readback[channel].handle, 1, &copy);
+        }
+        require_raw_vulkan(vkEndCommandBuffer(slot.command), "end RCD command buffer");
+        VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
+        submit.commandBufferCount = 1;
+        submit.pCommandBuffers = &slot.command;
+        lock_queue(*vulkan_device, hw_device, queue_family);
+        const auto submit_result = vkQueueSubmit(queue, 1, &submit, slot.fence);
+        unlock_queue(*vulkan_device, hw_device, queue_family);
+        require_raw_vulkan(submit_result, "submit RCD test");
+        require_raw_vulkan(vkWaitForFences(device, 1, &slot.fence, VK_TRUE, UINT64_MAX),
+                           "wait for RCD test");
+        update_calibration_timestamp(slot);
+        update_rcd_timestamp(slot);
+        CameraRgbF32 output{config.width, config.height, {}};
+        for (std::size_t channel = 0; channel < 3U; ++channel) {
+            output.planes[channel].resize(pixels);
+            void* mapped = nullptr;
+            require_raw_vulkan(vkMapMemory(device, slot.camera_readback[channel].memory,
+                                           0, float_plane_bytes, 0, &mapped),
+                               "map RCD Camera RGB readback");
+            std::memcpy(output.planes[channel].data(), mapped, float_plane_bytes);
+            vkUnmapMemory(device, slot.camera_readback[channel].memory);
+        }
+        output.validate();
+        counters.test_upload_bytes += raw_bytes;
+        counters.test_readback_bytes += float_plane_bytes * 3U;
+        return output;
+    }
+
     void destroy_buffer(Buffer& buffer) noexcept {
         if (buffer.handle != VK_NULL_HANDLE) vkDestroyBuffer(device, buffer.handle, allocator);
         if (buffer.memory != VK_NULL_HANDLE) vkFreeMemory(device, buffer.memory, allocator);
@@ -590,6 +872,7 @@ public:
             }
             destroy_buffer(slot.readback);
             destroy_buffer(slot.calibrated_readback);
+            for (auto& buffer : slot.camera_readback) destroy_buffer(buffer);
             for (auto& buffer : slot.scratch) destroy_buffer(buffer);
             for (auto& buffer : slot.camera_rgb) destroy_buffer(buffer);
             destroy_buffer(slot.calibrated);
@@ -619,6 +902,22 @@ public:
             vkDestroyDescriptorSetLayout(device, calibration_descriptor_layout, allocator);
             calibration_descriptor_layout = VK_NULL_HANDLE;
         }
+        if (rcd_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, rcd_pipeline, allocator);
+            rcd_pipeline = VK_NULL_HANDLE;
+        }
+        if (rcd_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, rcd_pipeline_layout, allocator);
+            rcd_pipeline_layout = VK_NULL_HANDLE;
+        }
+        if (rcd_descriptor_pool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, rcd_descriptor_pool, allocator);
+            rcd_descriptor_pool = VK_NULL_HANDLE;
+        }
+        if (rcd_descriptor_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, rcd_descriptor_layout, allocator);
+            rcd_descriptor_layout = VK_NULL_HANDLE;
+        }
     }
 
     VulkanRuntime& runtime;
@@ -638,10 +937,15 @@ public:
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
     VkPipelineLayout calibration_pipeline_layout{VK_NULL_HANDLE};
     VkPipeline calibration_pipeline{VK_NULL_HANDLE};
+    VkDescriptorSetLayout rcd_descriptor_layout{VK_NULL_HANDLE};
+    VkDescriptorPool rcd_descriptor_pool{VK_NULL_HANDLE};
+    VkPipelineLayout rcd_pipeline_layout{VK_NULL_HANDLE};
+    VkPipeline rcd_pipeline{VK_NULL_HANDLE};
     VkQueryPool timestamp_pool{VK_NULL_HANDLE};
     float timestamp_period_ns{};
     std::uint32_t timestamp_valid_bits{};
     std::vector<double> calibration_samples;
+    std::vector<double> rcd_samples;
     std::vector<Slot> slots;
     std::size_t next_slot{};
     VulkanRawPipelineResourceTelemetry counters;
@@ -664,6 +968,11 @@ RawMosaicU16 VulkanRawPipelineResources::round_trip_for_test(
 RawDemosaicF32 VulkanRawPipelineResources::calibrate_for_test(
     const RawMosaicU16& input, const NormalizedCameraMetadata& metadata) {
     return impl_->calibrate(input, metadata);
+}
+
+CameraRgbF32 VulkanRawPipelineResources::demosaic_rcd_for_test(
+    const RawMosaicU16& input, const NormalizedCameraMetadata& metadata) {
+    return impl_->demosaic_rcd(input, metadata);
 }
 
 VulkanRawPipelineResourceTelemetry VulkanRawPipelineResources::telemetry() const noexcept {

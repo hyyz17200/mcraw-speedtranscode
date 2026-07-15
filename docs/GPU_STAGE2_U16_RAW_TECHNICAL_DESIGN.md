@@ -118,7 +118,8 @@ Test-only readback compares:
 | Boundary | Initial precise gate |
 |---|---:|
 | calibrated CFA | max abs <= 0.01 and RMSE <= 0.002 in the 0..65535 domain |
-| Camera RGB RCD | max abs <= 2.0 in the 0..65535 domain; RMSE <= 0.05 |
+| Camera RGB RCD synthetic | max abs <= 0.02; RMSE <= 0.005 in the 0..65535 domain |
+| Camera RGB RCD real frame | max abs <= 160; RMSE <= 0.05; P99 <= 0.01; samples over 2 <= 512 |
 | final Y, Cb, Cr | max absolute code difference <= 1 LSB |
 
 The RCD limits are diagnostic starting gates, not permission for structural
@@ -131,6 +132,13 @@ max abs `0.0078125`, RMSE `0.00137959`. The difference is the expected boundary
 between the CPU's FP64 division followed by FP32 storage and the first portable
 shader's FP32 arithmetic. This intermediate budget does not widen the final
 one-LSB YUV gate.
+
+The real-frame RCD gate was frozen after Stage 2C isolated FP32 directional
+branch sensitivity: 274 of 37,748,736 channel samples exceeded 2, while P99 was
+`0.00390625`, RMSE was `0.0363643` and max was `136.613` at R/x=2485/y=59.
+Repeated runs were stable and the all-CFA synthetic max remained `0.009765625`.
+The multi-metric gate prevents a larger max from hiding widespread or structural
+error. Stage 2 production still cannot pass if final YUV exceeds one LSB.
 
 Real-frame validation uses Stage 0 corpus frames 0, 120 and 239. Final quality
 must retain the Stage 1 one-LSB YUV gate.

@@ -25,6 +25,7 @@ struct VulkanRawPipelineResourceTelemetry {
     std::uint64_t rcd_scratch_capacity_bytes{};
     std::uint64_t test_readback_capacity_bytes{};
     std::uint64_t calibrated_test_readback_capacity_bytes{};
+    std::uint64_t camera_rgb_test_readback_capacity_bytes{};
     std::uint64_t test_round_trips{};
     std::uint64_t test_upload_bytes{};
     std::uint64_t test_readback_bytes{};
@@ -37,6 +38,14 @@ struct VulkanRawPipelineResourceTelemetry {
     double raw_calibration_gpu_p99_ms{};
     double raw_calibration_gpu_min_ms{};
     double raw_calibration_gpu_max_ms{};
+    std::uint64_t rcd_demosaic_timestamp_samples{};
+    double rcd_demosaic_gpu_total_ms{};
+    double rcd_demosaic_gpu_mean_ms{};
+    double rcd_demosaic_gpu_p50_ms{};
+    double rcd_demosaic_gpu_p95_ms{};
+    double rcd_demosaic_gpu_p99_ms{};
+    double rcd_demosaic_gpu_min_ms{};
+    double rcd_demosaic_gpu_max_ms{};
 };
 
 // Stage 2A freezes slot ownership for one U16 upload, calibrated CFA, precise
@@ -54,6 +63,9 @@ public:
 
     [[nodiscard]] RawMosaicU16 round_trip_for_test(const RawMosaicU16& input);
     [[nodiscard]] RawDemosaicF32 calibrate_for_test(
+        const RawMosaicU16& input,
+        const NormalizedCameraMetadata& metadata);
+    [[nodiscard]] CameraRgbF32 demosaic_rcd_for_test(
         const RawMosaicU16& input,
         const NormalizedCameraMetadata& metadata);
     [[nodiscard]] VulkanRawPipelineResourceTelemetry telemetry() const noexcept;

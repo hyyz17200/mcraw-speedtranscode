@@ -192,6 +192,25 @@ if(MCRAW_ENABLE_VULKAN)
   set(MCRAW_DAVINCI_INTERMEDIATE_HEADER "${MCRAW_GENERATED_SHADER_DIR}/davinci_intermediate_spv.hpp")
   set(MCRAW_CALIBRATE_RAW_SPV "${MCRAW_GENERATED_SHADER_DIR}/calibrate_raw.comp.spv")
   set(MCRAW_CALIBRATE_RAW_HEADER "${MCRAW_GENERATED_SHADER_DIR}/calibrate_raw_spv.hpp")
+  set(MCRAW_RCD_DEMOSAIC_SPV "${MCRAW_GENERATED_SHADER_DIR}/rcd_demosaic.comp.spv")
+  set(MCRAW_RCD_DEMOSAIC_HEADER "${MCRAW_GENERATED_SHADER_DIR}/rcd_demosaic_spv.hpp")
+  add_custom_command(
+    OUTPUT "${MCRAW_RCD_DEMOSAIC_SPV}"
+    COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
+    COMMAND "${MCRAW_GLSLANG_VALIDATOR}" -V --target-env vulkan1.3
+            -o "${MCRAW_RCD_DEMOSAIC_SPV}"
+            "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/rcd_demosaic.comp.glsl"
+    DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/vulkan/shaders/rcd_demosaic.comp.glsl"
+    VERBATIM)
+  add_custom_command(
+    OUTPUT "${MCRAW_RCD_DEMOSAIC_HEADER}"
+    COMMAND "${CMAKE_COMMAND}"
+            "-DINPUT=${MCRAW_RCD_DEMOSAIC_SPV}"
+            "-DOUTPUT=${MCRAW_RCD_DEMOSAIC_HEADER}"
+            "-DSYMBOL=rcd_demosaic_spv"
+            -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    DEPENDS "${MCRAW_RCD_DEMOSAIC_SPV}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed-spirv.cmake"
+    VERBATIM)
   add_custom_command(
     OUTPUT "${MCRAW_CALIBRATE_RAW_SPV}"
     COMMAND "${CMAKE_COMMAND}" -E make_directory "${MCRAW_GENERATED_SHADER_DIR}"
@@ -296,7 +315,8 @@ if(MCRAW_ENABLE_VULKAN)
   add_custom_target(mcraw_vulkan_shaders DEPENDS
     "${MCRAW_RGB_TO_YUV_HEADER}" "${MCRAW_RGB_TO_YUV_IMAGE_HEADER}"
     "${MCRAW_CAMERA_TO_DWG_HEADER}" "${MCRAW_SHARPEN_TARGET_LINEAR_HEADER}"
-    "${MCRAW_DAVINCI_INTERMEDIATE_HEADER}" "${MCRAW_CALIBRATE_RAW_HEADER}")
+    "${MCRAW_DAVINCI_INTERMEDIATE_HEADER}" "${MCRAW_CALIBRATE_RAW_HEADER}"
+    "${MCRAW_RCD_DEMOSAIC_HEADER}")
   add_dependencies(mcraw_core mcraw_vulkan_shaders)
   target_include_directories(mcraw_core PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/generated")
   target_sources(mcraw_core PRIVATE
