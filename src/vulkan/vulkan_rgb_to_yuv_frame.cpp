@@ -17,8 +17,10 @@ extern "C" {
 #include <mcraw/core/error.hpp>
 #include <mcraw/processing/log_curve.hpp>
 #include <mcraw/vulkan/camera_to_dwg_spv.hpp>
+#include <mcraw/vulkan/calibrate_raw_spv.hpp>
 #include <mcraw/vulkan/davinci_intermediate_spv.hpp>
 #include <mcraw/vulkan/rgb_to_yuv_422_image_spv.hpp>
+#include <mcraw/vulkan/rcd_demosaic_spv.hpp>
 #include <mcraw/vulkan/sharpen_target_linear_spv.hpp>
 
 namespace mcraw {
@@ -77,6 +79,24 @@ struct DiPushConstants {
     std::uint32_t negative_policy{};
     std::uint32_t entries_per_segment{};
 };
+
+struct alignas(16) CalibrationPushConstants {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t pixel_count{};
+    std::uint32_t reserved{};
+    std::array<float, 4> black{};
+    std::array<float, 4> white{};
+};
+static_assert(sizeof(CalibrationPushConstants) == 48U);
+
+struct RcdPushConstants {
+    std::uint32_t width{};
+    std::uint32_t height{};
+    std::uint32_t cfa_pattern{};
+    std::uint32_t pass_index{};
+};
+static_assert(sizeof(RcdPushConstants) == 16U);
 static_assert(sizeof(DiPushConstants) == 16U);
 static_assert(static_cast<std::uint32_t>(NegativePolicy::preserve_by_curve) == 0U);
 static_assert(static_cast<std::uint32_t>(NegativePolicy::clamp_zero) == 1U);
@@ -163,20 +183,30 @@ public:
         std::array<Buffer, 3> input_buffers;
         std::array<std::array<Buffer, 3>, 2> intermediate;
         Buffer control_status;
+        Buffer raw_upload;
+        Buffer calibrated_raw;
+        std::array<Buffer, 3> raw_camera_rgb;
+        std::array<Buffer, 5> rcd_scratch;
         VkDescriptorSet descriptor_set{VK_NULL_HANDLE};
         VkDescriptorSet camera_yuv_descriptor_set{VK_NULL_HANDLE};
         VkDescriptorSet color_descriptor{VK_NULL_HANDLE};
         VkDescriptorSet sharpen_descriptor{VK_NULL_HANDLE};
         VkDescriptorSet di_descriptor{VK_NULL_HANDLE};
+        VkDescriptorSet raw_color_descriptor{VK_NULL_HANDLE};
+        VkDescriptorSet calibration_descriptor{VK_NULL_HANDLE};
+        VkDescriptorSet rcd_descriptor{VK_NULL_HANDLE};
         VkCommandBuffer command_buffer{VK_NULL_HANDLE};
         VkFence fence{VK_NULL_HANDLE};
         std::array<VkImageView, 3> views{};
         std::uint32_t timestamp_query_base{};
+        std::uint32_t calibration_timestamp_query_base{};
+        std::uint32_t rcd_timestamp_query_base{};
         std::uint32_t sharpen_timestamp_query_base{};
         std::uint32_t di_timestamp_query_base{};
         std::uint32_t yuv_timestamp_query_base{};
         bool in_flight{};
         bool camera_chain{};
+        bool raw_chain{};
         std::chrono::steady_clock::time_point submitted_at{};
     };
 
@@ -284,6 +314,7 @@ public:
     void create_input_buffers() {
         const auto pixels = static_cast<std::size_t>(config.width) * config.height;
         const auto bytes = frame_checked_bytes(pixels, sizeof(float));
+        const auto raw_bytes = frame_checked_bytes(pixels, sizeof(std::uint16_t));
         for (auto& slot : slots) {
             for (auto& buffer : slot.input_buffers) buffer = create_buffer(bytes);
             for (auto& set : slot.intermediate) {
@@ -297,6 +328,18 @@ public:
                 sizeof(std::uint32_t),
                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                     VK_BUFFER_USAGE_TRANSFER_DST_BIT);
+            slot.raw_upload = create_buffer(raw_bytes);
+            slot.calibrated_raw = create_buffer(
+                bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            for (auto& buffer : slot.raw_camera_rgb) {
+                buffer = create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            }
+            for (auto& buffer : slot.rcd_scratch) {
+                buffer = create_buffer(bytes, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+                                       VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            }
         }
         const auto lut_bytes = static_cast<VkDeviceSize>(
             (di_curve.low_segment().size() + di_curve.high_segment().size()) *
@@ -352,24 +395,53 @@ public:
                                  &di_descriptor_layout),
                              "create resident DI descriptor layout");
 
+        std::array<VkDescriptorSetLayoutBinding, 2> calibration_bindings{};
+        for (std::uint32_t index = 0; index < calibration_bindings.size(); ++index) {
+            calibration_bindings[index] = {index, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                           VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        }
+        VkDescriptorSetLayoutCreateInfo calibration_layout_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        calibration_layout_info.bindingCount =
+            static_cast<std::uint32_t>(calibration_bindings.size());
+        calibration_layout_info.pBindings = calibration_bindings.data();
+        require_frame_vulkan(vkCreateDescriptorSetLayout(
+            device, &calibration_layout_info, allocator, &calibration_descriptor_layout),
+            "create resident RAW calibration descriptor layout");
+        std::array<VkDescriptorSetLayoutBinding, 9> rcd_bindings{};
+        for (std::uint32_t index = 0; index < rcd_bindings.size(); ++index) {
+            rcd_bindings[index] = {index, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
+                                   VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
+        }
+        VkDescriptorSetLayoutCreateInfo rcd_layout_info{
+            VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        rcd_layout_info.bindingCount = static_cast<std::uint32_t>(rcd_bindings.size());
+        rcd_layout_info.pBindings = rcd_bindings.data();
+        require_frame_vulkan(vkCreateDescriptorSetLayout(
+            device, &rcd_layout_info, allocator, &rcd_descriptor_layout),
+            "create resident RCD descriptor layout");
+
         const std::array<VkDescriptorPoolSize, 2> sizes{{
             {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER,
-             static_cast<std::uint32_t>(config.slots * 26U)},
+             static_cast<std::uint32_t>(config.slots * 43U)},
             {VK_DESCRIPTOR_TYPE_STORAGE_IMAGE,
              static_cast<std::uint32_t>(config.slots * 6U)}}};
         VkDescriptorPoolCreateInfo pool{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
-        pool.maxSets = static_cast<std::uint32_t>(config.slots * 5U);
+        pool.maxSets = static_cast<std::uint32_t>(config.slots * 8U);
         pool.poolSizeCount = static_cast<std::uint32_t>(sizes.size());
         pool.pPoolSizes = sizes.data();
         require_frame_vulkan(vkCreateDescriptorPool(device, &pool, allocator,
                                                     &descriptor_pool),
                              "create direct-frame descriptor pool");
         std::vector<VkDescriptorSetLayout> layouts;
-        layouts.reserve(config.slots * 5U);
+        layouts.reserve(config.slots * 8U);
         layouts.insert(layouts.end(), config.slots * 2U, descriptor_layout);
         layouts.insert(layouts.end(), config.slots * 2U,
                        camera_descriptor_layout);
         layouts.insert(layouts.end(), config.slots, di_descriptor_layout);
+        layouts.insert(layouts.end(), config.slots, camera_descriptor_layout);
+        layouts.insert(layouts.end(), config.slots, calibration_descriptor_layout);
+        layouts.insert(layouts.end(), config.slots, rcd_descriptor_layout);
         std::vector<VkDescriptorSet> sets(layouts.size());
         VkDescriptorSetAllocateInfo allocation{
             VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
@@ -385,6 +457,9 @@ public:
             slot.color_descriptor = sets[slots.size() * 2U + index];
             slot.sharpen_descriptor = sets[slots.size() * 3U + index];
             slot.di_descriptor = sets[slots.size() * 4U + index];
+            slot.raw_color_descriptor = sets[slots.size() * 5U + index];
+            slot.calibration_descriptor = sets[slots.size() * 6U + index];
+            slot.rcd_descriptor = sets[slots.size() * 7U + index];
 
             std::array<VkDescriptorBufferInfo, 20> buffer_info{};
             std::array<VkWriteDescriptorSet, 20> writes{};
@@ -425,6 +500,47 @@ public:
             vkUpdateDescriptorSets(device,
                                    static_cast<std::uint32_t>(writes.size()),
                                    writes.data(), 0, nullptr);
+
+            std::array<VkDescriptorBufferInfo, 17> raw_info{};
+            std::array<VkWriteDescriptorSet, 17> raw_writes{};
+            for (std::size_t plane = 0; plane < 3U; ++plane) {
+                raw_info[plane] = {slot.raw_camera_rgb[plane].buffer, 0,
+                                   slot.raw_camera_rgb[plane].size};
+                raw_info[plane + 3U] = {slot.intermediate[0][plane].buffer, 0,
+                                        slot.intermediate[0][plane].size};
+            }
+            raw_info[6] = {slot.raw_upload.buffer, 0, slot.raw_upload.size};
+            raw_info[7] = {slot.calibrated_raw.buffer, 0, slot.calibrated_raw.size};
+            raw_info[8] = raw_info[7];
+            raw_info[9] = {slot.rcd_scratch[0].buffer, 0, slot.rcd_scratch[0].size};
+            for (std::size_t plane = 0; plane < 3U; ++plane) {
+                raw_info[10U + plane] = {slot.raw_camera_rgb[plane].buffer, 0,
+                                         slot.raw_camera_rgb[plane].size};
+            }
+            for (std::size_t scratch = 1; scratch < 5U; ++scratch) {
+                raw_info[12U + scratch] = {slot.rcd_scratch[scratch].buffer, 0,
+                                           slot.rcd_scratch[scratch].size};
+            }
+            for (std::uint32_t binding = 0; binding < raw_writes.size(); ++binding) {
+                auto& write = raw_writes[binding];
+                write.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+                if (binding < 6U) {
+                    write.dstSet = slot.raw_color_descriptor;
+                    write.dstBinding = binding;
+                } else if (binding < 8U) {
+                    write.dstSet = slot.calibration_descriptor;
+                    write.dstBinding = binding - 6U;
+                } else {
+                    write.dstSet = slot.rcd_descriptor;
+                    write.dstBinding = binding - 8U;
+                }
+                write.descriptorCount = 1;
+                write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+                write.pBufferInfo = &raw_info[binding];
+            }
+            vkUpdateDescriptorSets(device,
+                                   static_cast<std::uint32_t>(raw_writes.size()),
+                                   raw_writes.data(), 0, nullptr);
         }
     }
 
@@ -501,6 +617,16 @@ public:
 
     void create_camera_pipelines() {
         create_camera_pipeline(
+            generated::calibrate_raw_spv.data(), generated::calibrate_raw_spv.size(),
+            calibration_descriptor_layout, sizeof(CalibrationPushConstants),
+            calibration_pipeline_layout, calibration_pipeline,
+            "create resident RAW calibration pipeline");
+        create_camera_pipeline(
+            generated::rcd_demosaic_spv.data(), generated::rcd_demosaic_spv.size(),
+            rcd_descriptor_layout, sizeof(RcdPushConstants),
+            rcd_pipeline_layout, rcd_pipeline,
+            "create resident RCD pipeline");
+        create_camera_pipeline(
             generated::camera_to_dwg_spv.data(),
             generated::camera_to_dwg_spv.size(), camera_descriptor_layout,
             sizeof(CameraToDwgPushConstants), color_pipeline_layout,
@@ -535,7 +661,12 @@ public:
         VkFenceCreateInfo fence_info{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
         for (std::size_t index = 0; index < slots.size(); ++index) {
             slots[index].command_buffer = commands[index];
-            slots[index].timestamp_query_base = static_cast<std::uint32_t>(index * 8U);
+            slots[index].calibration_timestamp_query_base =
+                static_cast<std::uint32_t>(index * 12U);
+            slots[index].rcd_timestamp_query_base =
+                slots[index].calibration_timestamp_query_base + 2U;
+            slots[index].timestamp_query_base =
+                slots[index].calibration_timestamp_query_base + 4U;
             slots[index].sharpen_timestamp_query_base =
                 slots[index].timestamp_query_base + 2U;
             slots[index].di_timestamp_query_base =
@@ -565,7 +696,7 @@ public:
         timestamp_period_ns = properties.limits.timestampPeriod;
         VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
         info.queryType = VK_QUERY_TYPE_TIMESTAMP;
-        info.queryCount = static_cast<std::uint32_t>(slots.size() * 8U);
+        info.queryCount = static_cast<std::uint32_t>(slots.size() * 12U);
         require_frame_vulkan(vkCreateQueryPool(device, &info, allocator, &timestamp_query_pool),
                              "create direct-frame timestamp query pool");
         counters.gpu_timestamps_supported = true;
@@ -644,6 +775,113 @@ public:
         std::memcpy(mapped, values.data(), bytes);
         vkUnmapMemory(device, slot.input_buffers[plane].memory);
         counters.rgb_upload_bytes += bytes;
+    }
+
+    void upload_raw(Slot& slot, const RawMosaicU16& input) {
+        const auto bytes = frame_checked_bytes(input.pixels.size(), sizeof(std::uint16_t));
+        if (bytes != slot.raw_upload.size) {
+            throw Error(ErrorCode::invalid_argument,
+                        "RAW mosaic size changed during direct frame write");
+        }
+        void* mapped = nullptr;
+        require_frame_vulkan(vkMapMemory(device, slot.raw_upload.memory, 0,
+                                         slot.raw_upload.size, 0, &mapped),
+                             "map direct-frame U16 RAW input");
+        std::memcpy(mapped, input.pixels.data(), bytes);
+        vkUnmapMemory(device, slot.raw_upload.memory);
+        counters.u16_raw_upload_bytes += bytes;
+    }
+
+    void record_raw_chain(Slot& slot, const RawMosaicU16& input,
+                          const NormalizedCameraMetadata& metadata) {
+        CalibrationPushConstants calibration_push;
+        calibration_push.width = config.width;
+        calibration_push.height = config.height;
+        calibration_push.pixel_count = static_cast<std::uint32_t>(
+            static_cast<std::uint64_t>(config.width) * config.height);
+        for (std::size_t index = 0; index < 4U; ++index) {
+            calibration_push.black[index] = static_cast<float>(metadata.black_level[index]);
+            calibration_push.white[index] = static_cast<float>(metadata.white_level[index]);
+        }
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool,
+                                slot.calibration_timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          calibration_pipeline);
+        vkCmdBindDescriptorSets(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                calibration_pipeline_layout, 0, 1,
+                                &slot.calibration_descriptor, 0, nullptr);
+        vkCmdPushConstants(slot.command_buffer, calibration_pipeline_layout,
+                           VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                           sizeof(calibration_push), &calibration_push);
+        vkCmdDispatch(slot.command_buffer,
+                      (calibration_push.pixel_count + 255U) / 256U, 1, 1);
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool,
+                                slot.calibration_timestamp_query_base + 1U);
+        }
+        VkBufferMemoryBarrier calibration_ready{
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER};
+        calibration_ready.srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+        calibration_ready.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
+        calibration_ready.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        calibration_ready.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        calibration_ready.buffer = slot.calibrated_raw.buffer;
+        calibration_ready.size = VK_WHOLE_SIZE;
+        vkCmdPipelineBarrier(slot.command_buffer,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                             VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                             0, nullptr, 1, &calibration_ready, 0, nullptr);
+
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool, slot.rcd_timestamp_query_base);
+        }
+        vkCmdBindPipeline(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                          rcd_pipeline);
+        vkCmdBindDescriptorSets(slot.command_buffer, VK_PIPELINE_BIND_POINT_COMPUTE,
+                                rcd_pipeline_layout, 0, 1, &slot.rcd_descriptor,
+                                0, nullptr);
+        std::array<VkBufferMemoryBarrier, 8> rcd_barriers{};
+        for (std::size_t plane = 0; plane < 3U; ++plane) {
+            rcd_barriers[plane].sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER;
+            rcd_barriers[plane].srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT;
+            rcd_barriers[plane].dstAccessMask = VK_ACCESS_SHADER_READ_BIT |
+                                                VK_ACCESS_SHADER_WRITE_BIT;
+            rcd_barriers[plane].srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            rcd_barriers[plane].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+            rcd_barriers[plane].buffer = slot.raw_camera_rgb[plane].buffer;
+            rcd_barriers[plane].size = VK_WHOLE_SIZE;
+        }
+        for (std::size_t scratch = 0; scratch < 5U; ++scratch) {
+            auto& barrier = rcd_barriers[3U + scratch];
+            barrier = rcd_barriers[0];
+            barrier.buffer = slot.rcd_scratch[scratch].buffer;
+        }
+        RcdPushConstants rcd_push{config.width, config.height,
+                                  static_cast<std::uint32_t>(input.cfa), 0U};
+        for (std::uint32_t pass = 0; pass < 8U; ++pass) {
+            rcd_push.pass_index = pass;
+            vkCmdPushConstants(slot.command_buffer, rcd_pipeline_layout,
+                               VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                               sizeof(rcd_push), &rcd_push);
+            vkCmdDispatch(slot.command_buffer, (config.width + 15U) / 16U,
+                          (config.height + 15U) / 16U, 1);
+            vkCmdPipelineBarrier(slot.command_buffer,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                 VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0,
+                                 0, nullptr,
+                                 static_cast<std::uint32_t>(rcd_barriers.size()),
+                                 rcd_barriers.data(), 0, nullptr);
+        }
+        if (timestamp_query_pool != VK_NULL_HANDLE) {
+            vkCmdWriteTimestamp(slot.command_buffer, VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                                timestamp_query_pool,
+                                slot.rcd_timestamp_query_base + 1U);
+        }
     }
 
     void destroy_buffer(Buffer& buffer) noexcept {
@@ -789,6 +1027,26 @@ public:
                              counters.gpu_min_ms, counters.gpu_max_ms);
             counters.last_gpu_dispatch_ms = milliseconds;
             if (slot.camera_chain) {
+                if (slot.raw_chain) {
+                    append_timestamp(
+                        read_timestamp(slot.calibration_timestamp_query_base,
+                                       "read resident RAW calibration timestamps"),
+                        calibration_timestamp_ms,
+                        counters.raw_calibration_timestamp_samples,
+                        counters.raw_calibration_gpu_total_ms,
+                        counters.raw_calibration_gpu_mean_ms,
+                        counters.raw_calibration_gpu_min_ms,
+                        counters.raw_calibration_gpu_max_ms);
+                    append_timestamp(
+                        read_timestamp(slot.rcd_timestamp_query_base,
+                                       "read resident RCD timestamps"),
+                        rcd_timestamp_ms,
+                        counters.rcd_demosaic_timestamp_samples,
+                        counters.rcd_demosaic_gpu_total_ms,
+                        counters.rcd_demosaic_gpu_mean_ms,
+                        counters.rcd_demosaic_gpu_min_ms,
+                        counters.rcd_demosaic_gpu_max_ms);
+                }
                 append_timestamp(
                     read_timestamp(slot.timestamp_query_base,
                                    "read resident color timestamps"),
@@ -825,6 +1083,7 @@ public:
         }
         slot.in_flight = false;
         slot.camera_chain = false;
+        slot.raw_chain = false;
         if (counters.in_flight > 0U) --counters.in_flight;
         if (control_status != 0U) {
             ++counters.control_status_failures;
@@ -849,10 +1108,24 @@ public:
                                double input_scale,
                                double sharpening_amount,
                                double sharpening_threshold,
-                               NegativePolicy negative_policy) {
-        input.validate();
+                               NegativePolicy negative_policy,
+                               const RawMosaicU16* raw_input = nullptr,
+                               const NormalizedCameraMetadata* raw_metadata = nullptr) {
+        const bool raw_chain = raw_input != nullptr;
+        if (raw_chain) {
+            raw_input->validate();
+            if (raw_metadata == nullptr) {
+                throw Error(ErrorCode::invalid_argument,
+                            "resident RAW input requires normalized metadata");
+            }
+            raw_metadata->validate_for_raw();
+        } else {
+            input.validate();
+        }
         const bool camera_chain = camera_to_target != nullptr;
-        if (input.width != config.width || input.height != config.height ||
+        const auto input_width = raw_chain ? raw_input->width : input.width;
+        const auto input_height = raw_chain ? raw_input->height : input.height;
+        if (input_width != config.width || input_height != config.height ||
             metadata.width != static_cast<int>(config.width) ||
             metadata.height != static_cast<int>(config.height)) {
             throw Error(ErrorCode::invalid_argument,
@@ -869,11 +1142,22 @@ public:
                             "resident Camera RGB inputs must be finite and valid");
             }
         }
+        if (raw_chain && (!camera_chain || raw_metadata->width != config.width ||
+                          raw_metadata->height != config.height ||
+                          raw_metadata->cfa != raw_input->cfa ||
+                          config.width < 32U || config.height < 32U)) {
+            throw Error(ErrorCode::invalid_argument,
+                        "resident precise RCD input contract is invalid");
+        }
         auto& slot = slots[next_slot];
         next_slot = (next_slot + 1U) % slots.size();
         recycle_slot(slot, true);
-        for (std::size_t plane = 0; plane < 3; ++plane) {
-            upload(slot, plane, input.planes[plane]);
+        if (raw_chain) {
+            upload_raw(slot, *raw_input);
+        } else {
+            for (std::size_t plane = 0; plane < 3; ++plane) {
+                upload(slot, plane, input.planes[plane]);
+            }
         }
         const auto allocation_start = std::chrono::steady_clock::now();
         auto output = frames.allocate_frame(metadata);
@@ -937,12 +1221,15 @@ public:
             require_frame_vulkan(vkBeginCommandBuffer(slot.command_buffer, &begin),
                                  "begin direct-frame command buffer");
             if (timestamp_query_pool != VK_NULL_HANDLE) {
-                vkCmdResetQueryPool(slot.command_buffer, timestamp_query_pool,
-                                    camera_chain ? slot.timestamp_query_base
-                                                 : slot.yuv_timestamp_query_base,
-                                    camera_chain ? 8U : 2U);
+                vkCmdResetQueryPool(
+                    slot.command_buffer, timestamp_query_pool,
+                    raw_chain ? slot.calibration_timestamp_query_base
+                              : (camera_chain ? slot.timestamp_query_base
+                                              : slot.yuv_timestamp_query_base),
+                    raw_chain ? 12U : (camera_chain ? 8U : 2U));
             }
             if (camera_chain) {
+                if (raw_chain) record_raw_chain(slot, *raw_input, *raw_metadata);
                 vkCmdFillBuffer(slot.command_buffer,
                                 slot.control_status.buffer, 0,
                                 sizeof(std::uint32_t), 0U);
@@ -989,7 +1276,9 @@ public:
                 vkCmdBindDescriptorSets(slot.command_buffer,
                                         VK_PIPELINE_BIND_POINT_COMPUTE,
                                         color_pipeline_layout, 0, 1,
-                                        &slot.color_descriptor, 0, nullptr);
+                                        raw_chain ? &slot.raw_color_descriptor
+                                                  : &slot.color_descriptor,
+                                        0, nullptr);
                 vkCmdPushConstants(slot.command_buffer, color_pipeline_layout,
                                    VK_SHADER_STAGE_COMPUTE_BIT, 0,
                                    sizeof(color_push), &color_push);
@@ -1206,6 +1495,7 @@ public:
             require_frame_vulkan(submit_result, "submit direct-frame compute");
             submitted = true;
             slot.camera_chain = camera_chain;
+            slot.raw_chain = raw_chain;
             slot.in_flight = true;
             ++counters.in_flight;
             counters.max_in_flight = std::max(counters.max_in_flight,
@@ -1262,6 +1552,23 @@ public:
                          negative_policy);
     }
 
+    VulkanVideoFrame pack_raw_mosaic(
+        const RawMosaicU16& input,
+        const NormalizedCameraMetadata& metadata,
+        const Matrix3d& camera_to_target,
+        double exposure_offset_stops,
+        double sharpening_amount,
+        double sharpening_threshold,
+        NegativePolicy negative_policy,
+        std::size_t frame_index,
+        FrameMetadata frame_metadata) {
+        static const PlanarRgbF32 unused;
+        return pack_impl(unused, frame_index, frame_metadata, &camera_to_target,
+                         exposure_offset_stops, 1.0 / 65535.0,
+                         sharpening_amount, sharpening_threshold,
+                         negative_policy, &input, &metadata);
+    }
+
     void wait() {
         for (auto& slot : slots) recycle_slot(slot, false);
     }
@@ -1307,6 +1614,16 @@ public:
         if (di_pipeline_layout != VK_NULL_HANDLE) {
             vkDestroyPipelineLayout(device, di_pipeline_layout, allocator);
         }
+        if (calibration_pipeline != VK_NULL_HANDLE) {
+            vkDestroyPipeline(device, calibration_pipeline, allocator);
+        }
+        if (calibration_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, calibration_pipeline_layout, allocator);
+        }
+        if (rcd_pipeline != VK_NULL_HANDLE) vkDestroyPipeline(device, rcd_pipeline, allocator);
+        if (rcd_pipeline_layout != VK_NULL_HANDLE) {
+            vkDestroyPipelineLayout(device, rcd_pipeline_layout, allocator);
+        }
         if (descriptor_pool != VK_NULL_HANDLE) {
             vkDestroyDescriptorPool(device, descriptor_pool, allocator);
         }
@@ -1319,12 +1636,22 @@ public:
         if (di_descriptor_layout != VK_NULL_HANDLE) {
             vkDestroyDescriptorSetLayout(device, di_descriptor_layout, allocator);
         }
+        if (calibration_descriptor_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, calibration_descriptor_layout, allocator);
+        }
+        if (rcd_descriptor_layout != VK_NULL_HANDLE) {
+            vkDestroyDescriptorSetLayout(device, rcd_descriptor_layout, allocator);
+        }
         for (auto& slot : slots) {
             for (auto& buffer : slot.input_buffers) destroy_buffer(buffer);
             for (auto& set : slot.intermediate) {
                 for (auto& buffer : set) destroy_buffer(buffer);
             }
             destroy_buffer(slot.control_status);
+            destroy_buffer(slot.raw_upload);
+            destroy_buffer(slot.calibrated_raw);
+            for (auto& buffer : slot.raw_camera_rgb) destroy_buffer(buffer);
+            for (auto& buffer : slot.rcd_scratch) destroy_buffer(buffer);
         }
         destroy_buffer(di_lut);
     }
@@ -1344,6 +1671,8 @@ public:
     VkDescriptorSetLayout descriptor_layout{VK_NULL_HANDLE};
     VkDescriptorSetLayout camera_descriptor_layout{VK_NULL_HANDLE};
     VkDescriptorSetLayout di_descriptor_layout{VK_NULL_HANDLE};
+    VkDescriptorSetLayout calibration_descriptor_layout{VK_NULL_HANDLE};
+    VkDescriptorSetLayout rcd_descriptor_layout{VK_NULL_HANDLE};
     VkDescriptorPool descriptor_pool{VK_NULL_HANDLE};
     VkPipelineLayout pipeline_layout{VK_NULL_HANDLE};
     VkPipeline pipeline{VK_NULL_HANDLE};
@@ -1353,6 +1682,10 @@ public:
     VkPipeline sharpen_pipeline{VK_NULL_HANDLE};
     VkPipelineLayout di_pipeline_layout{VK_NULL_HANDLE};
     VkPipeline di_pipeline{VK_NULL_HANDLE};
+    VkPipelineLayout calibration_pipeline_layout{VK_NULL_HANDLE};
+    VkPipeline calibration_pipeline{VK_NULL_HANDLE};
+    VkPipelineLayout rcd_pipeline_layout{VK_NULL_HANDLE};
+    VkPipeline rcd_pipeline{VK_NULL_HANDLE};
     DaVinciIntermediateLut di_curve;
     Buffer di_lut;
     VkCommandPool command_pool{VK_NULL_HANDLE};
@@ -1363,6 +1696,8 @@ public:
     std::vector<double> color_timestamp_ms;
     std::vector<double> sharpen_timestamp_ms;
     std::vector<double> di_timestamp_ms;
+    std::vector<double> calibration_timestamp_ms;
+    std::vector<double> rcd_timestamp_ms;
     VulkanRgbToYuvFrameTelemetry counters;
 
     [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const {
@@ -1388,6 +1723,14 @@ public:
                              result.camera_to_dwg_gpu_p50_ms,
                              result.camera_to_dwg_gpu_p95_ms,
                              result.camera_to_dwg_gpu_p99_ms);
+        populate_percentiles(calibration_timestamp_ms,
+                             result.raw_calibration_gpu_p50_ms,
+                             result.raw_calibration_gpu_p95_ms,
+                             result.raw_calibration_gpu_p99_ms);
+        populate_percentiles(rcd_timestamp_ms,
+                             result.rcd_demosaic_gpu_p50_ms,
+                             result.rcd_demosaic_gpu_p95_ms,
+                             result.rcd_demosaic_gpu_p99_ms);
         populate_percentiles(sharpen_timestamp_ms,
                              result.capture_sharpening_gpu_p50_ms,
                              result.capture_sharpening_gpu_p95_ms,
@@ -1429,6 +1772,21 @@ VulkanVideoFrame VulkanRgbToYuvFrameWriter::pack_camera_rgb(
         input, camera_to_target, exposure_offset_stops, input_scale,
         sharpening_amount, sharpening_threshold, negative_policy,
         frame_index, metadata);
+}
+VulkanVideoFrame VulkanRgbToYuvFrameWriter::pack_raw_mosaic(
+    const RawMosaicU16& input,
+    const NormalizedCameraMetadata& metadata,
+    const Matrix3d& camera_to_target,
+    double exposure_offset_stops,
+    double sharpening_amount,
+    double sharpening_threshold,
+    NegativePolicy negative_policy,
+    std::size_t frame_index,
+    FrameMetadata frame_metadata) {
+    return impl_->pack_raw_mosaic(
+        input, metadata, camera_to_target, exposure_offset_stops,
+        sharpening_amount, sharpening_threshold, negative_policy,
+        frame_index, frame_metadata);
 }
 void VulkanRgbToYuvFrameWriter::wait() { impl_->wait(); }
 VulkanRgbToYuvFrameTelemetry VulkanRgbToYuvFrameWriter::telemetry() const {

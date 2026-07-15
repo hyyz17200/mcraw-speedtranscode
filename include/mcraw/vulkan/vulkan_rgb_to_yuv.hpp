@@ -5,6 +5,7 @@
 #include <memory>
 
 #include <mcraw/core/config.hpp>
+#include <mcraw/core/metadata.hpp>
 #include <mcraw/core/pixel_types.hpp>
 #include <mcraw/output/ffmpeg_vulkan_context.hpp>
 #include <mcraw/processing/color.hpp>
@@ -62,6 +63,7 @@ private:
 struct VulkanRgbToYuvFrameTelemetry {
     std::uint64_t dispatches{};
     std::uint64_t rgb_upload_bytes{};
+    std::uint64_t u16_raw_upload_bytes{};
     std::uint64_t output_frames{};
     std::uint64_t yuv_upload_frames{};
     std::uint64_t yuv_readback_frames{};
@@ -105,6 +107,22 @@ struct VulkanRgbToYuvFrameTelemetry {
     double davinci_intermediate_gpu_p99_ms{};
     double davinci_intermediate_gpu_min_ms{};
     double davinci_intermediate_gpu_max_ms{};
+    std::uint64_t raw_calibration_timestamp_samples{};
+    double raw_calibration_gpu_total_ms{};
+    double raw_calibration_gpu_mean_ms{};
+    double raw_calibration_gpu_p50_ms{};
+    double raw_calibration_gpu_p95_ms{};
+    double raw_calibration_gpu_p99_ms{};
+    double raw_calibration_gpu_min_ms{};
+    double raw_calibration_gpu_max_ms{};
+    std::uint64_t rcd_demosaic_timestamp_samples{};
+    double rcd_demosaic_gpu_total_ms{};
+    double rcd_demosaic_gpu_mean_ms{};
+    double rcd_demosaic_gpu_p50_ms{};
+    double rcd_demosaic_gpu_p95_ms{};
+    double rcd_demosaic_gpu_p99_ms{};
+    double rcd_demosaic_gpu_min_ms{};
+    double rcd_demosaic_gpu_max_ms{};
     std::uint64_t control_status_read_bytes{};
     std::uint64_t control_status_failures{};
     std::uint64_t frame_allocation_samples{};
@@ -147,6 +165,16 @@ public:
         NegativePolicy negative_policy,
         std::size_t frame_index,
         FrameMetadata metadata);
+    [[nodiscard]] VulkanVideoFrame pack_raw_mosaic(
+        const RawMosaicU16& input,
+        const NormalizedCameraMetadata& metadata,
+        const Matrix3d& camera_to_target,
+        double exposure_offset_stops,
+        double sharpening_amount,
+        double sharpening_threshold,
+        NegativePolicy negative_policy,
+        std::size_t frame_index,
+        FrameMetadata frame_metadata);
     void wait();
     [[nodiscard]] VulkanRgbToYuvFrameTelemetry telemetry() const;
 

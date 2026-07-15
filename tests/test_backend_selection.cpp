@@ -2,6 +2,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <string>
 #include <string_view>
 
 #include <mcraw/core/config.hpp>
@@ -42,6 +43,24 @@ TEST_CASE("automatic selection uses Vulkan only when the complete backend is rea
 
     CHECK(selection.backend == mcraw::VideoBackend::vulkan);
     CHECK_FALSE(selection.used_fallback);
+}
+
+TEST_CASE("Vulkan RAW backend rejects unsupported demosaic before output") {
+    mcraw::EffectiveConfig config;
+    config.backend = mcraw::VideoBackend::automatic;
+    config.demosaic = mcraw::DemosaicAlgorithm::amaze;
+    mcraw::BackendCapabilities capabilities;
+    capabilities.vulkan_compiled = true;
+    capabilities.vulkan_backend_available = true;
+    capabilities.prores_ks_vulkan_available = true;
+
+    const auto selection = mcraw::select_backend(config, capabilities);
+    CHECK(selection.backend == mcraw::VideoBackend::cpu);
+    CHECK(selection.used_fallback);
+    CHECK(selection.reason.find("only precise RCD") != std::string::npos);
+
+    config.backend = mcraw::VideoBackend::vulkan;
+    CHECK_THROWS_AS(mcraw::select_backend(config, capabilities), mcraw::Error);
 }
 
 TEST_CASE("GPU backend configuration is serialized without changing CPU defaults") {

@@ -125,7 +125,24 @@ BackendSelection select_backend(const EffectiveConfig& config,
     }
     if (capabilities.vulkan_compiled && capabilities.vulkan_backend_available &&
         capabilities.prores_ks_vulkan_available) {
-        return {VideoBackend::vulkan, false, "Vulkan ProRes backend is available"};
+        if (config.demosaic == DemosaicAlgorithm::rcd) {
+            return {VideoBackend::vulkan, false, "Vulkan ProRes backend is available"};
+        }
+        const auto reason = "the Vulkan RAW pipeline supports only precise RCD demosaic; requested " +
+            std::string(to_string(config.demosaic));
+        if (config.backend == VideoBackend::vulkan) {
+            throw Error(ErrorCode::unsupported_format, reason);
+        }
+        if (config.fallback == GpuFallback::none) {
+            throw Error(ErrorCode::unsupported_format,
+                        "automatic backend selection cannot fall back to CPU: " + reason);
+        }
+        if (!capabilities.cpu_available) {
+            throw Error(ErrorCode::encode_failed,
+                        "the Vulkan RAW pipeline cannot honor the requested demosaic and the CPU fallback is unavailable: " +
+                            reason);
+        }
+        return {VideoBackend::cpu, true, reason};
     }
     const auto reason = capabilities.vulkan_unavailable_reason.empty()
         ? std::string("Vulkan ProRes backend is unavailable")

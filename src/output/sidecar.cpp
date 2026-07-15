@@ -167,6 +167,26 @@ void write_sidecar(const std::filesystem::path& path,
                 {"driver", pipeline.gpu_driver},
                 {"timestamps_supported", pipeline.gpu_timestamps_supported},
                 {"stages", {
+                    {"raw_calibration", {
+                        {"samples", pipeline.raw_calibration_gpu_timestamp_samples},
+                        {"total_ms", pipeline.raw_calibration_gpu_total_ms},
+                        {"mean_ms", pipeline.raw_calibration_gpu_mean_ms},
+                        {"p50_ms", pipeline.raw_calibration_gpu_p50_ms},
+                        {"p95_ms", pipeline.raw_calibration_gpu_p95_ms},
+                        {"p99_ms", pipeline.raw_calibration_gpu_p99_ms},
+                        {"min_ms", pipeline.raw_calibration_gpu_min_ms},
+                        {"max_ms", pipeline.raw_calibration_gpu_max_ms}
+                    }},
+                    {"rcd_demosaic", {
+                        {"samples", pipeline.rcd_demosaic_gpu_timestamp_samples},
+                        {"total_ms", pipeline.rcd_demosaic_gpu_total_ms},
+                        {"mean_ms", pipeline.rcd_demosaic_gpu_mean_ms},
+                        {"p50_ms", pipeline.rcd_demosaic_gpu_p50_ms},
+                        {"p95_ms", pipeline.rcd_demosaic_gpu_p95_ms},
+                        {"p99_ms", pipeline.rcd_demosaic_gpu_p99_ms},
+                        {"min_ms", pipeline.rcd_demosaic_gpu_min_ms},
+                        {"max_ms", pipeline.rcd_demosaic_gpu_max_ms}
+                    }},
                     {"camera_to_dwg", {
                         {"samples", pipeline.camera_to_dwg_gpu_timestamp_samples},
                         {"total_ms", pipeline.camera_to_dwg_gpu_total_ms},

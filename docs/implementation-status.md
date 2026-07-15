@@ -228,3 +228,19 @@ Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 ben
 - 技术合约以 max/RMSE/P99/outlier count 联合约束该离群行为；最终 YUV `≤1 LSB` 不放宽，
   若 Stage 2D/E 不能满足则 production 保持 Stage 1。详细报告见
   `GPU_STAGE2C_RCD_VALIDATION.md`。
+
+## 2026-07-15 GPU Stage 2D resident RAW production chain
+
+- production Vulkan input 已从 CPU Camera RGB 改为 decoded U16 CFA + normalized
+  metadata；calibration、8-pass precise RCD 与 Stage 1 color/sharpen/DI/YUV 在同一
+  resident command buffer 中串联，直接交付 FFmpeg AVVkFrame。
+- 每个 slot 独占 U16 upload、calibrated CFA、3 个 Camera RGB plane 与 5 个 RCD
+  scratch plane；生产接口不暴露 calibrated/RGB readback。
+- 遥测现在标识 `raw_mosaic_u16` / `gpu_rcd_precise`，精确统计 U16 上传，并新增
+  `raw_calibration`、`rcd_demosaic` GPU timestamp；测试确认 FP32 RGB upload 与
+  YUV readback 均为 0。
+- Vulkan production 仅接受 precise RCD：auto 对其他 demosaic 在创建输出前回退
+  CPU，forced Vulkan 明确拒绝，禁止逐帧静默切换。
+- validation-layer RAW E2E 33 assertions、backend selection 4 assertions、Release
+  CTest 71/71 全通过（6 个既有 real-sample opt-in tests skipped）。详细结果见
+  `GPU_STAGE2D_RESIDENT_CHAIN_VALIDATION.md`。

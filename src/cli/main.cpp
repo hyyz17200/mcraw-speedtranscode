@@ -696,7 +696,7 @@ int command_convert(const Arguments& args) {
         "v0.1 BT.2020 NCL packing matrix and left chroma siting remain provisional until Resolve chart validation"
     };
     if (backend.used_fallback) {
-        warnings.emplace_back("Vulkan backend unavailable; using CPU fallback: " + backend.reason);
+        warnings.emplace_back("Vulkan pipeline not selected; using CPU fallback: " + backend.reason);
     }
     mcraw::AudioInfo audio;
     if (config.preserve_audio) audio = reader.load_audio();
@@ -744,7 +744,7 @@ int command_convert(const Arguments& args) {
     mcraw::StageTimings timings;
     const bool direct_vulkan_pipeline = backend.backend == mcraw::VideoBackend::vulkan;
     mcraw::CpuPipeline pipeline(config, execution.threads_per_frame,
-        direct_vulkan_pipeline ? mcraw::CpuPipelineOutput::camera_rgb
+        direct_vulkan_pipeline ? mcraw::CpuPipelineOutput::raw_mosaic
                                : mcraw::CpuPipelineOutput::packed_yuv);
     auto first_solution = mcraw::build_camera_color_solution(first_metadata);
     const auto sync_report = av_sync_report(audio_chunks, audio.sample_rate, audio.channels,
@@ -784,8 +784,9 @@ int command_convert(const Arguments& args) {
                 // encode itself, which overlaps with frame compute.
                 mcraw::StageTimer timer(timings, "prores_submit_wait");
                 if (direct_vulkan_pipeline) {
-                    mcraw::VulkanCameraRgbInput input;
-                    input.image = std::move(processed.camera_rgb);
+                    mcraw::VulkanRawMosaicInput input;
+                    input.image = std::move(processed.raw_mosaic);
+                    input.metadata = std::move(processed.metadata);
                     input.camera_to_target = processed.color_solution.camera_to_target;
                     input.exposure_offset_stops = config.exposure_offset_stops;
                     input.capture_sharpening = config.capture_sharpening;
@@ -908,6 +909,38 @@ int command_convert(const Arguments& args) {
         writer_telemetry.davinci_intermediate_gpu_min_ms;
     pipeline_report.davinci_intermediate_gpu_max_ms =
         writer_telemetry.davinci_intermediate_gpu_max_ms;
+    pipeline_report.raw_calibration_gpu_timestamp_samples =
+        writer_telemetry.raw_calibration_gpu_timestamp_samples;
+    pipeline_report.raw_calibration_gpu_total_ms =
+        writer_telemetry.raw_calibration_gpu_total_ms;
+    pipeline_report.raw_calibration_gpu_mean_ms =
+        writer_telemetry.raw_calibration_gpu_mean_ms;
+    pipeline_report.raw_calibration_gpu_p50_ms =
+        writer_telemetry.raw_calibration_gpu_p50_ms;
+    pipeline_report.raw_calibration_gpu_p95_ms =
+        writer_telemetry.raw_calibration_gpu_p95_ms;
+    pipeline_report.raw_calibration_gpu_p99_ms =
+        writer_telemetry.raw_calibration_gpu_p99_ms;
+    pipeline_report.raw_calibration_gpu_min_ms =
+        writer_telemetry.raw_calibration_gpu_min_ms;
+    pipeline_report.raw_calibration_gpu_max_ms =
+        writer_telemetry.raw_calibration_gpu_max_ms;
+    pipeline_report.rcd_demosaic_gpu_timestamp_samples =
+        writer_telemetry.rcd_demosaic_gpu_timestamp_samples;
+    pipeline_report.rcd_demosaic_gpu_total_ms =
+        writer_telemetry.rcd_demosaic_gpu_total_ms;
+    pipeline_report.rcd_demosaic_gpu_mean_ms =
+        writer_telemetry.rcd_demosaic_gpu_mean_ms;
+    pipeline_report.rcd_demosaic_gpu_p50_ms =
+        writer_telemetry.rcd_demosaic_gpu_p50_ms;
+    pipeline_report.rcd_demosaic_gpu_p95_ms =
+        writer_telemetry.rcd_demosaic_gpu_p95_ms;
+    pipeline_report.rcd_demosaic_gpu_p99_ms =
+        writer_telemetry.rcd_demosaic_gpu_p99_ms;
+    pipeline_report.rcd_demosaic_gpu_min_ms =
+        writer_telemetry.rcd_demosaic_gpu_min_ms;
+    pipeline_report.rcd_demosaic_gpu_max_ms =
+        writer_telemetry.rcd_demosaic_gpu_max_ms;
     pipeline_report.control_status_read_bytes =
         writer_telemetry.control_status_read_bytes;
     pipeline_report.control_status_failures =
@@ -1022,6 +1055,26 @@ int command_convert(const Arguments& args) {
                                     {"gpu_timestamps_supported", pipeline_report.gpu_timestamps_supported},
                                     {"control_status_failures", pipeline_report.control_status_failures},
                                     {"gpu_stages", {
+                                        {"raw_calibration", {
+                                            {"samples", pipeline_report.raw_calibration_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.raw_calibration_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.raw_calibration_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.raw_calibration_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.raw_calibration_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.raw_calibration_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.raw_calibration_gpu_min_ms},
+                                            {"max_ms", pipeline_report.raw_calibration_gpu_max_ms}
+                                        }},
+                                        {"rcd_demosaic", {
+                                            {"samples", pipeline_report.rcd_demosaic_gpu_timestamp_samples},
+                                            {"total_ms", pipeline_report.rcd_demosaic_gpu_total_ms},
+                                            {"mean_ms", pipeline_report.rcd_demosaic_gpu_mean_ms},
+                                            {"p50_ms", pipeline_report.rcd_demosaic_gpu_p50_ms},
+                                            {"p95_ms", pipeline_report.rcd_demosaic_gpu_p95_ms},
+                                            {"p99_ms", pipeline_report.rcd_demosaic_gpu_p99_ms},
+                                            {"min_ms", pipeline_report.rcd_demosaic_gpu_min_ms},
+                                            {"max_ms", pipeline_report.rcd_demosaic_gpu_max_ms}
+                                        }},
                                         {"camera_to_dwg", {
                                             {"samples", pipeline_report.camera_to_dwg_gpu_timestamp_samples},
                                             {"total_ms", pipeline_report.camera_to_dwg_gpu_total_ms},

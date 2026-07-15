@@ -364,6 +364,37 @@ public:
                     "Camera RGB video input requires the Vulkan backend");
     }
 
+    void write_video(VulkanRawMosaicInput input,
+                     [[maybe_unused]] std::int64_t timestamp_ns,
+                     [[maybe_unused]] std::size_t frame_index) {
+        if (finished) throw Error(ErrorCode::encode_failed, "cannot write video after finish");
+        rethrow_pipeline_error();
+        input.image.validate();
+        input.metadata.validate_for_raw();
+        if (input.image.width != input.metadata.width ||
+            input.image.height != input.metadata.height ||
+            input.image.cfa != input.metadata.cfa ||
+            !std::isfinite(input.exposure_offset_stops) ||
+            !std::isfinite(input.capture_sharpening) || input.capture_sharpening < 0.0 ||
+            !std::isfinite(input.capture_sharpening_threshold) ||
+            input.capture_sharpening_threshold < 0.0 ||
+            !std::all_of(input.camera_to_target.v.begin(),
+                         input.camera_to_target.v.end(),
+                         [](double value) { return std::isfinite(value); })) {
+            throw Error(ErrorCode::invalid_argument,
+                        "U16 RAW Vulkan parameters must be finite and valid");
+        }
+        record_pipeline_entry("raw_mosaic_u16");
+#if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
+        if (video_backend == VideoBackend::vulkan) {
+            enqueue_vulkan_video(std::move(input), timestamp_ns, frame_index);
+            return;
+        }
+#endif
+        throw Error(ErrorCode::invalid_argument,
+                    "U16 RAW video input requires the Vulkan backend");
+    }
+
     void write_audio(const AudioChunk& chunk) {
         if (audio_codec == nullptr) return;
         if (finished) throw Error(ErrorCode::encode_failed, "cannot write audio after finish");
@@ -460,6 +491,10 @@ public:
             result.pipeline_precision = "fp32/precise";
             result.demosaic_location = "cpu";
             result.color_solution_location = "cpu_fp64";
+        } else if (pipeline_entry == "raw_mosaic_u16") {
+            result.pipeline_precision = "fp32/precise";
+            result.demosaic_location = "gpu_rcd_precise";
+            result.color_solution_location = "cpu_fp64";
         } else if (pipeline_entry == "yuv422p10_cpu" ||
                    pipeline_entry == "yuv422p10_cpu_upload") {
             result.pipeline_precision = "cpu_reference";
@@ -478,6 +513,7 @@ public:
             if (vulkan_frame_writer) {
                 const auto frame_counters = vulkan_frame_writer->telemetry();
                 result.rgb_upload_bytes = frame_counters.rgb_upload_bytes;
+                result.u16_raw_upload_bytes = frame_counters.u16_raw_upload_bytes;
                 result.fp32_rgb_upload_bytes = frame_counters.rgb_upload_bytes;
                 if (pipeline_entry == "target_log_f32") {
                     result.target_log_fp32_upload_bytes =
@@ -582,6 +618,38 @@ public:
                     frame_counters.davinci_intermediate_gpu_min_ms;
                 result.davinci_intermediate_gpu_max_ms =
                     frame_counters.davinci_intermediate_gpu_max_ms;
+                result.raw_calibration_gpu_timestamp_samples =
+                    frame_counters.raw_calibration_timestamp_samples;
+                result.raw_calibration_gpu_total_ms =
+                    frame_counters.raw_calibration_gpu_total_ms;
+                result.raw_calibration_gpu_mean_ms =
+                    frame_counters.raw_calibration_gpu_mean_ms;
+                result.raw_calibration_gpu_p50_ms =
+                    frame_counters.raw_calibration_gpu_p50_ms;
+                result.raw_calibration_gpu_p95_ms =
+                    frame_counters.raw_calibration_gpu_p95_ms;
+                result.raw_calibration_gpu_p99_ms =
+                    frame_counters.raw_calibration_gpu_p99_ms;
+                result.raw_calibration_gpu_min_ms =
+                    frame_counters.raw_calibration_gpu_min_ms;
+                result.raw_calibration_gpu_max_ms =
+                    frame_counters.raw_calibration_gpu_max_ms;
+                result.rcd_demosaic_gpu_timestamp_samples =
+                    frame_counters.rcd_demosaic_timestamp_samples;
+                result.rcd_demosaic_gpu_total_ms =
+                    frame_counters.rcd_demosaic_gpu_total_ms;
+                result.rcd_demosaic_gpu_mean_ms =
+                    frame_counters.rcd_demosaic_gpu_mean_ms;
+                result.rcd_demosaic_gpu_p50_ms =
+                    frame_counters.rcd_demosaic_gpu_p50_ms;
+                result.rcd_demosaic_gpu_p95_ms =
+                    frame_counters.rcd_demosaic_gpu_p95_ms;
+                result.rcd_demosaic_gpu_p99_ms =
+                    frame_counters.rcd_demosaic_gpu_p99_ms;
+                result.rcd_demosaic_gpu_min_ms =
+                    frame_counters.rcd_demosaic_gpu_min_ms;
+                result.rcd_demosaic_gpu_max_ms =
+                    frame_counters.rcd_demosaic_gpu_max_ms;
                 result.control_status_read_bytes =
                     frame_counters.control_status_read_bytes;
                 result.control_status_failures =
@@ -655,7 +723,7 @@ private:
 
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
     using VulkanInput = std::variant<Yuv422P10, TargetLogRgbF32,
-                                     VulkanCameraRgbInput>;
+                                     VulkanCameraRgbInput, VulkanRawMosaicInput>;
 
     struct VulkanJob {
         VulkanInput input;
@@ -688,13 +756,20 @@ private:
         enqueue_vulkan_job({std::move(input), timestamp_ns, frame_index});
     }
 
+    void enqueue_vulkan_video(VulkanRawMosaicInput input,
+                              std::int64_t timestamp_ns,
+                              std::size_t frame_index) {
+        enqueue_vulkan_job({std::move(input), timestamp_ns, frame_index});
+    }
+
     void enqueue_vulkan_job(VulkanJob job) {
         if (!vulkan_frames || !vulkan_encoder || !vulkan_frame_writer) {
             throw Error(ErrorCode::encode_failed, "Vulkan video pipeline is not initialized");
         }
         const auto dimensions_match = std::visit([this](const auto& input) {
             using Input = std::decay_t<decltype(input)>;
-            if constexpr (std::is_same_v<Input, VulkanCameraRgbInput>) {
+            if constexpr (std::is_same_v<Input, VulkanCameraRgbInput> ||
+                          std::is_same_v<Input, VulkanRawMosaicInput>) {
                 return input.image.width ==
                            static_cast<std::uint32_t>(vulkan_frames->width()) &&
                        input.image.height ==
@@ -785,6 +860,18 @@ private:
                 camera->capture_sharpening,
                 camera->capture_sharpening_threshold,
                 camera->negative_policy, job.frame_index, metadata);
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - pack_start).count(),
+                               vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
+                               vulkan_frame_pack_mean_ms, vulkan_frame_pack_max_ms);
+            return {std::move(frame), metadata.pts, metadata.duration};
+        } else if (auto* raw = std::get_if<VulkanRawMosaicInput>(&job.input)) {
+            const auto pack_start = std::chrono::steady_clock::now();
+            auto frame = vulkan_frame_writer->pack_raw_mosaic(
+                raw->image, raw->metadata, raw->camera_to_target,
+                raw->exposure_offset_stops, raw->capture_sharpening,
+                raw->capture_sharpening_threshold, raw->negative_policy,
+                job.frame_index, metadata);
             record_wall_sample(std::chrono::duration<double, std::milli>(
                                    std::chrono::steady_clock::now() - pack_start).count(),
                                vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
@@ -1295,6 +1382,11 @@ void FfmpegWriter::write_video(TargetLogRgbF32 frame,
     impl_->write_video(std::move(frame), timestamp_ns, frame_index);
 }
 void FfmpegWriter::write_video(VulkanCameraRgbInput frame,
+                               std::int64_t timestamp_ns,
+                               std::size_t frame_index) {
+    impl_->write_video(std::move(frame), timestamp_ns, frame_index);
+}
+void FfmpegWriter::write_video(VulkanRawMosaicInput frame,
                                std::int64_t timestamp_ns,
                                std::size_t frame_index) {
     impl_->write_video(std::move(frame), timestamp_ns, frame_index);

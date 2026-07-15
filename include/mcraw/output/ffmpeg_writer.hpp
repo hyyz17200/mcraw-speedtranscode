@@ -86,6 +86,22 @@ struct FfmpegWriterTelemetry {
     double davinci_intermediate_gpu_p99_ms{};
     double davinci_intermediate_gpu_min_ms{};
     double davinci_intermediate_gpu_max_ms{};
+    std::uint64_t raw_calibration_gpu_timestamp_samples{};
+    double raw_calibration_gpu_total_ms{};
+    double raw_calibration_gpu_mean_ms{};
+    double raw_calibration_gpu_p50_ms{};
+    double raw_calibration_gpu_p95_ms{};
+    double raw_calibration_gpu_p99_ms{};
+    double raw_calibration_gpu_min_ms{};
+    double raw_calibration_gpu_max_ms{};
+    std::uint64_t rcd_demosaic_gpu_timestamp_samples{};
+    double rcd_demosaic_gpu_total_ms{};
+    double rcd_demosaic_gpu_mean_ms{};
+    double rcd_demosaic_gpu_p50_ms{};
+    double rcd_demosaic_gpu_p95_ms{};
+    double rcd_demosaic_gpu_p99_ms{};
+    double rcd_demosaic_gpu_min_ms{};
+    double rcd_demosaic_gpu_max_ms{};
     std::uint64_t control_status_read_bytes{};
     std::uint64_t control_status_failures{};
     std::string gpu_name;
@@ -154,8 +170,7 @@ struct VulkanCameraRgbInput {
 // from being confused with a generic byte upload.
 struct VulkanRawMosaicInput {
     RawMosaicU16 image;
-    std::array<double, 4> black_level{};
-    std::array<double, 4> white_level{};
+    NormalizedCameraMetadata metadata;
     Matrix3d camera_to_target;
     double exposure_offset_stops{};
     double capture_sharpening{};
@@ -184,6 +199,9 @@ public:
                      std::int64_t timestamp_ns,
                      std::size_t frame_index);
     void write_video(VulkanCameraRgbInput frame,
+                     std::int64_t timestamp_ns,
+                     std::size_t frame_index);
+    void write_video(VulkanRawMosaicInput frame,
                      std::int64_t timestamp_ns,
                      std::size_t frame_index);
     void write_audio(const AudioChunk& chunk);

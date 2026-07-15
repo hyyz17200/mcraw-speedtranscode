@@ -66,6 +66,32 @@ mcraw::TargetLogRgbF32 test_rgb_frame(std::uint32_t width,
     return frame;
 }
 
+mcraw::VulkanRawMosaicInput test_raw_frame(std::uint32_t width,
+                                           std::uint32_t height,
+                                           int frame_index) {
+    mcraw::VulkanRawMosaicInput input;
+    input.image = {width, height, mcraw::CfaPattern::rggb, {}};
+    input.image.pixels.resize(static_cast<std::size_t>(width) * height);
+    for (std::uint32_t y = 0; y < height; ++y) {
+        for (std::uint32_t x = 0; x < width; ++x) {
+            const auto gradient = static_cast<std::uint16_t>(
+                256U + ((x * 31U + y * 17U + static_cast<std::uint32_t>(frame_index) * 13U) %
+                         3000U));
+            input.image.pixels[static_cast<std::size_t>(y) * width + x] = gradient;
+        }
+    }
+    input.metadata.width = width;
+    input.metadata.height = height;
+    input.metadata.cfa = input.image.cfa;
+    input.metadata.black_level = {64.0, 64.0, 64.0, 64.0};
+    input.metadata.white_level = {4095.0, 4095.0, 4095.0, 4095.0};
+    input.metadata.compression_type = 7;
+    input.camera_to_target = mcraw::Matrix3d::identity();
+    input.capture_sharpening = 0.4;
+    input.capture_sharpening_threshold = 0.002;
+    return input;
+}
+
 int decode_video_frames(const std::filesystem::path& path) {
     AVFormatContext* input = nullptr;
     const auto path_string = path.string();
@@ -323,6 +349,45 @@ TEST_CASE("Vulkan Camera RGB resident chain writes a decodable MOV") {
     CHECK(telemetry.queue_submit_samples == 1U);
     mcraw::validate_prores_mov(output.path, 1);
     CHECK(decode_video_frames(output.path) == 1);
+}
+
+TEST_CASE("Vulkan U16 RAW resident chain writes a decodable MOV") {
+    constexpr std::uint32_t width = 64;
+    constexpr std::uint32_t height = 32;
+    constexpr std::size_t frame_count = 3;
+    const auto unique = std::chrono::steady_clock::now().time_since_epoch().count();
+    TemporaryMov output{std::filesystem::temp_directory_path() /
+                        ("mcraw-vulkan-raw-stage2d-" + std::to_string(unique) + ".mov")};
+    mcraw::FfmpegWriter writer(output.path, width, height, 1'000'000'000LL, 0, 0,
+                               {}, {mcraw::VideoBackend::vulkan, "auto", 4, false});
+    for (std::size_t index = 0; index < frame_count; ++index) {
+        writer.write_video(test_raw_frame(width, height, static_cast<int>(index)),
+                           1'000'000'000LL + static_cast<std::int64_t>(index) * 33'333'333LL,
+                           index);
+    }
+    writer.finish();
+    const auto telemetry = writer.telemetry();
+    CHECK(telemetry.pipeline_entry == "raw_mosaic_u16");
+    CHECK(telemetry.pipeline_precision == "fp32/precise");
+    CHECK(telemetry.demosaic_location == "gpu_rcd_precise");
+    CHECK(telemetry.color_solution_location == "cpu_fp64");
+    CHECK(telemetry.u16_raw_upload_bytes ==
+          static_cast<std::uint64_t>(width) * height * sizeof(std::uint16_t) * frame_count);
+    CHECK(telemetry.rgb_upload_bytes == 0U);
+    CHECK(telemetry.fp32_rgb_upload_bytes == 0U);
+    CHECK(telemetry.camera_rgb_fp32_upload_bytes == 0U);
+    CHECK(telemetry.target_log_fp32_upload_bytes == 0U);
+    CHECK(telemetry.readback_frames == 0U);
+    CHECK(telemetry.raw_calibration_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.rcd_demosaic_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.camera_to_dwg_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.capture_sharpening_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.davinci_intermediate_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.rgb_to_yuv_gpu_timestamp_samples == frame_count);
+    CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t) * frame_count);
+    CHECK(telemetry.control_status_failures == 0U);
+    mcraw::validate_prores_mov(output.path, frame_count);
+    CHECK(decode_video_frames(output.path) == static_cast<int>(frame_count));
 }
 
 TEST_CASE("Vulkan Camera RGB resident policy failure reaches the caller") {
