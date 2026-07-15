@@ -21,6 +21,13 @@
   fell from 0.907 to 0.497 ms.
 - See `GPU_STAGE3C_ANALYTIC_DI_VALIDATION.md`.
 
+## GPU Stage 3D dither decision
+
+- Disabling deterministic dither reduced isolated YUV time but improved median
+  end-to-end throughput by only 0.063%, inside run noise.
+- The experiment is NO-GO; every shipped performance mode retains deterministic
+  dither. See `GPU_STAGE3D_DITHER_EXPERIMENT.md`.
+
 ## 已实现源码边界
 
 - CMake/vcpkg/MSVC 2022 构建骨架
