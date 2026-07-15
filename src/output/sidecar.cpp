@@ -102,7 +102,57 @@ void write_sidecar(const std::filesystem::path& path,
                 {"packet_capacity", pipeline.packet_queue_capacity},
                 {"packet_max_depth", pipeline.packet_queue_max_depth},
                 {"backpressure_waits", pipeline.backpressure_waits},
-                {"backpressure_wait_ms", pipeline.backpressure_wait_ms}
+                {"backpressure_wait_ms", pipeline.backpressure_wait_ms},
+                {"job_backpressure_waits", pipeline.job_queue_backpressure_waits},
+                {"job_backpressure_wait_ms", pipeline.job_queue_backpressure_wait_ms},
+                {"packet_backpressure_waits", pipeline.packet_queue_backpressure_waits},
+                {"packet_backpressure_wait_ms", pipeline.packet_queue_backpressure_wait_ms},
+                {"slot_backpressure_waits", pipeline.slot_backpressure_waits},
+                {"slot_backpressure_wait_ms", pipeline.slot_backpressure_wait_ms},
+                {"job_latency", {
+                    {"samples", pipeline.job_queue_latency_samples},
+                    {"total_ms", pipeline.job_queue_latency_total_ms},
+                    {"mean_ms", pipeline.job_queue_latency_mean_ms},
+                    {"max_ms", pipeline.job_queue_latency_max_ms}
+                }}
+            }},
+            {"scheduling", {
+                {"frame_pack", {
+                    {"samples", pipeline.frame_pack_samples},
+                    {"total_ms", pipeline.frame_pack_total_ms},
+                    {"mean_ms", pipeline.frame_pack_mean_ms},
+                    {"max_ms", pipeline.frame_pack_max_ms}
+                }},
+                {"encoder_send", {
+                    {"samples", pipeline.encoder_send_samples},
+                    {"total_ms", pipeline.encoder_send_total_ms},
+                    {"mean_ms", pipeline.encoder_send_mean_ms},
+                    {"max_ms", pipeline.encoder_send_max_ms}
+                }},
+                {"encoder_receive", {
+                    {"samples", pipeline.encoder_receive_samples},
+                    {"total_ms", pipeline.encoder_receive_total_ms},
+                    {"mean_ms", pipeline.encoder_receive_mean_ms},
+                    {"max_ms", pipeline.encoder_receive_max_ms}
+                }},
+                {"frame_allocation", {
+                    {"samples", pipeline.frame_allocation_samples},
+                    {"total_ms", pipeline.frame_allocation_total_ms},
+                    {"mean_ms", pipeline.frame_allocation_mean_ms},
+                    {"max_ms", pipeline.frame_allocation_max_ms}
+                }},
+                {"queue_lock_wait", {
+                    {"samples", pipeline.queue_lock_wait_samples},
+                    {"total_ms", pipeline.queue_lock_wait_total_ms},
+                    {"mean_ms", pipeline.queue_lock_wait_mean_ms},
+                    {"max_ms", pipeline.queue_lock_wait_max_ms}
+                }},
+                {"queue_submit", {
+                    {"samples", pipeline.queue_submit_samples},
+                    {"total_ms", pipeline.queue_submit_total_ms},
+                    {"mean_ms", pipeline.queue_submit_mean_ms},
+                    {"max_ms", pipeline.queue_submit_max_ms}
+                }}
             }},
             {"mux", {
                 {"bytes", pipeline.mux_bytes},

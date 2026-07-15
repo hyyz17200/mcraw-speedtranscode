@@ -880,7 +880,16 @@ public:
         for (std::size_t plane = 0; plane < 3; ++plane) {
             upload(slot, plane, input.planes[plane]);
         }
+        const auto allocation_start = std::chrono::steady_clock::now();
         auto output = frames.allocate_frame(metadata);
+        const auto allocation_ms = std::chrono::duration<double, std::milli>(
+            std::chrono::steady_clock::now() - allocation_start).count();
+        ++counters.frame_allocation_samples;
+        counters.frame_allocation_total_ms += allocation_ms;
+        counters.frame_allocation_mean_ms = counters.frame_allocation_total_ms /
+            static_cast<double>(counters.frame_allocation_samples);
+        counters.frame_allocation_max_ms = std::max(
+            counters.frame_allocation_max_ms, allocation_ms);
         auto* frame = reinterpret_cast<AVVkFrame*>(output.frame->data[0]);
         auto* hw_frames = reinterpret_cast<AVHWFramesContext*>(
             output.frame->hw_frames_ctx->data);
@@ -1177,9 +1186,28 @@ public:
             slot.submitted_at = std::chrono::steady_clock::now();
             // VkQueue is externally synchronized. Use the FFmpeg device's
             // queue mutex so its encoder submissions cannot race this one.
+            const auto queue_lock_start = std::chrono::steady_clock::now();
             lock_ffmpeg_queue(*vulkan_device, hw_device, queue_family);
+            const auto queue_locked_at = std::chrono::steady_clock::now();
             const auto submit_result = vkQueueSubmit(queue, 1, &submit, slot.fence);
             unlock_ffmpeg_queue(*vulkan_device, hw_device, queue_family);
+            const auto queue_submitted_at = std::chrono::steady_clock::now();
+            const auto queue_lock_wait_ms = std::chrono::duration<double, std::milli>(
+                queue_locked_at - queue_lock_start).count();
+            ++counters.queue_lock_wait_samples;
+            counters.queue_lock_wait_total_ms += queue_lock_wait_ms;
+            counters.queue_lock_wait_mean_ms = counters.queue_lock_wait_total_ms /
+                static_cast<double>(counters.queue_lock_wait_samples);
+            counters.queue_lock_wait_max_ms = std::max(
+                counters.queue_lock_wait_max_ms, queue_lock_wait_ms);
+            const auto queue_submit_ms = std::chrono::duration<double, std::milli>(
+                queue_submitted_at - queue_locked_at).count();
+            ++counters.queue_submit_samples;
+            counters.queue_submit_total_ms += queue_submit_ms;
+            counters.queue_submit_mean_ms = counters.queue_submit_total_ms /
+                static_cast<double>(counters.queue_submit_samples);
+            counters.queue_submit_max_ms = std::max(
+                counters.queue_submit_max_ms, queue_submit_ms);
             require_frame_vulkan(submit_result, "submit direct-frame compute");
             submitted = true;
             slot.camera_chain = camera_chain;

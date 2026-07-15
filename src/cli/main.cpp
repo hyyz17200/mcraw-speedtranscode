@@ -912,6 +912,58 @@ int command_convert(const Arguments& args) {
         writer_telemetry.control_status_read_bytes;
     pipeline_report.control_status_failures =
         writer_telemetry.control_status_failures;
+    pipeline_report.job_queue_backpressure_waits =
+        writer_telemetry.job_queue_backpressure_waits;
+    pipeline_report.job_queue_backpressure_wait_ms =
+        writer_telemetry.job_queue_backpressure_wait_ms;
+    pipeline_report.packet_queue_backpressure_waits =
+        writer_telemetry.packet_queue_backpressure_waits;
+    pipeline_report.packet_queue_backpressure_wait_ms =
+        writer_telemetry.packet_queue_backpressure_wait_ms;
+    pipeline_report.slot_backpressure_waits =
+        writer_telemetry.slot_backpressure_waits;
+    pipeline_report.slot_backpressure_wait_ms =
+        writer_telemetry.slot_backpressure_wait_ms;
+    pipeline_report.job_queue_latency_samples =
+        writer_telemetry.job_queue_latency_samples;
+    pipeline_report.job_queue_latency_total_ms =
+        writer_telemetry.job_queue_latency_total_ms;
+    pipeline_report.job_queue_latency_mean_ms =
+        writer_telemetry.job_queue_latency_mean_ms;
+    pipeline_report.job_queue_latency_max_ms =
+        writer_telemetry.job_queue_latency_max_ms;
+    pipeline_report.frame_pack_samples = writer_telemetry.frame_pack_samples;
+    pipeline_report.frame_pack_total_ms = writer_telemetry.frame_pack_total_ms;
+    pipeline_report.frame_pack_mean_ms = writer_telemetry.frame_pack_mean_ms;
+    pipeline_report.frame_pack_max_ms = writer_telemetry.frame_pack_max_ms;
+    pipeline_report.encoder_send_samples = writer_telemetry.encoder_send_samples;
+    pipeline_report.encoder_send_total_ms = writer_telemetry.encoder_send_total_ms;
+    pipeline_report.encoder_send_mean_ms = writer_telemetry.encoder_send_mean_ms;
+    pipeline_report.encoder_send_max_ms = writer_telemetry.encoder_send_max_ms;
+    pipeline_report.encoder_receive_samples = writer_telemetry.encoder_receive_samples;
+    pipeline_report.encoder_receive_total_ms = writer_telemetry.encoder_receive_total_ms;
+    pipeline_report.encoder_receive_mean_ms = writer_telemetry.encoder_receive_mean_ms;
+    pipeline_report.encoder_receive_max_ms = writer_telemetry.encoder_receive_max_ms;
+    pipeline_report.frame_allocation_samples =
+        writer_telemetry.frame_allocation_samples;
+    pipeline_report.frame_allocation_total_ms =
+        writer_telemetry.frame_allocation_total_ms;
+    pipeline_report.frame_allocation_mean_ms =
+        writer_telemetry.frame_allocation_mean_ms;
+    pipeline_report.frame_allocation_max_ms =
+        writer_telemetry.frame_allocation_max_ms;
+    pipeline_report.queue_lock_wait_samples =
+        writer_telemetry.queue_lock_wait_samples;
+    pipeline_report.queue_lock_wait_total_ms =
+        writer_telemetry.queue_lock_wait_total_ms;
+    pipeline_report.queue_lock_wait_mean_ms =
+        writer_telemetry.queue_lock_wait_mean_ms;
+    pipeline_report.queue_lock_wait_max_ms =
+        writer_telemetry.queue_lock_wait_max_ms;
+    pipeline_report.queue_submit_samples = writer_telemetry.queue_submit_samples;
+    pipeline_report.queue_submit_total_ms = writer_telemetry.queue_submit_total_ms;
+    pipeline_report.queue_submit_mean_ms = writer_telemetry.queue_submit_mean_ms;
+    pipeline_report.queue_submit_max_ms = writer_telemetry.queue_submit_max_ms;
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
@@ -949,6 +1001,14 @@ int command_convert(const Arguments& args) {
                                     {"gpu_queue_max_depth", pipeline_report.gpu_queue_max_depth},
                                     {"packet_queue_max_depth", pipeline_report.packet_queue_max_depth},
                                     {"backpressure_waits", pipeline_report.backpressure_waits},
+                                    {"backpressure_wait_ms", pipeline_report.backpressure_wait_ms},
+                                    {"job_queue_backpressure_waits", pipeline_report.job_queue_backpressure_waits},
+                                    {"job_queue_backpressure_wait_ms", pipeline_report.job_queue_backpressure_wait_ms},
+                                    {"slot_backpressure_waits", pipeline_report.slot_backpressure_waits},
+                                    {"slot_backpressure_wait_ms", pipeline_report.slot_backpressure_wait_ms},
+                                    {"frame_pack_mean_ms", pipeline_report.frame_pack_mean_ms},
+                                    {"encoder_send_mean_ms", pipeline_report.encoder_send_mean_ms},
+                                    {"encoder_receive_mean_ms", pipeline_report.encoder_receive_mean_ms},
                                     {"mux_megabytes_per_second", pipeline_report.mux_megabytes_per_second},
                                     {"gpu_name", pipeline_report.gpu_name},
                                     {"gpu_uuid", pipeline_report.gpu_uuid},

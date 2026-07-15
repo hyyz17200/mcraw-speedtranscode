@@ -107,6 +107,18 @@ struct VulkanRgbToYuvFrameTelemetry {
     double davinci_intermediate_gpu_max_ms{};
     std::uint64_t control_status_read_bytes{};
     std::uint64_t control_status_failures{};
+    std::uint64_t frame_allocation_samples{};
+    double frame_allocation_total_ms{};
+    double frame_allocation_mean_ms{};
+    double frame_allocation_max_ms{};
+    std::uint64_t queue_lock_wait_samples{};
+    double queue_lock_wait_total_ms{};
+    double queue_lock_wait_mean_ms{};
+    double queue_lock_wait_max_ms{};
+    std::uint64_t queue_submit_samples{};
+    double queue_submit_total_ms{};
+    double queue_submit_mean_ms{};
+    double queue_submit_max_ms{};
 };
 
 class VulkanRgbToYuvFrameWriter {

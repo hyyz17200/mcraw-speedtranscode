@@ -243,6 +243,24 @@ TEST_CASE("Bounded Vulkan RGB pipeline writes a GPU-resident decodable MOV") {
     CHECK(telemetry.rgb_to_yuv_gpu_total_ms > 0.0);
     CHECK(telemetry.rgb_to_yuv_gpu_mean_ms > 0.0);
     CHECK(telemetry.rgb_to_yuv_gpu_p95_ms > 0.0);
+    CHECK(telemetry.job_queue_latency_samples == frame_count);
+    CHECK(telemetry.job_queue_latency_mean_ms >= 0.0);
+    CHECK(telemetry.frame_pack_samples == frame_count);
+    CHECK(telemetry.frame_pack_mean_ms >= 0.0);
+    CHECK(telemetry.encoder_send_samples == frame_count);
+    CHECK(telemetry.encoder_send_mean_ms >= 0.0);
+    CHECK(telemetry.encoder_receive_samples == frame_count);
+    CHECK(telemetry.encoder_receive_mean_ms >= 0.0);
+    CHECK(telemetry.frame_allocation_samples == frame_count);
+    CHECK(telemetry.frame_allocation_mean_ms >= 0.0);
+    CHECK(telemetry.queue_lock_wait_samples == frame_count);
+    CHECK(telemetry.queue_lock_wait_mean_ms >= 0.0);
+    CHECK(telemetry.queue_submit_samples == frame_count);
+    CHECK(telemetry.queue_submit_mean_ms >= 0.0);
+    CHECK(telemetry.backpressure_waits ==
+          telemetry.job_queue_backpressure_waits +
+              telemetry.packet_queue_backpressure_waits +
+              telemetry.slot_backpressure_waits);
     mcraw::validate_prores_mov(output.path, frame_count);
     CHECK(decode_video_frames(output.path) == frame_count);
 }
@@ -288,6 +306,13 @@ TEST_CASE("Vulkan Camera RGB resident chain writes a decodable MOV") {
     CHECK(telemetry.rgb_to_yuv_gpu_timestamp_samples == 1U);
     CHECK(telemetry.control_status_read_bytes == sizeof(std::uint32_t));
     CHECK(telemetry.control_status_failures == 0U);
+    CHECK(telemetry.job_queue_latency_samples == 1U);
+    CHECK(telemetry.frame_pack_samples == 1U);
+    CHECK(telemetry.encoder_send_samples == 1U);
+    CHECK(telemetry.encoder_receive_samples == 1U);
+    CHECK(telemetry.frame_allocation_samples == 1U);
+    CHECK(telemetry.queue_lock_wait_samples == 1U);
+    CHECK(telemetry.queue_submit_samples == 1U);
     mcraw::validate_prores_mov(output.path, 1);
     CHECK(decode_video_frames(output.path) == 1);
 }

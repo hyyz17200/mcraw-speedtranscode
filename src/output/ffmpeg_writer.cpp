@@ -477,10 +477,42 @@ public:
                     result.camera_rgb_fp32_upload_bytes =
                         frame_counters.rgb_upload_bytes;
                 }
-                result.backpressure_waits = frame_counters.backpressure_waits +
-                                            vulkan_backpressure_waits;
-                result.backpressure_wait_ms = frame_counters.backpressure_wait_ms +
-                                               vulkan_backpressure_wait_ms;
+                result.job_queue_backpressure_waits =
+                    vulkan_job_backpressure_waits;
+                result.job_queue_backpressure_wait_ms =
+                    vulkan_job_backpressure_wait_ms;
+                result.packet_queue_backpressure_waits =
+                    vulkan_packet_backpressure_waits;
+                result.packet_queue_backpressure_wait_ms =
+                    vulkan_packet_backpressure_wait_ms;
+                result.slot_backpressure_waits = frame_counters.backpressure_waits;
+                result.slot_backpressure_wait_ms = frame_counters.backpressure_wait_ms;
+                result.backpressure_waits = result.job_queue_backpressure_waits +
+                    result.packet_queue_backpressure_waits +
+                    result.slot_backpressure_waits;
+                result.backpressure_wait_ms = result.job_queue_backpressure_wait_ms +
+                    result.packet_queue_backpressure_wait_ms +
+                    result.slot_backpressure_wait_ms;
+                result.frame_allocation_samples =
+                    frame_counters.frame_allocation_samples;
+                result.frame_allocation_total_ms =
+                    frame_counters.frame_allocation_total_ms;
+                result.frame_allocation_mean_ms =
+                    frame_counters.frame_allocation_mean_ms;
+                result.frame_allocation_max_ms =
+                    frame_counters.frame_allocation_max_ms;
+                result.queue_lock_wait_samples =
+                    frame_counters.queue_lock_wait_samples;
+                result.queue_lock_wait_total_ms =
+                    frame_counters.queue_lock_wait_total_ms;
+                result.queue_lock_wait_mean_ms =
+                    frame_counters.queue_lock_wait_mean_ms;
+                result.queue_lock_wait_max_ms =
+                    frame_counters.queue_lock_wait_max_ms;
+                result.queue_submit_samples = frame_counters.queue_submit_samples;
+                result.queue_submit_total_ms = frame_counters.queue_submit_total_ms;
+                result.queue_submit_mean_ms = frame_counters.queue_submit_mean_ms;
+                result.queue_submit_max_ms = frame_counters.queue_submit_max_ms;
                 result.gpu_timestamps_supported =
                     frame_counters.gpu_timestamps_supported;
                 result.rgb_to_yuv_gpu_timestamp_samples =
@@ -549,6 +581,22 @@ public:
             result.gpu_queue_max_depth = vulkan_job_max_depth;
             result.packet_queue_capacity = vulkan_packet_capacity;
             result.packet_queue_max_depth = vulkan_packet_max_depth;
+            result.job_queue_latency_samples = vulkan_job_queue_latency_samples;
+            result.job_queue_latency_total_ms = vulkan_job_queue_latency_total_ms;
+            result.job_queue_latency_mean_ms = vulkan_job_queue_latency_mean_ms;
+            result.job_queue_latency_max_ms = vulkan_job_queue_latency_max_ms;
+            result.frame_pack_samples = vulkan_frame_pack_samples;
+            result.frame_pack_total_ms = vulkan_frame_pack_total_ms;
+            result.frame_pack_mean_ms = vulkan_frame_pack_mean_ms;
+            result.frame_pack_max_ms = vulkan_frame_pack_max_ms;
+            result.encoder_send_samples = vulkan_encoder_send_samples;
+            result.encoder_send_total_ms = vulkan_encoder_send_total_ms;
+            result.encoder_send_mean_ms = vulkan_encoder_send_mean_ms;
+            result.encoder_send_max_ms = vulkan_encoder_send_max_ms;
+            result.encoder_receive_samples = vulkan_encoder_receive_samples;
+            result.encoder_receive_total_ms = vulkan_encoder_receive_total_ms;
+            result.encoder_receive_mean_ms = vulkan_encoder_receive_mean_ms;
+            result.encoder_receive_max_ms = vulkan_encoder_receive_max_ms;
             result.mux_bytes = vulkan_mux_bytes;
             result.compressed_packet_download_bytes = vulkan_mux_bytes;
             if (vulkan_mux_wall_ms > 0.0) {
@@ -576,6 +624,17 @@ private:
         }
     }
 
+    static void record_wall_sample(double milliseconds,
+                                   std::uint64_t& samples,
+                                   double& total,
+                                   double& mean,
+                                   double& maximum) {
+        ++samples;
+        total += milliseconds;
+        mean = total / static_cast<double>(samples);
+        maximum = std::max(maximum, milliseconds);
+    }
+
     struct EncodeJob {
         std::uint64_t sequence{};
         AVFrame* frame{};
@@ -590,6 +649,7 @@ private:
         VulkanInput input;
         std::int64_t timestamp_ns{};
         std::size_t frame_index{};
+        std::chrono::steady_clock::time_point queued_at{};
     };
 
     void enqueue_vulkan_video(Yuv422P10 input,
@@ -640,8 +700,8 @@ private:
                    vulkan_jobs.size() < vulkan_job_capacity;
         });
         if (full) {
-            ++vulkan_backpressure_waits;
-            vulkan_backpressure_wait_ms += std::chrono::duration<double, std::milli>(
+            ++vulkan_job_backpressure_waits;
+            vulkan_job_backpressure_wait_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - wait_start).count();
         }
         if (vulkan_failed || vulkan_abort) {
@@ -649,6 +709,7 @@ private:
             rethrow_vulkan_error();
             throw Error(ErrorCode::encode_failed, "Vulkan pipeline was cancelled");
         }
+        job.queued_at = std::chrono::steady_clock::now();
         vulkan_jobs.push_back(std::move(job));
         vulkan_job_max_depth = std::max(vulkan_job_max_depth, vulkan_jobs.size());
         lock.unlock();
@@ -689,23 +750,57 @@ private:
             attach_vector_plane(frame.get(), 0, std::move(yuv->y), yuv->width);
             attach_vector_plane(frame.get(), 1, std::move(yuv->cb), yuv->width / 2U);
             attach_vector_plane(frame.get(), 2, std::move(yuv->cr), yuv->width / 2U);
+            const auto send_start = std::chrono::steady_clock::now();
             vulkan_encoder->send(CpuVideoFrame{metadata, AV_PIX_FMT_YUV422P10LE,
                                                std::move(frame)});
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - send_start).count(),
+                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
+                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
         } else if (auto* rgb = std::get_if<TargetLogRgbF32>(&job.input)) {
-            vulkan_encoder->send(vulkan_frame_writer->pack(
-                *rgb, job.frame_index, metadata));
+            const auto pack_start = std::chrono::steady_clock::now();
+            auto frame = vulkan_frame_writer->pack(*rgb, job.frame_index, metadata);
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - pack_start).count(),
+                               vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
+                               vulkan_frame_pack_mean_ms, vulkan_frame_pack_max_ms);
+            const auto send_start = std::chrono::steady_clock::now();
+            vulkan_encoder->send(std::move(frame));
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - send_start).count(),
+                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
+                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
         } else if (auto* camera = std::get_if<VulkanCameraRgbInput>(&job.input)) {
-            vulkan_encoder->send(vulkan_frame_writer->pack_camera_rgb(
+            const auto pack_start = std::chrono::steady_clock::now();
+            auto frame = vulkan_frame_writer->pack_camera_rgb(
                 camera->image, camera->camera_to_target,
                 camera->exposure_offset_stops, camera->input_scale,
                 camera->capture_sharpening,
                 camera->capture_sharpening_threshold,
-                camera->negative_policy, job.frame_index, metadata));
+                camera->negative_policy, job.frame_index, metadata);
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - pack_start).count(),
+                               vulkan_frame_pack_samples, vulkan_frame_pack_total_ms,
+                               vulkan_frame_pack_mean_ms, vulkan_frame_pack_max_ms);
+            const auto send_start = std::chrono::steady_clock::now();
+            vulkan_encoder->send(std::move(frame));
+            record_wall_sample(std::chrono::duration<double, std::milli>(
+                                   std::chrono::steady_clock::now() - send_start).count(),
+                               vulkan_encoder_send_samples, vulkan_encoder_send_total_ms,
+                               vulkan_encoder_send_mean_ms, vulkan_encoder_send_max_ms);
         } else {
             throw Error(ErrorCode::unsupported_format,
                         "unsupported Vulkan writer input variant");
         }
-        enqueue_vulkan_packets(vulkan_encoder->drain());
+        const auto receive_start = std::chrono::steady_clock::now();
+        auto packets = vulkan_encoder->drain();
+        record_wall_sample(std::chrono::duration<double, std::milli>(
+                               std::chrono::steady_clock::now() - receive_start).count(),
+                           vulkan_encoder_receive_samples,
+                           vulkan_encoder_receive_total_ms,
+                           vulkan_encoder_receive_mean_ms,
+                           vulkan_encoder_receive_max_ms);
+        enqueue_vulkan_packets(std::move(packets));
     }
 
     void prepare_vulkan_packets(std::vector<EncodedPacket>& packets) {
@@ -733,8 +828,8 @@ private:
                    vulkan_packets.size() < vulkan_packet_capacity;
         });
         if (full) {
-            ++vulkan_backpressure_waits;
-            vulkan_backpressure_wait_ms += std::chrono::duration<double, std::milli>(
+            ++vulkan_packet_backpressure_waits;
+            vulkan_packet_backpressure_wait_ms += std::chrono::duration<double, std::milli>(
                 std::chrono::steady_clock::now() - wait_start).count();
         }
         if (vulkan_failed || vulkan_abort) return;
@@ -801,6 +896,12 @@ private:
                     vulkan_jobs.pop_front();
                 }
                 vulkan_job_space_cv.notify_all();
+                record_wall_sample(std::chrono::duration<double, std::milli>(
+                                       std::chrono::steady_clock::now() - job.queued_at).count(),
+                                   vulkan_job_queue_latency_samples,
+                                   vulkan_job_queue_latency_total_ms,
+                                   vulkan_job_queue_latency_mean_ms,
+                                   vulkan_job_queue_latency_max_ms);
                 process_vulkan_job(std::move(job));
             }
             enqueue_vulkan_packets(vulkan_encoder->flush());
@@ -1062,8 +1163,26 @@ private:
     std::size_t vulkan_job_max_depth{};
     std::size_t vulkan_packet_capacity{8};
     std::size_t vulkan_packet_max_depth{};
-    std::uint64_t vulkan_backpressure_waits{};
-    double vulkan_backpressure_wait_ms{};
+    std::uint64_t vulkan_job_backpressure_waits{};
+    double vulkan_job_backpressure_wait_ms{};
+    std::uint64_t vulkan_packet_backpressure_waits{};
+    double vulkan_packet_backpressure_wait_ms{};
+    std::uint64_t vulkan_job_queue_latency_samples{};
+    double vulkan_job_queue_latency_total_ms{};
+    double vulkan_job_queue_latency_mean_ms{};
+    double vulkan_job_queue_latency_max_ms{};
+    std::uint64_t vulkan_frame_pack_samples{};
+    double vulkan_frame_pack_total_ms{};
+    double vulkan_frame_pack_mean_ms{};
+    double vulkan_frame_pack_max_ms{};
+    std::uint64_t vulkan_encoder_send_samples{};
+    double vulkan_encoder_send_total_ms{};
+    double vulkan_encoder_send_mean_ms{};
+    double vulkan_encoder_send_max_ms{};
+    std::uint64_t vulkan_encoder_receive_samples{};
+    double vulkan_encoder_receive_total_ms{};
+    double vulkan_encoder_receive_mean_ms{};
+    double vulkan_encoder_receive_max_ms{};
     std::uint64_t vulkan_mux_bytes{};
     double vulkan_mux_wall_ms{};
     bool vulkan_stop{};
