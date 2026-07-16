@@ -49,9 +49,10 @@ decodes and allocates an unused full RAW frame.
 
 The two locally available real samples are both compression 7. Their existing
 Stage 0 corpus remains the compression 7 golden source. No real compression 6
-sample is currently present in `mcraw_sample`; compression 6 first/middle/last
-payload and official U16 hashes remain an explicit prerequisite for declaring
-the compression 6 corpus gate complete.
+sample is present in `mcraw_sample`. Per the 2026-07-16 project decision, the
+compression 6 material-level validation gate is explicitly waived. Runtime
+policy remains to attempt the official legacy decoder and emit a console warning
+that compression 6 has not been validated against a real project corpus.
 
 The upgrade was checked against the previous `release/0.2` decoder at the
 first/middle/last frames of both local samples. All six U16 SHA-256 values are

@@ -22,10 +22,24 @@ the conditional performance gate is not met. E-E's compression 6 fast decoder
 is also a no-go without a real legacy corpus. No M1-M5 or ISA implementation was
 started.
 
-## Remaining blocker
+## Compression 6 decision and waiver
 
-The workspace contains two real MCRAW files and both report compression 7. The
-guide requires a real compression 6 corpus before E-F can pass:
+The workspace contains two real MCRAW files and both report compression 7. On
+2026-07-16 the project explicitly waived the missing compression 6 corpus rather
+than waiting for external footage. This is a test-coverage waiver only:
+
+- runtime must continue trying the pinned official legacy decoder when metadata
+  reports compression 6;
+- the console must emit a clear warning that compression 6 has not been tested
+  with a real project corpus and therefore does not carry compression 7's
+  validation guarantee;
+- the software and documentation must not claim compression 6 is bit-exact,
+  safe-input, capacity, or production-validated by this project;
+- this decision does not modify the upstream decoder or the project decoder
+  implementation. This documentation change intentionally contains no code
+  change.
+
+The waived validation would otherwise have required:
 
 - first/middle/last compressed payload hash and metadata;
 - official U16 SHA-256 goldens;
@@ -33,11 +47,10 @@ guide requires a real compression 6 corpus before E-F can pass:
 - truncated/corrupt legacy payload and invalid header/offset/width tests;
 - decoder-only, `loadFrame`, and full-pipeline capacity measurements.
 
-The upstream legacy decoder is pinned and compiled, but those runtime claims
-cannot be inferred from compression 7 or from a synthetic format substitute.
-Batch E is complete for compression 7 and structurally ready for compression 6;
-the all-format completion checkbox remains open until a genuine compression 6
-sample is supplied.
+The upstream legacy decoder is pinned and compiled, but runtime behavior for
+compression 6 remains unverified by this project. Batch E is therefore complete
+with an explicit compression 6 validation waiver; it must not be reported as
+full compression 6 production validation.
 
 The GPU pipeline boundary is frozen at U16 RAW upload. The open corpus gate does
 not reopen GPU MCRAW decoder work.
