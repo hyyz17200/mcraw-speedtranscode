@@ -14,6 +14,7 @@
         "CMAKE_CXX_STANDARD": "20",
         "CMAKE_CXX_STANDARD_REQUIRED": "ON",
         "MCRAW_BUILD_TESTS": "ON",
+        "CMAKE_TOOLCHAIN_FILE": "${sourceDir}/.deps/vcpkg/scripts/buildsystems/vcpkg.cmake",
         "VCPKG_OVERLAY_PORTS": "${sourceDir}/cmake/vcpkg-ports"
       }
     },
