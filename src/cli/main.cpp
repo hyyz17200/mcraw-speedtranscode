@@ -708,9 +708,7 @@ int command_convert(const Arguments& args) {
     if (frame_limit == 0U) throw Error(ErrorCode::invalid_argument, "conversion selected zero frames");
     const auto execution = resolve_execution_plan(config, frame_limit);
 
-    std::vector<std::string> warnings{
-        "v0.1 BT.2020 NCL packing matrix and left chroma siting remain provisional until Resolve chart validation"
-    };
+    std::vector<std::string> warnings;
     if (backend.used_fallback) {
         warnings.emplace_back("Vulkan pipeline not selected; using CPU fallback: " + backend.reason);
     }

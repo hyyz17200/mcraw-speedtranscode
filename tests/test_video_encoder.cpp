@@ -39,6 +39,7 @@ mcraw::VideoFrame make_neutral_frame(int width, int height, std::int64_t pts) {
     metadata.time_base = {1, 90'000};
     metadata.range = AVCOL_RANGE_MPEG;
     metadata.matrix = AVCOL_SPC_BT2020_NCL;
+    metadata.chroma_location = AVCHROMA_LOC_LEFT;
     return mcraw::CpuVideoFrame{metadata, AV_PIX_FMT_YUV422P10LE, std::move(frame)};
 }
 

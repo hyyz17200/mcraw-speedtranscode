@@ -194,7 +194,7 @@ nlohmann::json config_to_json(const EffectiveConfig& config) {
         {"packing", {
             {"pixel_format", "yuv422p10le"},
             {"range", "video"},
-            {"matrix", "bt2020_ncl_provisional"},
+            {"matrix", "bt2020_ncl"},
             {"chroma_siting", "left"}
         }}
     };

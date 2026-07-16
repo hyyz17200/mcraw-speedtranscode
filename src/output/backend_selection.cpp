@@ -82,7 +82,7 @@ BackendCapabilities probe_backend_capabilities(std::string_view gpu_selector,
         FrameMetadata metadata{smoke_width, smoke_height, 0, 3'000, {1, 90'000},
                                AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED,
                                AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG,
-                               AVCHROMA_LOC_UNSPECIFIED};
+                               AVCHROMA_LOC_LEFT};
         smoke_encoder.send(smoke_writer.pack(neutral, 0, metadata));
         auto packets = smoke_encoder.drain();
         auto tail = smoke_encoder.flush();

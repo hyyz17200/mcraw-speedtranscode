@@ -35,6 +35,7 @@ public:
         context->colorspace = AVCOL_SPC_BT2020_NCL;
         context->color_primaries = AVCOL_PRI_UNSPECIFIED;
         context->color_trc = AVCOL_TRC_UNSPECIFIED;
+        context->chroma_sample_location = AVCHROMA_LOC_LEFT;
         context->thread_count = std::max(config.threads, 0);
         context->thread_type = FF_THREAD_SLICE;
         require_ffmpeg(av_opt_set(context->priv_data, "profile", config.profile.c_str(), 0),

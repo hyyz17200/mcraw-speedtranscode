@@ -12,7 +12,7 @@
 | 006 Demosaic ABI | 高质量 demosaic 通过明确 enum/函数边界调用 librtprocess | RCD 默认；AMaZE/IGV/DCB/LMMSE 可替换；不附加独立 FCS |
 | 007 Log | 解析公式是真值；生产路径由公式生成每转换实例 LUT | v0.1 只冻结 DaVinci Intermediate；最终 10-bit 输出与参考最大差异 1 LSB |
 | 008 ProRes | 使用 FFmpeg libavcodec/libavformat `prores_ks` | 不实现 ProRes 码流；输入为 yuv422p10le |
-| 009 Packing | video range、BT.2020 NCL、left siting、quality 5-tap | primaries/TRC 标 unspecified；Resolve 实测后再冻结产品默认 |
+| 009 Packing | video range、BT.2020 NCL、left siting、quality 5-tap | CPU/Vulkan frame 与 encoder context 均标 left；MOV 读回不保留 chroma location；primaries/TRC 标 unspecified，DWG/DI 身份由 sidecar 明示 |
 | 010 Timing | 默认保留逐帧源时间关系 | 以纳秒源时钟为事实来源，转换到 90 kHz MOV video time base |
 | 011 Negative values | 默认 `preserve_by_curve` | DI linear toe 保留负值；只在 YUV 量化边界裁剪 |
 | 012 Determinism | CPU FP32 pixels、FP64 setup/reference、确定性 dither | 默认禁用隐藏近似；每阶段独立计时 |

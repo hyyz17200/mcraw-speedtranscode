@@ -57,6 +57,7 @@ void write_sidecar(const std::filesystem::path& path,
             {"matrix", "bt2020_ncl"},
             {"primaries", "unspecified"},
             {"transfer", "unspecified"},
+            {"chroma_siting", "left"},
             {"manual_input_color_space", "DaVinci Wide Gamut / DaVinci Intermediate"}
         }},
         {"timings", timings.to_json()},

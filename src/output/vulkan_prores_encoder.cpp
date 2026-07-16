@@ -63,6 +63,7 @@ public:
         context->colorspace = AVCOL_SPC_BT2020_NCL;
         context->color_primaries = AVCOL_PRI_UNSPECIFIED;
         context->color_trc = AVCOL_TRC_UNSPECIFIED;
+        context->chroma_sample_location = AVCHROMA_LOC_LEFT;
         auto frames_reference = frames.reference_frames_context();
         context->hw_frames_ctx = frames_reference.release();
 

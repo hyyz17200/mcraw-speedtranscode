@@ -205,6 +205,7 @@ public:
             context->colorspace = AVCOL_SPC_BT2020_NCL;
             context->color_primaries = AVCOL_PRI_UNSPECIFIED;
             context->color_trc = AVCOL_TRC_UNSPECIFIED;
+            context->chroma_sample_location = AVCHROMA_LOC_LEFT;
             context->thread_count = std::max(concurrency.threads_per_context, 0);
             // Slice threading only: frame threading would delay packets by
             // thread_count-1 frames, breaking the one-packet-per-send contract
@@ -312,6 +313,7 @@ public:
         frame->colorspace = front->colorspace;
         frame->color_primaries = front->color_primaries;
         frame->color_trc = front->color_trc;
+        frame->chroma_location = front->chroma_sample_location;
         try {
             attach_vector_plane(frame, 0, std::move(input.y), input.width);
             attach_vector_plane(frame, 1, std::move(input.cb), input.width / 2U);
@@ -868,7 +870,7 @@ private:
         return {vulkan_frames->width(), vulkan_frames->height(), pts, duration, time_base,
                 AVCOL_PRI_UNSPECIFIED, AVCOL_TRC_UNSPECIFIED,
                 AVCOL_SPC_BT2020_NCL, AVCOL_RANGE_MPEG,
-                AVCHROMA_LOC_UNSPECIFIED};
+                AVCHROMA_LOC_LEFT};
     }
 
     VulkanPreparedJob prepare_vulkan_job(VulkanJob job) {
@@ -884,6 +886,7 @@ private:
             frame->colorspace = metadata.matrix;
             frame->color_primaries = metadata.primaries;
             frame->color_trc = metadata.transfer;
+            frame->chroma_location = metadata.chroma_location;
             attach_vector_plane(frame.get(), 0, std::move(yuv->y), yuv->width);
             attach_vector_plane(frame.get(), 1, std::move(yuv->cb), yuv->width / 2U);
             attach_vector_plane(frame.get(), 2, std::move(yuv->cr), yuv->width / 2U);
