@@ -360,7 +360,7 @@ int command_list_capabilities() {
         {"demosaic", {"rcd", "amaze", "igv", "dcb", "lmmse"}},
         {"optional_processing", {"capture_sharpening"}},
         {"color_profiles", {"DaVinciIntermediate_DWG"}},
-        {"packing", {"ProRes422HQ", "yuv422p10le", "video_range", "bt2020_ncl_provisional"}},
+        {"packing", {"ProRes422HQ", "yuv422p10le", "video_range", "bt2020_ncl", "chroma_left"}},
         {"ffmpeg", {
             {"enabled", static_cast<bool>(MCRAW_HAS_FFMPEG)},
             {"version", capabilities.ffmpeg_version},

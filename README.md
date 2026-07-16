@@ -43,7 +43,7 @@ shader 直接写 FFmpeg-owned frame pool，再交给 `prores_ks_vulkan`，不上
 
 依赖在配置时锁定并获取：
 
-- MotionCam decoder commit `06bf1a8`（`release/0.2`）
+- MotionCam decoder commit `2c49edb17277c07989ff90bd3a3bf557c2f68b4a`
 - librtprocess `0.12.0`
 - Catch2 `v3.15.0`
 - FFmpeg `8.1.2`（由固定 vcpkg baseline 解析）
@@ -158,15 +158,15 @@ fallback 和耗时写在 `output.mov.json`。
 ## 当前边界
 
 - 只实现首个 DWG/DaVinci Intermediate profile。
-- ProRes packing matrix 与 chroma siting 仍需通过 Resolve chart 实测冻结；sidecar
-  明确标记当前策略。
+- ProRes packing 冻结为 BT.2020 NCL 系数、video range 和 left-sited 4:2:2；
+  primaries/TRC 因无 DWG/DI 标准 MOV 枚举而保持 unspecified，sidecar 明确记录真实 profile。
 - `validate` 使用官方 decoder 生成可复现 RAW hash；自定义/GPU decoder 尚未加入，
   因此现在不存在“官方 vs GPU bit-exact”结论。
 - 转码器不做 RAW、色度或时域降噪，噪声处理留给后期调色；坏点、镜头阴影、
   几何校正、其他 Log profile 和 GUI 不在 v0.1 范围。
-- Vulkan 路径目前从 CPU-produced TargetLog RGB 开始；RAW decode、校准、demosaic、
-  camera color、sharpening 和 DI encode 尚未迁移到 GPU。FFmpeg 自带 ProRes DCT shader
-  的 GPU-assisted race diagnostic 仍是生产发布 gate，详见 GPU Phase 验证文档。
+- Vulkan 路径从 CPU official U16 RAW decode 后进入 GPU calibration、RCD、camera color、
+  sharpening、DI、YUV 和 ProRes。FFmpeg ProRes DCT shader 的特定 GPU-AV diagnostic
+  已记录受限 waiver；其他 validation 诊断仍阻止发布。
 - `mcraw_sample/` 和输出文件不会提交到版本控制。
 
 架构依据见 [docs/MCRAW_ProRes_RouteB_Architecture_Spec_CN.md](docs/MCRAW_ProRes_RouteB_Architecture_Spec_CN.md)，
