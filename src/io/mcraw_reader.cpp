@@ -166,9 +166,8 @@ const nlohmann::json& McrawReader::container_metadata() const {
 nlohmann::json McrawReader::frame_metadata(std::size_t index) const {
     const auto& record = impl_->checked_frame(index);
     nlohmann::json result;
-    std::vector<std::uint16_t> ignored_pixels;
     Impl::DecoderLease lease(*impl_);
-    lease.get().loadFrame(record.timestamp_ns, ignored_pixels, result);
+    lease.get().loadFrameMetadata(record.timestamp_ns, result);
     return result;
 }
 
@@ -204,20 +203,20 @@ RawMosaicU16 McrawReader::load_reference_frame(std::size_t index) const {
 
 DecodedRawFrame McrawReader::load_reference_frame_with_metadata(std::size_t index) const {
     const auto& record = impl_->checked_frame(index);
-    std::vector<std::uint16_t> decoded;
+    std::vector<std::uint8_t> decoded_bytes;
     nlohmann::json frame_metadata;
     {
         Impl::DecoderLease lease(*impl_);
-        lease.get().loadFrame(record.timestamp_ns, decoded, frame_metadata);
+        lease.get().loadFrame(record.timestamp_ns, decoded_bytes, frame_metadata);
     }
     const auto metadata = normalize_metadata(container_metadata(), frame_metadata);
     const auto pixels = static_cast<std::size_t>(metadata.width) * metadata.height;
-    if (decoded.size() < pixels) {
+    if (pixels > std::numeric_limits<std::size_t>::max() / sizeof(std::uint16_t) ||
+        decoded_bytes.size() != pixels * sizeof(std::uint16_t)) {
         throw Error(ErrorCode::decode_failed, "official decoder returned an unexpected RAW buffer size");
     }
-    // motioncam-decoder release/0.2 sizes this uint16_t vector with a byte
-    // count. Only the first width*height elements contain decoded samples.
-    decoded.resize(pixels);
+    std::vector<std::uint16_t> decoded(pixels);
+    std::memcpy(decoded.data(), decoded_bytes.data(), decoded_bytes.size());
     RawMosaicU16 raw{metadata.width, metadata.height, metadata.cfa, std::move(decoded)};
     raw.validate();
     return {std::move(raw), std::move(metadata)};

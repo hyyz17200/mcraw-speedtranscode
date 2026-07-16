@@ -5,7 +5,7 @@ retain their own copyright notices and licenses.
 
 | Component | Locked version | Role | Upstream license |
 |---|---|---|---|
-| MotionCam decoder | commit `06bf1a8` (`release/0.2`) | Container API and bit-exact CPU RAW truth | Apache-2.0 |
+| MotionCam decoder | commit `2c49edb17277c07989ff90bd3a3bf557c2f68b4a` | Container API and distinct bit-exact compression 6/7 CPU RAW truth | Apache-2.0 |
 | librtprocess | `0.12.0` | AMaZE, RCD, IGV | GPL-3.0-or-later |
 | FFmpeg | `8.1.2` via vcpkg baseline `cd61e1e` | ProRes, MOV, PCM | Depends on build configuration; build must remain GPL-compatible |
 | Vulkan Headers / Loader | `1.4.350.0` via the same vcpkg baseline | Vulkan API and runtime dispatch | Apache-2.0 OR MIT / Apache-2.0 |

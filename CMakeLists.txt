@@ -22,7 +22,9 @@ if(MCRAW_FETCH_DEPENDENCIES)
   FetchContent_Declare(
     motioncam_decoder_source
     GIT_REPOSITORY https://github.com/mirsadm/motioncam-decoder.git
-    GIT_TAG 06bf1a8 # immutable commit behind release/0.2
+    # Immutable upstream main commit with distinct compression 6/7 decoders
+    # and byte-exact RAW output allocation.
+    GIT_TAG 2c49edb17277c07989ff90bd3a3bf557c2f68b4a
     GIT_SHALLOW FALSE
   )
   FetchContent_MakeAvailable(motioncam_decoder_source)
