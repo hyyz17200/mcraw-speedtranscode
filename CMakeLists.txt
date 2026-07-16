@@ -8,6 +8,7 @@ option(MCRAW_ENABLE_FFMPEG "Build ProRes/MOV output support" ON)
 option(MCRAW_ENABLE_VULKAN "Build the optional Vulkan video backend" ON)
 option(MCRAW_ENABLE_RTPROCESS "Build AMaZE/RCD/IGV support" ON)
 option(MCRAW_ENABLE_AVX2 "Build CPU processing targets for AVX2-capable processors" ON)
+option(MCRAW_BUILD_BENCHMARKS "Build long-running decoder benchmark tools" ON)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -374,6 +375,16 @@ endif()
 
 add_executable(mcraw-transcoder src/cli/main.cpp)
 target_link_libraries(mcraw-transcoder PRIVATE mcraw_core)
+
+if(MCRAW_BUILD_BENCHMARKS)
+  add_executable(mcraw-decoder-benchmark tools/cpu_decoder_benchmark.cpp)
+  target_link_libraries(mcraw-decoder-benchmark PRIVATE mcraw_core motioncam_decoder)
+  target_include_directories(mcraw-decoder-benchmark PRIVATE
+    "${motioncam_decoder_source_SOURCE_DIR}/lib/include")
+  if(WIN32)
+    target_link_libraries(mcraw-decoder-benchmark PRIVATE Psapi)
+  endif()
+endif()
 
 if(MCRAW_BUILD_TESTS)
   enable_testing()
