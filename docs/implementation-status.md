@@ -44,262 +44,175 @@
 - Every public GPU performance mode retains precise RCD. See
   `GPU_STAGE3E_FAST_DEMOSAIC_EXPERIMENT.md`.
 
-## 已实现源码边界
+## Implemented source boundary
 
-- CMake/vcpkg/MSVC 2022 构建骨架
-- MCRAW 独立索引和压缩 payload 读取
-- MotionCam 官方 CPU 解压适配
-- 元数据标准化和来源可见 warning
-- RAW 黑白场、RCD/AMaZE/IGV/DCB/LMMSE；RCD 保持默认
-- 默认力度 `0.4` 的线性 DWG Capture Sharpening；转码器不做降噪
-- 双矩阵、ForwardMatrix、Bradford、DWG、DaVinci Intermediate
-- 每转换实例 DI LUT、融合 Camera→DWG→DI→YCbCr、quality 4:2:2、dither、legal range 量化
-- OpenMP 行并行、CPU/RAM 感知的有界多帧并行和有序 mux
-- FFmpeg ProRes/MOV/PCM/时间戳和 sidecar
-- 七个 CLI 子命令和单元测试
+- CMake/vcpkg/MSVC 2022 build skeleton
+- Independent MCRAW index and compressed-payload reader
+- MotionCam official CPU decompression adapter
+- Metadata normalization and source-visible warnings
+- RAW black/white-level handling and RCD/AMaZE/IGV/DCB/LMMSE; RCD remains the default
+- Linear DWG Capture Sharpening with default amount `0.4`; the transcoder does not denoise
+- Dual-matrix color handling, ForwardMatrix, Bradford, DWG, and DaVinci Intermediate
+- Per-conversion DI LUT, fused Camera→DWG→DI→YCbCr processing, quality 4:2:2, dither, and legal-range quantization
+- OpenMP row parallelism, CPU/RAM-aware bounded multi-frame parallelism, and ordered muxing
+- FFmpeg ProRes/MOV/PCM/timestamps and sidecar output
+- Seven CLI subcommands and unit tests
 
-## Windows 10 / MSVC 2022 验收结果
+## Windows 10 / MSVC 2022 acceptance results
 
-- MSVC 2022 Release：主库、CLI、测试程序构建通过
-- 单元测试：18/18 通过
-- `mcraw_sample/`：1 个样本完成 inspect、首末帧 RAW 解压与 hash
-- 样本音频：48 kHz、双声道、377 块及源时间戳全部读取
-- CPU compute benchmark：自动 16 线程/8 在途帧约 3.7～4.0 fps，平均整机 CPU 约 78.6%
-- 相比原始约 0.26 fps 参考实现，compute throughput 提升约 15 倍
-- 首末 4K 帧各比较 25,165,824 个 10-bit 样本；融合路径最大差异 1 LSB，
-  差异比例分别约 0.00056% 和 0.00051%
-- 2 帧 ProRes 422 HQ + PCM MOV round-trip 通过
-- 优化后完整 240 帧 ProRes 422 HQ + PCM MOV 转换及 FFmpeg 全流解码通过：
-  95.251 s、2.52 fps；原始实现 931.2 s，端到端加速约 9.8 倍
-- ffprobe：`apch`、`yuv422p10le`、解码帧为 video range、BT.2020 NCL、
-  90 kHz 视频时基、48 kHz PCM；240 帧视频 7.990744 s，音频 8.031021 s
-- 优化后完整输出：1,402,859,919 字节，无残留 partial 文件；sidecar 记录 240 帧、
-  377 个音频块，音频相对视频尾端 +40.288409 ms
-- 优化前后完整 PCM SHA-256 均为
+- MSVC 2022 Release: main library, CLI, and test programs build successfully
+- Unit tests: 18/18 passed
+- `mcraw_sample/`: one sample completed `inspect`, first/last-frame RAW decompression, and hashing
+- Sample audio: 48 kHz, stereo, all 377 packets and source timestamps read successfully
+- CPU compute benchmark: about 3.7–4.0 fps with automatic 16 threads / 8 in-flight frames; average whole-system CPU utilization about 78.6%
+- Compute throughput increased about 15× over the original reference implementation at about 0.26 fps
+- The first and last 4K frames each compared 25,165,824 10-bit samples; maximum difference on the fused path was 1 LSB, with difference ratios of about 0.00056% and 0.00051%
+- Two-frame ProRes 422 HQ + PCM MOV round trip passed
+- The optimized full 240-frame ProRes 422 HQ + PCM MOV conversion and full-stream FFmpeg decode passed: 95.251 s, 2.52 fps; the original implementation took 931.2 s, for about 9.8× end-to-end acceleration
+- ffprobe: `apch`, `yuv422p10le`, decoded frames in video range, BT.2020 NCL, 90 kHz video time base, and 48 kHz PCM; 240-frame video duration 7.990744 s and audio duration 8.031021 s
+- Optimized full output: 1,402,859,919 bytes, with no leftover partial file; the sidecar records 240 frames, 377 audio packets, and audio ending +40.288409 ms relative to the video end
+- The complete PCM SHA-256 before and after optimization was
   `04c5eb506259a5eb2f956226ce627cc4b3e773faf8c9d67d645fed5d8468736a`
 
-## 2026-07-14 质量选项对比
+## 2026-07-14 quality-option comparison
 
-同一 4096×3072 样本、16 帧、Release、16 CPU 线程、8 帧在途、每帧 2 线程，
-compute-only 测量：
+Compute-only measurement using the same 4096×3072 sample, 16 frames, Release
+build, 16 CPU threads, 8 in-flight frames, and 2 threads per frame:
 
-| 配置 | 吞吐 fps | 相对 RCD 吞吐 | demosaic 平均耗时 |
+| Configuration | Throughput (fps) | Throughput relative to RCD | Mean demosaic time |
 |---|---:|---:|---:|
-| RCD（两轮平均） | 4.477 | 基准 | 405.0 ms |
+| RCD (mean of two runs) | 4.477 | Baseline | 405.0 ms |
 | AMaZE | 3.097 | -30.8% | 1219.0 ms |
-| DCB（两轮平均，2 次迭代、enhance 关闭） | 3.493 | -22.0% | 835.2 ms |
-| LMMSE（两轮平均，2 次迭代） | 3.086 | -31.1% | 1159.2 ms |
+| DCB (mean of two runs, 2 iterations, enhance disabled) | 3.493 | -22.0% | 835.2 ms |
+| LMMSE (mean of two runs, 2 iterations) | 3.086 | -31.1% | 1159.2 ms |
 
-在 RCD 上单独打开 Capture Sharpening `0.25`，测得 3.955 fps，较同轮 RCD
-下降约 11.1%。多帧并行下各阶段计时有重叠，吞吐差是评估总体开销的主要指标。
+Enabling Capture Sharpening `0.25` on RCD alone produced 3.955 fps, about
+11.1% below RCD in the same run. Stage timings overlap under multi-frame
+parallelism, so throughput difference is the main measure of total cost.
 
-完整 240 帧对比输出均通过 FFmpeg 全流解码：AMaZE 为 2.217 fps，RCD +
-Capture Sharpening `0.25` 为 2.655 fps。两者均为 4096×3072 ProRes 422 HQ
-`yuv422p10le`，保留 48 kHz 双声道 PCM。
+The complete 240-frame comparison outputs both passed full-stream FFmpeg decode:
+AMaZE reached 2.217 fps, while RCD + Capture Sharpening `0.25` reached 2.655
+fps. Both were 4096×3072 ProRes 422 HQ `yuv422p10le` files retaining 48 kHz
+stereo PCM.
 
-## 仍需人工外部验收
+## Still requiring manual external acceptance
 
-- DaVinci Resolve chart、chroma siting 与手动 Input Color Space 工作流实测
-- 完整 240 帧输出的人工播放/画面检查（自动解码和流参数检查已通过）
+- DaVinci Resolve chart, chroma siting, and the manual Input Color Space workflow
+- Manual playback and image inspection of the complete 240-frame output (automatic decode and stream-parameter checks have passed)
 
-## 2026-07-14 GPU 下一阶段 Stage 0
+## 2026-07-14 GPU next-stage Stage 0
 
-- 正式采用 24 fps 最低目标、30 fps 扩展目标和 `fp32/precise` 最终 YUV
-  最大差异不超过 1 LSB 的行动口径。
-- 已建立固定 corpus 合约：真实 4096×3072 / 240 帧 compression 7 样本的
-  首帧、中间帧和末帧，以及四 CFA、校准范围、饱和色和高频图案定义。
-- 新增与生产 `CpuPipeline` 相同边界的 calibrated mosaic、Camera RGB、
-  sharpened TargetLinear、TargetLog 和 YUV extract stages。
-- Vulkan RGB→YUV 已使用 timestamp query；CPU fence wall time 不再冒充 GPU
-  execution time。sidecar/CLI 输出样本数、total/mean/P50/P95/P99/min/max。
-- 初次重复 capture 的 21 个 artifact hash 全部稳定。
-- 初次强制 Vulkan 完整基准完成一次 warm-up 和三次正式运行：中位数
-  7.133 fps，范围 7.098–7.412 fps；每次 240 个 GPU timestamp，RGB→YUV
-  GPU mean 的 run median 为 13.007 ms/frame；device-global GPU 平均利用率约
-  18.3%，job queue peak 7、packet queue peak 1、backpressure 0。
-- Release build、43 项 CTest、GPU-assisted RGB→YUV golden、30 帧 CPU/Vulkan
-  全流解码、auto fallback、forced Vulkan cleanup 全部通过。
+ - Formally adopted an action target of 24 fps minimum, 30 fps extended, and a maximum 1 LSB difference for final `fp32/precise` YUV.
+ - Established a fixed corpus contract: first, middle, and last frames of a real 4096×3072 / 240-frame compression 7 sample, plus definitions for four CFA patterns, calibration ranges, saturated colors, and high-frequency patterns.
+ - Added calibrated mosaic, Camera RGB, sharpened TargetLinear, TargetLog, and YUV extract stages at the same boundaries as the production `CpuPipeline`.
+ - Vulkan RGB→YUV now uses timestamp queries; CPU fence wall time is no longer presented as GPU execution time. Sidecar/CLI output includes sample count and total/mean/P50/P95/P99/min/max.
+ - All 21 artifact hashes from the initial repeated capture were stable.
+ - The initial forced-Vulkan full benchmark completed one warm-up and three official runs: median 7.133 fps, range 7.098–7.412 fps; 240 GPU timestamps per run; RGB→YUV GPU mean run median 13.007 ms/frame; device-global mean GPU utilization about 18.3%; job queue peak 7, packet queue peak 1, and backpressure 0.
+ - Release build, 43 CTest cases, GPU-assisted RGB→YUV golden test, 30-frame CPU/Vulkan full-stream decode, automatic fallback, and forced-Vulkan cleanup all passed.
 
-Stage 0 已提交为 rollback point `622070c`。提交后 capture manifest 指向该 commit、
-记录 `dirty=false`，并保持相同 executable/config/corpus 与 21 项 artifact hashes。
-Stage 1 的 Camera RGB 输入、shader passes、uniform、golden、同步及 benchmark 合约见
+Stage 0 was committed as rollback point `622070c`. The post-commit capture
+manifest points to that commit, records `dirty=false`, and retains the same
+executable/config/corpus and 21 artifact hashes. The Stage 1 Camera RGB input,
+shader passes, uniforms, golden tests, synchronization, and benchmark contract are defined in
 `GPU_STAGE1_CAMERA_RGB_TECHNICAL_DESIGN.md`。
 
 ## 2026-07-15 GPU Stage 1A foundation
 
-- `CpuPipelineOutput` 取代隐式 boolean producer seam，明确区分 CPU packed YUV、
-  TargetLog RGB 和 Camera RGB；当前 CLI 仍固定使用已验收的 Stage 0 TargetLog 路径。
-- 新增独立的 `VulkanCameraPipelineResources`：每 slot 三张 host-visible Camera RGB
-  upload buffer、两组三平面 device-local FP32 ping-pong buffer、独立 command buffer 和
-  fence；继续复用 FFmpeg-owned device、compute queue 及 queue lock。
-- test-only readback 必须显式启用；round-trip 通过 transfer barrier 验证 upload →
-  device-local intermediate → readback 的逐 bit 一致性，production 配置不会分配 readback。
-- writer telemetry/sidecar 开始记录实际 `pipeline.entry`、precision、demosaic/color
-  solution location，并分别统计 TargetLog 与 Camera RGB FP32 upload bytes。
-- 本批次没有 color/sharpen/DI shader，不改变 Stage 0 输出像素或 fallback 行为。
+- `CpuPipelineOutput` replaced the implicit boolean producer seam and clearly separates CPU packed YUV, TargetLog RGB, and Camera RGB; the CLI still uses the accepted Stage 0 TargetLog path.
+- Added independent `VulkanCameraPipelineResources`: each slot has three host-visible Camera RGB upload buffers, two sets of three-plane device-local FP32 ping-pong buffers, an independent command buffer, and a fence. It continues to reuse the FFmpeg-owned device, compute queue, and queue lock.
+- Test-only readback must be explicitly enabled. A transfer barrier verifies bit-for-bit consistency across upload → device-local intermediate → readback; production configurations allocate no readback resources.
+- Writer telemetry/sidecar output now records the actual `pipeline.entry`, precision, and demosaic/color-solution location, and separately counts TargetLog and Camera RGB FP32 upload bytes.
+- This batch added no color, sharpening, or DI shader and does not change Stage 0 output pixels or fallback behavior.
 
 ## 2026-07-15 GPU Stage 1B color/exposure
 
-- 新增独立 `camera_to_dwg.comp.glsl` FP32 pass；CPU 继续完成 FP64 color solution，
-  GPU 只接收最终 3x3 row-major matrix 和独立 exposure scale。
-- 64-byte push-constant ABI 已用 C++ size/offset assertions 冻结；每 slot 使用三张
-  Camera input 和 ping A 三张 TargetLinear output 的六 binding descriptor set。
-- test-only readback 使用 compute→transfer→host 明确 barriers；production 仍不分配
-  readback buffer。
-- synthetic golden max/RMSE 为 `2.38419e-7 / 1.87853e-8`；真实 4096×3072
-  Stage 0 首帧为 `2.38419e-7 / 1.57234e-8`，均通过 `2e-5 / 1e-6` 门槛。
-- color pass 已有独立 GPU timestamp summary；validation-enabled 4K 单样本为
-  `11.9165 ms`，仅作为 shader 验证数据，不作为性能承诺。
-- 本批次仍不切换 production writer；详细报告见
+- Added an independent `camera_to_dwg.comp.glsl` FP32 pass. The CPU continues to calculate the FP64 color solution; the GPU receives only the final 3×3 row-major matrix and an independent exposure scale.
+- The 64-byte push-constant ABI is frozen by C++ size/offset assertions. Each slot uses a six-binding descriptor set with three Camera input planes and three ping-A TargetLinear output planes.
+- Test-only readback uses explicit compute→transfer→host barriers; production still allocates no readback buffer.
+- Synthetic golden max/RMSE were `2.38419e-7 / 1.87853e-8`; the real 4096×3072 Stage 0 first frame was `2.38419e-7 / 1.57234e-8`. Both passed the `2e-5 / 1e-6` gates.
+- The color pass has an independent GPU timestamp summary; one validation-enabled 4K sample measured `11.9165 ms`, for shader-validation data only and not a performance commitment.
+- This batch still does not switch the production writer; see
   `GPU_STAGE1B_COLOR_VALIDATION.md`。
 
 ## 2026-07-15 GPU Stage 1C sharpening
 
-- 新增独立 `sharpen_target_linear.comp.glsl` FP32 pass，从 device-local ping A
-  读取并写入 ping B，不做原地更新、clamp、FP16 或 pass fusion。
-- 保持 CPU 的 BT.2020 luma、四邻域 cross blur、边缘坐标钳制、soft threshold
-  和同量 RGB delta 语义；16-byte push-constant ABI 已冻结。
-- color→sharpen 使用 compute write/read barrier；仅 test route 再把 ping B
-  barrier 到 transfer readback，production 仍无中间图像回读。
-- synthetic edge/threshold/negative golden max/RMSE 为
-  `5.96046e-8 / 2.00631e-9`；真实 4096×3072 Stage 0 首帧为
-  `2.38419e-7 / 1.94043e-8`，均通过 `3e-5 / 2e-6` 门槛。
-- sharpening pass 已有独立 GPU timestamp summary；validation-enabled 4K
-  单样本为 `4.3264 ms`，仅作为 shader 验证数据，不作为性能承诺。
-- 本批次仍不切换 production writer；详细报告见
+- Added an independent `sharpen_target_linear.comp.glsl` FP32 pass. It reads device-local ping A and writes ping B, with no in-place update, clamp, FP16, or pass fusion.
+- It preserves the CPU semantics for BT.2020 luma, four-neighbor cross blur, edge-coordinate clamping, soft threshold, and equal RGB delta; the 16-byte push-constant ABI is frozen.
+- Color→sharpen uses a compute write/read barrier. Only the test route adds a barrier from ping B to transfer readback; production still performs no intermediate-image readback.
+- Synthetic edge/threshold/negative golden max/RMSE were `5.96046e-8 / 2.00631e-9`; the real 4096×3072 Stage 0 first frame was `2.38419e-7 / 1.94043e-8`. Both passed the `3e-5 / 2e-6` gates.
+- The sharpening pass has an independent GPU timestamp summary; one validation-enabled 4K sample measured `4.3264 ms`, for shader-validation data only and not a performance commitment.
+- This batch still does not switch the production writer; see
   `GPU_STAGE1C_SHARPENING_VALIDATION.md`。
 
 ## 2026-07-15 GPU Stage 1D DaVinci Intermediate
 
-- 新增独立 `davinci_intermediate.comp.glsl` FP32 precise pass，从 sharpened
-  ping B 读取并在明确 barrier 后复用 ping A 写入 TargetLog。
-- 现有两段各 65,536-entry FP32 LUT 通过 staging 一次性上传到 524,288-byte
-  pipeline-owned device-local buffer，由所有 slot 共享；高于 100 的值仍走 analytic DI。
-- `preserve_by_curve`、`clamp_zero`、`error` 策略 ABI 已冻结；每 slot 独立
-  4-byte status word 检测 error-policy negative 和 shader-created non-finite，
-  只在 fence signal 后读取并以 `processing_failed` 终止。
-- LUT boundary synthetic golden max/RMSE 为 `1.19209e-7 / 2.98023e-8`；
-  真实 4096×3072 Stage 0 首帧为 `5.96046e-8 / 1.17004e-8`，均通过
-  `3e-5 / 2e-6` 门槛；1x1、重复确定性和两类 fault injection 也已通过。
-- DI pass 已有独立 GPU timestamp summary；validation-enabled 4K 单样本为
-  `3.48774 ms`，仅作为 shader 验证数据，不作为性能承诺。
-- 本批次仍不切换 production writer；详细报告见
+- Added an independent `davinci_intermediate.comp.glsl` FP32 precise pass. It reads sharpened ping B and, after an explicit barrier, reuses ping A to write TargetLog.
+- The two existing 65,536-entry FP32 LUTs are uploaded once through staging to a 524,288-byte pipeline-owned device-local buffer shared by all slots; values above 100 continue to use analytic DI.
+- The `preserve_by_curve`, `clamp_zero`, and `error` policy ABI is frozen. Each slot has an independent 4-byte status word that detects error-policy negatives and shader-created non-finite values; it is read only after the fence signals and terminates with `processing_failed`.
+- LUT-boundary synthetic golden max/RMSE were `1.19209e-7 / 2.98023e-8`; the real 4096×3072 Stage 0 first frame was `5.96046e-8 / 1.17004e-8`. Both passed the `3e-5 / 2e-6` gates; 1×1, repeated-determinism, and two fault-injection tests also passed.
+- The DI pass has an independent GPU timestamp summary; one validation-enabled 4K sample measured `3.48774 ms`, for shader-validation data only and not a performance commitment.
+- This batch still does not switch the production writer; see
   `GPU_STAGE1D_DAVINCI_INTERMEDIATE_VALIDATION.md`。
 
 ## 2026-07-15 GPU Stage 1E resident chain
 
-- production Vulkan route 已切换到 `camera_rgb_f32`：单一 slot command buffer
-  串联 color/exposure、sharpening、DI、RGB-to-YUV，并直接写 encoder-owned
-  `AVVkFrame`；Stage 0 TargetLog overload 仅保留为 rollback point。
-- Camera RGB upload 逐帧精确计数；production TargetLog upload、TargetLinear/
-  TargetLog/YUV pixel readback 均为 0。每帧只额外读取 4-byte control status。
-- ping-pong buffer reuse、status reset/read、AVVkFrame layout/access 与 timeline
-  semaphore 均有显式 barrier/ownership；validation 发现的宽泛 source stage 已收窄为
-  实际 compute shader stage，复测为 0 个应用 validation error。
-- synthetic resident final Y/Cb/Cr 均为 0 LSB；negative-policy fault injection、
-  decodable MOV、partial cleanup、auto fallback 和 forced invalid-device 均通过。
-- 30 帧 4096x3072 E2E 中 Camera RGB upload 为 4,529,848,320 bytes、TargetLog
-  upload 为 0、四个 GPU pass 各 30 个 timestamp；CPU/Vulkan 全流解码与音频/PTS
-  检查通过。详细报告见 `GPU_STAGE1E_RESIDENT_CHAIN_VALIDATION.md`。
+- The production Vulkan route now uses `camera_rgb_f32`: one slot command buffer chains color/exposure, sharpening, DI, and RGB-to-YUV, then writes directly to the encoder-owned `AVVkFrame`; the Stage 0 TargetLog overload remains only as a rollback point.
+- Camera RGB upload is counted exactly per frame; production TargetLog upload and TargetLinear/TargetLog/YUV pixel readback are all zero. Each frame reads only an additional 4-byte control status.
+- Ping-pong buffer reuse, status reset/read, `AVVkFrame` layout/access, and the timeline semaphore all use explicit barriers/ownership. The broad source stage found by validation was narrowed to the actual compute shader stage, and retesting found zero application validation errors.
+- Synthetic resident final Y/Cb/Cr all had 0 LSB error; negative-policy fault injection, decodable MOV output, partial cleanup, automatic fallback, and forced invalid-device tests all passed.
+- In a 30-frame 4096×3072 E2E run, Camera RGB upload was 4,529,848,320 bytes, TargetLog upload was 0, and each of the four GPU passes produced 30 timestamps. CPU/Vulkan full-stream decode and audio/PTS checks passed. See `GPU_STAGE1E_RESIDENT_CHAIN_VALIDATION.md`.
 
 ## 2026-07-15 GPU Stage 1F E2E and benchmark
 
-- 真实 Stage 0 帧 0/120/239 的最终 Y/Cb/Cr 均以最大 1 LSB 通过；240 帧
-  Stage 1 MOV 的 ProRes HQ、yuv422p10le、视频全流解码、48 kHz 双声道音频、PTS、
-  transfer/status/timestamp invariants 全部通过。
-- 同一台 RTX 3060、同一 input/config、每候选一次 warm-up + 三次 official 的 matched
-  A/B：重建 Stage 0 中位数 6.863 fps，Stage 1 中位数 4.963 fps；相对性能为
-  `-27.685%`，未达到 `+20%` gate，结论为 **NO-GO**。
-- Stage 1 的 GPU job queue peak 为 10、每轮 backpressure waits 为 227、
-  ProRes submit/wait mean 中位数为 181.777 ms/frame、VRAM delta 中位数为
-  3,782 MiB；Stage 0 对应为 5、0、0.004 ms/frame、1,433 MiB。证据指向
-  resident slots/VRAM/barrier/occupancy 与 encoder contention，而非 CPU demosaic。
-- Stage 1A-1F 已完成为独立 rollback points，但 Stage 1 未通过性能验收，Vulkan
-  继续 opt-in；禁止直接融合 shader 或进入 Stage 2。详细报告见
+- Final Y/Cb/Cr for real Stage 0 frames 0/120/239 all passed with a maximum 1 LSB difference. The 240-frame Stage 1 MOV passed ProRes HQ, `yuv422p10le`, full-stream video decode, 48 kHz stereo audio, PTS, and transfer/status/timestamp invariant checks.
+- A matched A/B on the same RTX 3060 with the same input/configuration, one warm-up, and three official runs per candidate produced a reconstructed Stage 0 median of 6.863 fps and a Stage 1 median of 4.963 fps. Relative performance was `-27.685%`, below the `+20%` gate; the decision was **NO-GO**.
+- Stage 1 GPU job-queue peak was 10, backpressure waits were 227 per run, median ProRes submit/wait mean was 181.777 ms/frame, and median VRAM delta was 3,782 MiB. Stage 0 values were 5, 0, 0.004 ms/frame, and 1,433 MiB. The evidence points to resident slots/VRAM/barriers/occupancy and encoder contention, not CPU demosaic.
+- Stage 1A–1F are complete as independent rollback points, but Stage 1 did not pass performance acceptance. Vulkan remains opt-in; do not directly fuse shaders or enter Stage 2. See
   `GPU_STAGE1F_E2E_BENCHMARK.md`。
 
 ## 2026-07-15 GPU Stage 1G performance recovery
 
-- 新遥测将 job/slot/packet 背压、frame pack、encoder send/receive、frame allocation、
-  queue lock/submit 分开，证明 Stage 1F 的 `prores_submit_wait` 主要是 job queue 外显，
-  slot、frame pool、queue lock、packet 和 mux 均非主瓶颈。
-- Vulkan frame preparation 与 ProRes submission 改为两个有界 worker 并行；删除每帧
-  上传前对 151 MB Camera RGB 的 CPU finite 重复扫描，非有限值改由已有 DI
-  control-status 在发布前失败，并增加 production E2E fault test。
-- ProRes `async_depth=8` 与 resident preparation ring 解耦；正式路径保留 encoder depth
-  八，但只分配两个昂贵 FP32 resident slots。prepared queue peak 为 2，三轮所有
-  backpressure 均为 0。
-- clean `042e179` 在同一 RTX 3060、相同 input/config 下的一次 warm-up + 三次 official
-  中位数为 `13.791 fps`（13.429-13.873），相对重建 Stage 0 `6.863 fps` 为
-  `+100.943%`，相对旧 Stage 1 `4.963 fps` 为 `+177.871%`，通过 Stage 1 `+20%` gate。
-- VRAM delta 中位数由 3,782 MiB 降至 2,032 MiB；最终 MOV hash 与 Stage 1F 完全
-  相同。默认 Release 63 tests 为 58 passed/5 opt-in skipped；真实帧 0/120/239 的
-  Y/Cb/Cr 最大误差均为 1 LSB。详细报告见 `GPU_STAGE1G_PERFORMANCE_RECOVERY.md`。
+- New telemetry separates job/slot/packet backpressure, frame packing, encoder send/receive, frame allocation, and queue lock/submit. It shows that Stage 1F `prores_submit_wait` was mainly queue-level visibility; slots, the frame pool, queue lock, packets, and muxing were not primary bottlenecks.
+- Vulkan frame preparation and ProRes submission now run in parallel as two bounded workers. The per-frame CPU finite-value scan of 151 MB of Camera RGB before upload was removed; existing DI control status now fails non-finite values before publication, and a production E2E fault test was added.
+- ProRes `async_depth=8` is decoupled from the resident preparation ring. The production path retains encoder depth eight but allocates only two expensive FP32 resident slots. Prepared-queue peak was 2, and all backpressure values were 0 across three runs.
+- Clean `042e179` on the same RTX 3060 with the same input/configuration, one warm-up, and three official runs produced a median of `13.791 fps` (13.429–13.873), `+100.943%` versus reconstructed Stage 0 at `6.863 fps`, and `+177.871%` versus the old Stage 1 at `4.963 fps`; it passed the Stage 1 `+20%` gate.
+- Median VRAM delta fell from 3,782 MiB to 2,032 MiB; the final MOV hash was exactly the same as Stage 1F. The default Release suite was 58 passed / 5 opt-in skipped out of 63 tests; maximum Y/Cb/Cr error for real frames 0/120/239 was 1 LSB. See `GPU_STAGE1G_PERFORMANCE_RECOVERY.md`.
 
 ## 2026-07-15 GPU Stage 2A technical contract
 
-- Batch C 已冻结为五个独立 rollback points：技术/API/资源、calibration、precise RCD、
-  production resident chain、E2E/benchmark。
-- Stage 2 production 边界只从 Camera RGB FP32 前移到 U16 RAW；official decode、CPU FP64
-  color solution、Stage 1、ProRes、音频和发布语义保持不变。
-- calibration 保留负值和 super-white；后续 RCD 精确匹配 librtprocess 自身已有的
-  `LIM01(calibrated / 65536)` 输入边界，二者不混为新的提前 clamp。
-- 输入/输出、ownership、同步、golden、≤1 LSB 最终质量、transfer/timestamp telemetry、
-  failure/fallback 和 matched benchmark 合约见 `GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md`。
+- Batch C is frozen as five independent rollback points: technical/API/resources, calibration, precise RCD, the production resident chain, and E2E/benchmark.
+- The Stage 2 production boundary moves only from Camera RGB FP32 back to U16 RAW. Official decode, the CPU FP64 color solution, Stage 1, ProRes, audio, and release semantics remain unchanged.
+- Calibration preserves negative values and super-white. The subsequent RCD precisely matches librtprocess's existing `LIM01(calibrated / 65536)` input boundary; the two are not combined into a new early clamp.
+- The input/output, ownership, synchronization, golden, ≤1 LSB final-quality, transfer/timestamp telemetry, failure/fallback, and matched-benchmark contracts are defined in `GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md`.
 
 ## 2026-07-15 GPU Stage 2B calibration
 
-- 新增 packed U16 CFA calibration compute pass；每个 32-bit storage word 解包两个 U16，
-  不要求 shader 16-bit storage capability，输入字节仍精确为 `width * height * 2`。
-- 固定 48-byte push ABI 传递尺寸与四组 black/white；输出 device-local FP32 CFA，负值与
-  super-white 不 clamp，test readback 只能在显式测试资源启用。
-- 64x32、四种 CFA、fractional black/white synthetic 对 CPU reference 的 max abs 为
-  `0.0078125`、RMSE `0.00137959`；据此冻结 calibration 中间门槛为 `0.01/0.002`，最终
-  YUV `≤1 LSB` 不变。
-- 新增 `raw_calibration` GPU timestamp summary；production 仍停在 Stage 1，不改变上传、
-  sidecar 或发布路径。详细证据见 `GPU_STAGE2B_CALIBRATION_VALIDATION.md`。
+- Added a packed U16 CFA calibration compute pass. Each 32-bit storage word unpacks two U16 values; shader 16-bit storage capability is not required, and input size remains exactly `width * height * 2` bytes.
+- A fixed 48-byte push ABI carries dimensions and four black/white groups. Output is device-local FP32 CFA; negative values and super-white are not clamped, and test readback is available only when explicit test resources are enabled.
+- For 64×32 synthetic inputs, four CFA patterns, and fractional black/white values, CPU-reference maximum absolute error was `0.0078125` and RMSE was `0.00137959`. The calibration intermediate gates were therefore frozen at `0.01/0.002`; final YUV `≤1 LSB` remains unchanged.
+- Added `raw_calibration` GPU timestamp summary. Production remains at Stage 1, with no change to upload, sidecar, or release paths. See `GPU_STAGE2B_CALIBRATION_VALIDATION.md` for evidence.
 
 ## 2026-07-15 GPU Stage 2C precise RCD prototype
 
-- 按 librtprocess 0.12.0 依赖拆为八个 compute dispatch，覆盖初始化、VH/LPF、G、PQ、
-  opposite color、green-position color 与 9-pixel border；五张 slot-owned scratch 保留
-  packed-half indexing，pass 间显式 compute barrier。
-- 64x64 四种 CFA synthetic 对 CPU RCD：max `0.009765625`、border max `0.00390625`、
-  RMSE `0.00129745`，通过收紧后的 `0.02/0.005` 门槛。
-- 真实 4096x3072 frame 0：37,748,736 channel samples 中 P99 `0.00390625`、RMSE
-  `0.0363643`，274 个 sample >2，max `136.61328125` 位于 R/x=2485/y=59；定位为稳定的
-  FP32 方向判别近等值分支，不是结构性错位。
-- 技术合约以 max/RMSE/P99/outlier count 联合约束该离群行为；最终 YUV `≤1 LSB` 不放宽，
-  若 Stage 2D/E 不能满足则 production 保持 Stage 1。详细报告见
+- Following the librtprocess 0.12.0 dependency structure, the prototype uses eight compute dispatches covering initialization, VH/LPF, G, PQ, opposite-color, green-position color, and the 9-pixel border. Five slot-owned scratch planes retain packed-half indexing, with explicit compute barriers between passes.
+- Against CPU RCD on 64×64 synthetic inputs with four CFA patterns: max `0.009765625`, border max `0.00390625`, and RMSE `0.00129745`, passing the tightened `0.02/0.005` gates.
+- Real 4096×3072 frame 0: among 37,748,736 channel samples, P99 was `0.00390625`, RMSE `0.0363643`, 274 samples were >2, and maximum `136.61328125` occurred at R/x=2485/y=59. It was identified as a stable FP32 near-equal branch in directional classification, not a structural misalignment.
+- The technical contract jointly constrains this outlier behavior using max/RMSE/P99/outlier count. Final YUV `≤1 LSB` is not relaxed; if Stage 2D/E cannot meet it, production remains at Stage 1. See
   `GPU_STAGE2C_RCD_VALIDATION.md`。
 
 ## 2026-07-15 GPU Stage 2D resident RAW production chain
 
-- production Vulkan input 已从 CPU Camera RGB 改为 decoded U16 CFA + normalized
-  metadata；calibration、8-pass precise RCD 与 Stage 1 color/sharpen/DI/YUV 在同一
-  resident command buffer 中串联，直接交付 FFmpeg AVVkFrame。
-- 每个 slot 独占 U16 upload、calibrated CFA、3 个 Camera RGB plane 与 5 个 RCD
-  scratch plane；生产接口不暴露 calibrated/RGB readback。
-- 遥测现在标识 `raw_mosaic_u16` / `gpu_rcd_precise`，精确统计 U16 上传，并新增
-  `raw_calibration`、`rcd_demosaic` GPU timestamp；测试确认 FP32 RGB upload 与
-  YUV readback 均为 0。
-- Vulkan production 仅接受 precise RCD：auto 对其他 demosaic 在创建输出前回退
-  CPU，forced Vulkan 明确拒绝，禁止逐帧静默切换。
-- validation-layer RAW E2E 33 assertions、backend selection 4 assertions、Release
-  CTest 71/71 全通过（6 个既有 real-sample opt-in tests skipped）。详细结果见
+- The production Vulkan input changed from CPU Camera RGB to decoded U16 CFA plus normalized metadata. Calibration, eight-pass precise RCD, and the Stage 1 color/sharpen/DI/YUV chain run in one resident command buffer and deliver directly to an FFmpeg `AVVkFrame`.
+- Each slot owns its U16 upload, calibrated CFA, three Camera RGB planes, and five RCD scratch planes; the production interface exposes no calibrated/RGB readback.
+- Telemetry now identifies `raw_mosaic_u16` / `gpu_rcd_precise`, counts U16 upload precisely, and adds `raw_calibration` and `rcd_demosaic` GPU timestamps. Tests confirmed that FP32 RGB upload and YUV readback are both zero.
+- Vulkan production accepts precise RCD only: `auto` falls back to CPU before creating output for other demosaic modes, while forced Vulkan rejects them explicitly. Per-frame silent switching is prohibited.
+- Validation-layer RAW E2E (33 assertions), backend selection (4 assertions), and Release CTest (71/71) all passed (6 existing real-sample opt-in tests skipped). See
   `GPU_STAGE2D_RESIDENT_CHAIN_VALIDATION.md`。
 
 ## 2026-07-15 GPU Stage 2E acceptance and Batch C closure
 
-- real sample frames 0/120/239 的 final Y/Cb/Cr max error 全部为 `1 LSB`；普通与
-  Vulkan validation-layer 两种运行均通过，Stage 2 real test 共 20 assertions。
-- clean `867c0b1` 完整 240-frame warm-up + 3 official runs 中位数 `37.747 fps`
-  （37.530-37.935），相对 accepted Stage 1G 提升 `173.710%`，并同时超过 24 fps
-  minimum 与 30 fps extended target。
-- 每次 official run 精确上传 6,039,797,760 U16 bytes、0 FP32 RGB、0 YUV readback，
-  六段 GPU stage 均 240 timestamps，status read 960 bytes、failure 0。
-- 最终 MOV 包含 240 ProRes HQ `yuv422p10le` + 377 PCM stereo packets，完整 FFmpeg
-  decode 无错误，A/V offsets 与 Stage 1 保持一致。
-- Release CTest 72/72 通过（7 个 real/high-memory opt-in skips）。Batch C 正式 GO，
-  详细证据见 `GPU_STAGE2E_E2E_BENCHMARK.md`；默认 backend 仍保持 CPU，发布 gates
-  与 fast preset 属于后续 Batch D/F。
+- Final Y/Cb/Cr maximum error for real sample frames 0/120/239 was `1 LSB` in all cases. Both normal and Vulkan validation-layer runs passed; the Stage 2 real test had 20 assertions.
+- Clean `867c0b1` completed a full 240-frame warm-up plus three official runs with a median of `37.747 fps` (37.530–37.935), a `173.710%` improvement over accepted Stage 1G, exceeding both the 24 fps minimum and 30 fps extended targets.
+- Each official run uploaded exactly 6,039,797,760 U16 bytes, with 0 FP32 RGB upload and 0 YUV readback; all six GPU stages produced 240 timestamps, with 960 bytes of status reads and 0 failures.
+- The final MOV contains 240 ProRes HQ `yuv422p10le` frames plus 377 PCM stereo packets. Full FFmpeg decode completed without errors, and A/V offsets matched Stage 1.
+- Release CTest passed 72/72 (7 real/high-memory opt-in tests skipped). Batch C is formally **GO**. See `GPU_STAGE2E_E2E_BENCHMARK.md` for detailed evidence; the default backend remains CPU, while release gates and the fast preset belong to later Batches D/F.

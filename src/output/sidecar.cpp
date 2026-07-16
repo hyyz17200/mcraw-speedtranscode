@@ -35,7 +35,7 @@ void write_sidecar(const std::filesystem::path& path,
     }
     nlohmann::json document = {
         {"schema", "mcraw-transcoder-sidecar-v1"},
-        {"application", {{"name", "mcraw-transcoder"}, {"version", "0.1.0"}}},
+        {"application", {{"name", "mcraw-speedtranscode"}, {"version", "0.1.0"}}},
         {"input", input.string()},
         {"output", output.string()},
         {"frames_written", frames_written},

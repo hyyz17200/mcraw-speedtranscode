@@ -36,7 +36,7 @@ timings in addition to the Stage 1 timing chain.
 
 ## Validation
 
-- Release build of `mcraw_tests` and `mcraw-transcoder`: passed.
+- Release build of `mcraw_tests` and `mcraw-speedtranscode`: passed.
 - Vulkan validation-layer resident RAW E2E: 33 assertions passed.
 - Unsupported-demosaic selection test: 4 assertions passed.
 - Full Release CTest: 71/71 tests passed, with six existing opt-in real-sample

@@ -1,45 +1,51 @@
-# `prores_ks_vulkan` 纯编码器 Benchmark
+# `prores_ks_vulkan` Encoder-Only Benchmark
 
-日期：2026-07-15  
-硬件：NVIDIA GeForce RTX 3060  
-输入：4096×3072，90 帧/路，ProRes 422 HQ  
-编码器：FFmpeg `prores_ks_vulkan`，`async_depth=1`
+Date: 2026-07-15  
+Hardware: NVIDIA GeForce RTX 3060  
+Input: 4096×3072, 90 frames per stream, ProRes 422 HQ  
+Encoder: FFmpeg `prores_ks_vulkan`, `async_depth=1`
 
-## 测试方法
+## Test method
 
-使用 FFmpeg 生成固定灰色视频帧，经 `format=yuv422p10le,hwupload` 后直接送入
-`prores_ks_vulkan`。测试不包含 MCRAW 解码、去马赛克、调色或其他项目处理流程。
+FFmpeg generated fixed gray video frames, which were passed directly to
+`prores_ks_vulkan` after `format=yuv422p10le,hwupload`. The test excludes MCRAW
+decompression, demosaic, color grading, and all other project processing.
 
-每个并行度连续测试 3 次，结果取中位数。GPU 利用率和显存由
-`nvidia-smi` 每 100 ms 采样一次；GPU 利用率为设备级采样值。
+Each concurrency level ran three consecutive tests; the median is reported. GPU
+utilization and VRAM were sampled with `nvidia-smi` every 100 ms. GPU utilization
+is a device-level sample.
 
-## 中位数结果
+## Median results
 
-| 并行编码进程 | 吞吐 | 合计平均单帧成本 | 单路平均帧间隔 | GPU 平均 | GPU 峰值 | 显存峰值 |
+| Parallel encoder processes | Throughput | Aggregate mean cost/frame | Mean frame interval per stream | Mean GPU | GPU peak | VRAM peak |
 |---:|---:|---:|---:|---:|---:|---:|
 | 1 | 45.16 fps | 22.14 ms | 22.14 ms | 53.67% | 89% | 2,429 MiB |
 | 2 | 53.25 fps | 18.78 ms | 37.56 ms | 69.71% | 97% | 3,155 MiB |
 | 4 | 55.93 fps | 17.88 ms | 71.51 ms | 75.26% | 97% | 4,579 MiB |
 | 8 | 56.61 fps | 17.66 ms | 141.31 ms | 75.75% | 97% | 7,478 MiB |
 
-“合计平均单帧成本”按所有并行进程输出的总帧数计算；“单路平均帧间隔”表示
-每一路独立编码流的墙钟耗时，二者含义不同。
+“Aggregate mean cost/frame” is calculated over the total frames produced by all
+parallel processes. “Mean frame interval per stream” is the wall-clock duration
+of each independent encoding stream; the two metrics have different meanings.
 
-## 三次原始结果
+## Three raw runs
 
-| 并行度 | Run 1 吞吐 | Run 2 吞吐 | Run 3 吞吐 | 吞吐波动范围 |
+| Concurrency | Run 1 throughput | Run 2 throughput | Run 3 throughput | Throughput variation |
 |---:|---:|---:|---:|---:|
 | 1 | 45.12 fps | 45.16 fps | 48.40 fps | 7.3% |
 | 2 | 52.87 fps | 54.76 fps | 53.25 fps | 3.6% |
 | 4 | 55.93 fps | 56.20 fps | 55.53 fps | 1.2% |
 | 8 | 57.17 fps | 56.61 fps | 56.20 fps | 1.7% |
 
-## 结论
+## Conclusion
 
-在本次测试中，8 路并行获得最高吞吐，中位数为 **56.61 fps**，折合合计平均
-单帧成本 **17.66 ms**。GPU 平均利用率约 **75.75%**，峰值 **97%**，没有
-持续跑满 GPU；继续增加并行度的收益需要结合 CPU、显存和调度开销评估。
+Eight parallel streams achieved the highest throughput in this test, with a
+median of **56.61 fps** and an aggregate mean cost of **17.66 ms/frame**. Mean GPU
+utilization was about **75.75%**, with a peak of **97%**; the GPU was not saturated
+continuously. The benefit of adding more streams should be evaluated against CPU,
+VRAM, and scheduling overhead.
 
-4 路和 8 路的三次结果波动较小，分别约 1.2% 和 1.7%，本次中位数结果具有
-可比性。单路测试只有约 2 秒，启动和采样开销占比更高，因此波动约 7.3%。
-
+The three-run variation was small for four and eight streams, about 1.2% and
+1.7%, respectively, so the medians are comparable. The single-stream test lasted
+only about two seconds, making startup and sampling overhead more significant and
+producing roughly 7.3% variation.

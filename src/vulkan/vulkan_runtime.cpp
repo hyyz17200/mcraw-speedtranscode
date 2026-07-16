@@ -77,7 +77,7 @@ InstancePtr create_enumeration_instance() {
         throw Error(ErrorCode::unsupported_format, "Vulkan 1.3 or newer is required");
     }
     const VkApplicationInfo application{
-        VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "mcraw-transcoder", 1,
+        VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "mcraw-speedtranscode", 1,
         "mcraw-vulkan-probe", 1, VK_API_VERSION_1_3};
     const VkInstanceCreateInfo create_info{
         VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO, nullptr, 0, &application, 0, nullptr, 0, nullptr};

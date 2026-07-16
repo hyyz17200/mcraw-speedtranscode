@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://mcraw-transcoder.invalid/schema/config-v1.json",
-  "title": "mcraw-transcoder configuration v1",
+  "$id": "https://mcraw-speedtranscode.invalid/schema/config-v1.json",
+  "title": "mcraw-speedtranscode configuration v1",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version"],

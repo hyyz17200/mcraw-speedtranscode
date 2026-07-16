@@ -118,10 +118,10 @@ was also run separately for both benchmark candidates.
 ```powershell
 # Build the detached Stage 0 source commit separately, then run both candidates.
 .\scripts\benchmark-gpu-stage0.ps1 `
-  -Executable .\test-output\stage1f-stage0-build\Release\mcraw-transcoder.exe `
+  -Executable .\test-output\stage1f-stage0-build\Release\mcraw-speedtranscode.exe `
   -OutputDirectory .\test-output\gpu-stage1f-stage0-rebuilt
 .\scripts\benchmark-gpu-stage0.ps1 `
-  -Executable .\build\msvc-release\Release\mcraw-transcoder.exe `
+  -Executable .\build\msvc-release\Release\mcraw-speedtranscode.exe `
   -OutputDirectory .\test-output\gpu-stage1f-stage1
 .\scripts\compare-gpu-stage1.ps1
 

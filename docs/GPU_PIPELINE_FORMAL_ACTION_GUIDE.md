@@ -1,15 +1,13 @@
-# GPU Pipeline 下一阶段正式行动指南
+# GPU Pipeline Official Action Guide for the Next Phase
 
-日期：2026-07-14；最新修订：2026-07-15
-性质：实施与验收总纲  
-适用范围：Stage 0～3 / Batch A～D 已完成、GPU pipeline 已前移到 U16 RAW mosaic 入口后，
-清理确认的用户可见开销，验证 Vulkan ProRes async/queue serialization 候选，并在 U16 RAW
-入口冻结 GPU pipeline 边界；MCRAW compressed payload 保持 CPU 解码。
+Date: 2026-07-14; Latest revision: 2026-07-15
+Nature: General outline of implementation and acceptance
+Scope: Stage 0–3 / Batches A–D are complete. The GPU pipeline has been moved to the U16 RAW mosaic entry point. This guide covers cleanup of confirmed user-visible overhead, validation of Vulkan ProRes async/queue-serialization candidates, and freezing the GPU pipeline boundary at the U16 RAW entry; MCRAW compressed payload remains CPU-decoded.
 
-本文综合以下现状文档，并把已有分析转换为可执行的阶段、交付物、验收门槛和停止条件：
+This article synthesizes the following status documents and converts the existing analysis into executable stages, deliverables, acceptance thresholds, and stopping conditions:
 
 - `GPU_PIPELINE_SUMMARY_AND_NEXT_STEPS.md`
-- `GPU_PHASE1_VALIDATION.md` ～ `GPU_PHASE8_PRODUCTION.md`
+- `GPU_PHASE1_VALIDATION.md` ~ `GPU_PHASE8_PRODUCTION.md`
 - `GPU_PIPELINE_AUDIT.md`
 - `VULKAN_PRORES_GPU_PIPELINE_GUIDE.md`
 - `GPU_STAGE3F_E2E_BENCHMARK.md`
@@ -18,22 +16,21 @@
 - `test-output/full-file-parallel-benchmark/benchmark-report.json`
 - `implementation-status.md`
 
-本文不改变现有 CPU reference、Vulkan opt-in 策略或发布门槛。后续实现如与本文冲突，
-应先更新本文或记录 ADR，不能在实现中静默改变目标。
+This document does not change the existing CPU reference, Vulkan opt-in policy, or release thresholds. If subsequent implementation conflicts with it, update this document or record an ADR first; do not silently change the goal in code.
 
 ---
 
-## 1. 当前基线与正式结论
+## 1. Current baseline and formal conclusions
 
-### 1.1 已经完成的能力
+### 1.1 Completed capabilities
 
-当前 Vulkan 路径已经完成：
+The current Vulkan path is complete:
 
 ```text
 CPU official RAW decode
   -> U16 RAW mosaic upload
   -> Vulkan calibration / RCD demosaic
-  -> Vulkan Camera RGB / DWG / sharpening / DI
+  -> Vulkan Camera RGB/DWG/sharpening/DI
   -> Vulkan RGB-to-YUV 4:2:2 10-bit
   -> FFmpeg-owned AVVkFrame
   -> prores_ks_vulkan
@@ -41,210 +38,210 @@ CPU official RAW decode
   -> CPU MOV/audio mux
 ```
 
-已经验证的工程基础包括：
+Proven engineering foundations include:
 
-- FFmpeg-owned 单一 Vulkan logical device；
-- 应用 compute 和 `prores_ks_vulkan` 共用该 device；
-- shader 直接写 FFmpeg Vulkan frame pool；
-- timeline semaphore 和正确的 `AVVkFrame` ownership；
-- 有界 frame job queue、GPU slots、packet queue 和独立 mux worker；
-- normal path 无 `vkQueueWaitIdle()` / `vkDeviceWaitIdle()`；
-- backpressure、取消、异常传播、device lost 和 partial 文件清理；
-- `auto` 全尺寸 preflight/fallback 与强制 Vulkan 失败语义；
-- 240 帧 4096×3072 ProRes HQ + PCM 完整输出和软件全流解码。
+- FFmpeg-owned single Vulkan logical device;
+- The application compute and `prores_ks_vulkan` share this device;
+- The shader writes directly to the FFmpeg Vulkan frame pool;
+- timeline semaphore and correct `AVVkFrame` ownership;
+- Bounded frame job queue, GPU slots, packet queue and independent mux worker;
+- normal path None `vkQueueWaitIdle()` / `vkDeviceWaitIdle()`;
+- backpressure, cancellation, exception propagation, device lost and partial file cleaning;
+- `auto` full-size preflight/fallback with forced Vulkan fail semantics;
+- 240 frames 4096×3072 ProRes HQ + PCM full output and software full stream decoding.
 
-### 1.2 当前性能事实
+### 1.2 Current Performance Facts
 
-在 2026-07-15 的 RTX 3060 / NVIDIA 610.62、4096×3072 ProRes 422 HQ 基线上：
+On RTX 3060 / NVIDIA 610.62, 4096×3072 ProRes 422 HQ baseline on 2026-07-15:
 
-| 项目 | 结果 |
+| Project | Results |
 |---|---:|
-| 240 帧 precise 完整转换 | 34.776 fps |
-| 240 帧 fast 完整转换 | 36.857 fps |
+| 240 frames precise full conversion | 34.776 fps |
+| 240 frames fast full conversion | 36.857 fps |
 | GPU processing-only microbenchmark | 96.052 fps / 10.41 ms/frame |
 | GPU processing + Vulkan ProRes microbenchmark | 35.880 fps / 27.87 ms/frame |
-| encoder-only，1 个进程 | 45.16 fps / 22.14 ms/frame |
-| encoder-only，8 个进程 aggregate | 56.61 fps / 17.66 ms/frame |
-| 完整应用，1/2/4 个并行进程 aggregate | 32.75 / 30.02 / 28.63 fps |
+| encoder-only, 1 process | 45.16 fps / 22.14 ms/frame |
+| encoder-only, 8 processes aggregate | 56.61 fps / 17.66 ms/frame |
+| Full application, 1/2/4 parallel processes aggregate | 32.75 / 30.02 / 28.63 fps |
 
-processing-only 的 10.41 ms 与最佳 encoder-only aggregate 的 17.66 ms 相加，预测
-35.62 fps；实际 combined microbenchmark 为 35.88 fps。两个 benchmark 的输入内容和
-upload 路径并非完全相同，因此该等式不能证明内部没有任何 bubble，但它明确说明：**现有
-证据没有显示额外的大幅 steady-state pipeline 损耗。当前主要成本是 image processing 与
-ProRes encoding 在同一 GPU 上执行的有效工作，而不是重复未压缩数据复制、mux、queue lock
-或 CPU decode starvation。**
+10.41 ms for processing-only combined with 17.66 ms for the best encoder-only aggregate, predicted
+35.62 fps; actual combined microbenchmark is 35.88 fps. The input content of the two benchmarks and
+The upload paths are not exactly the same, so this equation doesn't prove that there aren't any bubbles inside, but it clearly states: **Existing
+The evidence does not show significant additional steady-state pipeline losses. The current main costs are image processing and
+ProRes encoding performs efficient work on the same GPU instead of duplicating uncompressed data copying, mux, queue lock
+or CPU decode starvation. **
 
-`encoder_send` 的约 26.88 ms 是线程阻塞位置，不是纯 encoder shader 时间。它可能同时包含
-输入帧 semaphore 尚未完成的 processing、ProRes GPU execution、packet transfer 和 FFmpeg
-内部 packet production。禁止把该 wall timer 直接解释为独立 encoder cost，也禁止用
-`nvidia-smi` 的设备级 utilization 乘 wall time 推导所谓 GPU-busy shader time。
+About 26.88 ms of `encoder_send` is the thread blocking position, not pure encoder shader time. it may contain both
+Input frame semaphore pending processing, ProRes GPU execution, packet transfer and FFmpeg
+Internal packet production. It is forbidden to directly interpret the wall timer as an independent encoder cost, and it is also forbidden to use
+The device-level utilization of `nvidia-smi` is multiplied by wall time to derive the so-called GPU-busy shader time.
 
-### 1.3 zero-copy 的准确口径
+### 1.3 The exact caliber of zero-copy
 
-当前已经实现的是：
+What has been implemented currently is:
 
 ```text
-CPU U16 RAW -> 一次 U16 upload -> Vulkan 全图像链
+CPU U16 RAW -> one U16 upload -> Vulkan full image chain
   -> FFmpeg AVVkFrame -> Vulkan ProRes -> compressed packet download
 ```
 
-生产路径没有 FP16/FP32 RGB upload、未压缩 YUV upload 或 pixel/YUV readback，因此 telemetry 中
+The production path does not have FP16/FP32 RGB upload, uncompressed YUV upload or pixel/YUV readback, so telemetry
 `gpu_resident=true`, `direct_frames=N`, `upload_frames=0`, `readback_frames=0`
-在既定定义下成立。
+Established under the established definition.
 
-这不是字面上的零传输：每帧仍有一次约 25.2 MB 的 U16 RAW host-to-device upload，编码后
-compressed bitstream 仍必须回到 CPU mux。这两次边界传输是当前架构的必要成本；在没有
-matched profiler 证据前，不把它们归类为重复 copy。正式口径为：
+That's not literally zero transfers: there's still a ~25.2 MB U16 RAW host-to-device upload per frame, encoded
+The compressed bitstream must still be returned to the CPU mux. These two boundary transfers are a necessary cost of the current architecture; without
+Before matching profiler evidence, they are not classified as duplicate copies. The official caliber is:
 
-> 每帧只向离散 GPU 上传一次尽可能小的源数据；所有大尺寸未压缩中间图像留在 VRAM；
-> 编码后只让压缩 packet 回到 CPU mux。
+> Upload the smallest possible source data to the discrete GPU only once per frame; all large uncompressed intermediate images stay in VRAM;
+> Just let the compressed packet go back to the CPU mux after encoding.
 
 ---
 
-## 2. 下一阶段的正式目标
+## 2. Formal goals for the next phase
 
-### 2.1 主目标
+### 2.1 Main goal
 
-已经按以下顺序完成 Vulkan pipeline 入口前移：
+The Vulkan pipeline entry has been moved forward in the following order:
 
 ```text
-TargetLog FP32 RGB（历史入口）
-  -> Camera RGB FP32
-  -> U16 RAW mosaic（当前及最终 GPU pipeline 入口）
+TargetLog FP32 RGB (Historical Entry)
+  ->Camera RGB FP32
+  -> U16 RAW mosaic (current and final GPU pipeline entry)
 ```
 
-项目不再以 GPU MCRAW decoder 为目标。compression 6/7 解码继续在 CPU 完成，Batch E
-负责把 official truth、调度、内存和必要的 CPU 快速路径做完整；后续 profiler 结果不再自动
-触发 GPU decoder 工作，若未来重新提出该方向，必须另立总纲或 ADR。
+Projects no longer target the GPU MCRAW decoder. compression 6/7 decoding continues on CPU, Batch E
+Responsible for completing official truth, scheduling, memory and necessary CPU fast paths; subsequent profiler results are no longer automatic
+Trigger GPU decoder work. If this direction is proposed again in the future, a new outline or ADR must be established.
 
-### 2.2 性能目标
+### 2.2 Performance Goals
 
-项目已经确认一个最低目标和一个扩展目标：
+The project has identified a minimum goal and an extended goal:
 
-- 最低产品目标：4096×3072 ProRes HQ 稳定达到源素材实时帧率；
-- 首个明确基准：≥24 fps；
-- 扩展目标：≥30 fps；
-- 不以短帧 smoke 的瞬时 FPS 代替完整样本结果；
-- 每阶段至少同时报告 end-to-end、各 producer stage、GPU timestamp、CPU/GPU
-  utilization、PCIe upload、VRAM peak 和磁盘写入。
+- Minimum product target: 4096×3072 ProRes HQ stably reaches the real-time frame rate of the source material;
+- First clear benchmark: ≥24 fps;
+- Stretch target: ≥30 fps;
+- Do not replace the full sample results with the instantaneous FPS of short frame smoke;
+- Each stage reports at least end-to-end, each producer stage, GPU timestamp, and CPU/GPU at the same time
+  utilization, PCIe upload, VRAM peak, and disk writes.
 
-24/30 fps 是行动目标，不是对 RTX 3060 的预先性能承诺。若硬件 compute、显存带宽或
-`prores_ks_vulkan` 在完整 GPU producer 下成为新瓶颈，应以 profiler 更新目标或方案。
+24/30 fps is an action goal, not an upfront performance promise for the RTX 3060. If the hardware compute, memory bandwidth or
+`prores_ks_vulkan` has become a new bottleneck under the full GPU producer, and the target or scheme should be updated with the profiler.
 
-### 2.3 不变约束
+### 2.3 Invariant constraints
 
-- CPU pipeline 保持 reference、默认和 fallback，禁止为 GPU 优化重写其稳定语义；
-- 同一 MOV 中禁止运行时从 Vulkan 切换 CPU encoder；
-- 只有 drain、trailer、close 和轻量 reopen/metadata validation 成功后才发布最终文件；完整
-  packet-by-packet 扫描保留为显式 verify/release/test gate，不再默认计入正常 conversion E2E；
-- 精度、demosaic 算法、metadata 或 chroma siting 的行为变化必须显式版本化；
-- 每个新 GPU stage 必须可独立 golden test、性能测试和故障注入；
-- 未完成发布 gates 前，Vulkan 保持 opt-in。
+- The CPU pipeline maintains reference, default, and fallback, and prohibits rewriting its stable semantics for GPU optimization;
+- Disable running-time switching of CPU encoder from Vulkan in the same MOV;
+- Only publish final files after drain, trailer, close and light reopen/metadata validation succeed; complete
+  Packet-by-packet scanning remains as an explicit verify/release/test gate and no longer counts towards normal conversion E2E by default;
+- Behavioral changes to precision, demosaic algorithms, metadata or chroma sitting must be explicitly versioned;
+- Each new GPU stage must be able to independently golden test, performance test and fault injection;
+- Vulkan remains opt-in until release gates are completed.
 
 ---
 
-## 3. 精度策略：Precise 与 Fast 分轨
+## 3. Precision strategy: Precise and Fast splitting
 
-性能优化和语义验证不能混成一个不可分辨的 backend。建议正式建立两条模式：
+Performance optimization and semantic validation cannot be mixed into an indistinguishable backend. It is recommended to formally establish two modes:
 
 ### 3.1 `fp32/precise`
 
-用途：GPU production reference、回归基线和逐阶段迁移。
+Purpose: GPU production reference, regression to baseline, and stage-by-stage migration.
 
-- shader 图像和关键计算使用 FP32；
-- 每帧颜色解算继续由 CPU FP64 完成，只上传最终矩阵/参数；
-- 保持现有 negative policy、sharpening、chroma filter、rounding、clamp 和 dither；
-- 最终量化前/量化后按阶段比较；
-- 最终 Y/Cb/Cr 与 CPU reference 最大差异保持 ≤1 LSB；
-- 非有限数和非法 metadata 继续明确报错。
+- shader images and key calculations use FP32;
+- Each frame color calculation continues to be completed by CPU FP64, and only the final matrix/parameters are uploaded;
+- Keep the existing negative policy, sharpening, chroma filter, rounding, clamp and dither;
+- Comparison by stage before final quantification/after quantification;
+- The final maximum difference between Y/Cb/Cr and CPU reference remains ≤1 LSB;
+- Non-limited numbers and illegal metadata will continue to explicitly report errors.
 
-### 3.2 `mixed/fast`（新增前必须先完成验证设计）
+### 3.2 `mixed/fast` (verification design must be completed before adding)
 
-用途：在 precise pipeline 正确后，以显式画质预算换吞吐和带宽。
+Purpose: After the precise pipeline is correct, explicit image quality budget is exchanged for throughput and bandwidth.
 
-建议候选策略：
+Suggested candidate strategies:
 
-- RGB/intermediate image 使用 FP16；
-- 矩阵参数、关键累加、DI 暗部和最终 YUV quantization 保持 FP32；
-- 允许 FMA、不同运算顺序、非 bit-exact dither；
-- DI 可评估 texture LUT + interpolation 或 shader analytic evaluation；
-- 不能让 fast mode 静默替代 precise mode。
+- RGB/intermediate image uses FP16;
+- Matrix parameters, key accumulation, DI shadows and final YUV quantization remain FP32;
+- Allow FMA, different order of operations, non-bit-exact dither;
+- DI can evaluate texture LUT + interpolation or shader analytic evaluation;
+- Fast mode cannot be silently substituted for precise mode.
 
-建议以以下数值作为**初始实验预算**，在固定 corpus 测量后再冻结正式阈值：
+It is recommended to use the following values as the **initial experiment budget**, and then freeze the formal threshold after fixing the corpus measurement:
 
-| 指标 | Precise | Fast 候选 |
+| Indicators | Precise | Fast Candidates |
 |---|---:|---:|
-| 最终 10-bit max error | ≤1 LSB | ≤8 LSB |
-| 最终 10-bit P99 error | ≤1 LSB | ≤2 LSB |
-| 最终 10-bit RMSE | 记录 | ≤1.0 LSB |
+| Final 10-bit max error | ≤1 LSB | ≤8 LSB |
+| Final 10-bit P99 error | ≤1 LSB | ≤2 LSB |
+| Final 10-bit RMSE | Record | ≤1.0 LSB |
 
-这些阈值不能替代图像检查。必须额外覆盖暗部、super-white、负值 toe、饱和颜色、细线、
-斜边、摩尔纹和高频 chroma。若 clipping 边界导致少量离群点，应记录坐标和原因，不能
-只扩大 max-error 阈值掩盖问题。
+These thresholds are not a substitute for image inspection. Must additionally cover shadows, super-white, negative toe, saturated colors, thin lines,
+Bevel edges, moiré and high frequency chroma. If clipping boundaries lead to a small number of outliers, the coordinates and reasons should be recorded.
+Only expanding the max-error threshold masks the problem.
 
-### 3.3 demosaic 单独验收
+### 3.3 demosaic separate acceptance
 
-demosaic 不能只通过最终 ProRes PSNR 验收。必须同时比较：
+demosaic cannot pass final ProRes PSNR acceptance alone. Both must be compared:
 
-- 线性 Camera RGB；
-- CFA 边界和四种 Bayer pattern；
-- 黑场、白场、坏点邻域和图像边缘；
-- 高频斜线、彩色摩尔纹和 zipper artifact；
-- max/RMSE/P50/P95/P99 及异常像素坐标；
-- 最终 DWG/DI/YUV 和解码 ProRes 的影响。
+- Linear Camera RGB;
+- CFA boundaries and four Bayer patterns;
+- Black point, white point, bad pixel neighborhood and image edge;
+- High frequency slashes, colored moiré and zipper artifacts;
+- max/RMSE/P50/P95/P99 and abnormal pixel coordinates;
+- Final DWG/DI/YUV and decoding ProRes impact.
 
-如果 GPU RCD 为近似实现，必须以新名称/模式暴露，不能声称与 librtprocess RCD 相同。
-
----
-
-## 4. 分阶段实施路线
-
-## Stage 0：冻结可复现基线和 profiler 合约
-
-### 目标
-
-在改变 pipeline 切分点前，建立所有后续阶段共同使用的事实基线。
-
-### 工作项
-
-1. 固定当前 commit、FFmpeg build、驱动、配置和样本 hash。
-2. 建立至少包含以下内容的固定 corpus：
-   - 当前 4096×3072、240 帧真实样本；
-   - 首帧、末帧和固定中间帧；
-   - 四种 CFA pattern 的小型 synthetic/golden；
-   - 暗部、super-white、负值、饱和色和高频边缘图案。
-3. 保存逐阶段 hash/statistics：RAW、calibrated mosaic、Camera RGB、TargetLinear、
-   TargetLog、YUV planes、packet/frame count、PTS 和 ffprobe JSON。
-4. 为 Vulkan stages 加 GPU timestamp query；CPU wall timer 不能冒充 GPU execution time。
-5. telemetry 明确区分：
-   - compressed input read bytes；
-   - U16 RAW upload；
-   - FP16/FP32 RGB upload；
-   - GPU image-to-image bytes 不宣称为 PCIe bytes；
-   - compressed packet download/mux bytes。
-6. 记录完整转换的 CPU%、GPU compute utilization、VRAM peak、PCIe、disk throughput。
-
-### 验收门槛
-
-- 同一构建重复运行的 frame count、PTS、RAW/YUV golden 和 telemetry invariant 稳定；
-- benchmark 至少一次 warm-up、三次正式运行，报告 median 和 spread；
-- validation layer 普通验证无应用错误；
-- 现有 Phase 8 输出行为不回归。
-
-### 停止条件
-
-如果基线重复波动足以掩盖预期优化幅度，先修正 benchmark 或 telemetry，不进入 Stage 1。
+If the GPU RCD is an approximate implementation, it must be exposed under a new name/mode and cannot be claimed to be identical to the librtprocess RCD.
 
 ---
 
-## Stage 1：Camera RGB 之后全 GPU
+## 4. Phased implementation route
 
-### 目标
+## Stage 0: Freeze reproducible baseline and profiler contracts
 
-消除当前约 511 ms/frame 的 CPU TargetLog producer，使上传切分点从 TargetLog RGB 前移到
-Camera RGB。
+### Target
 
-### 目标数据流
+Before changing the pipeline split point, establish a baseline of facts that will be used by all subsequent stages.
+
+### Work item
+
+1. Fixed current commit, FFmpeg build, driver, configuration and sample hash.
+2. Create a fixed corpus containing at least the following:
+   - Current 4096×3072, 240 frames real sample;
+   - First frame, last frame and fixed middle frame;
+   - Small synthetic/golden for four CFA patterns;
+   - Shadows, super-white, negative values, saturated colors and high-frequency edge patterns.
+3. Save phase-by-phase hash/statistics: RAW, calibrated mosaic, Camera RGB, TargetLinear,
+   TargetLog, YUV planes, packet/frame count, PTS and ffprobe JSON.
+4. Add GPU timestamp query to Vulkan stages; CPU wall timer cannot pretend to be GPU execution time.
+5. Telemetry clearly distinguishes:
+   - compressed input read bytes;
+   - U16 RAW upload;
+   - FP16/FP32 RGB upload;
+   - GPU image-to-image bytes are not declared as PCIe bytes;
+   - compressed packet download/mux bytes.
+6. Record CPU%, GPU compute utilization, VRAM peak, PCIe, disk throughput for complete conversion.
+
+### Acceptance threshold
+
+- frame count, PTS, RAW/YUV golden and telemetry invariant stable for repeated runs of the same build;
+- The benchmark has at least one warm-up, three official runs, and reports median and spread;
+- Validation layer normal validation without application errors;
+- Existing Phase 8 output behavior is not regressed.
+
+### Stop condition
+
+If the baseline repeatedly fluctuates enough to cover up the expected optimization range, correct the benchmark or telemetry first without entering Stage 1.
+
+---
+
+## Stage 1: Full GPU after Camera RGB
+
+### Target
+
+Eliminate the current CPU TargetLog producer of about 511 ms/frame, and move the upload splitting point forward from TargetLog RGB
+Camera RGB.
+
+### Target data flow
 
 ```text
 CPU decode/calibration/RCD
@@ -253,53 +250,53 @@ CPU decode/calibration/RCD
   -> Vulkan neutral capture sharpening
   -> Vulkan DaVinci Intermediate
   -> Vulkan RGB-to-YUV 4:2:2 10-bit
-  -> existing AVVkFrame / prores_ks_vulkan
+  -> existing AVVkFrame/prores_ks_vulkan
 ```
 
-### 实现原则
+### Implementation principles
 
-- CPU 保留 CameraNeutral、dual illuminant、ForwardMatrix、Bradford 和 DWG matrix 的 FP64
-  setup；只把最终 matrix、exposure 和 policy 参数作为 uniform/push data 上传；
-- 第一版每个逻辑 stage 独立 golden test；正确后再由 profiler 决定 pass fusion；
-- sharpening 使用 tile/shared memory 时必须保持邻域语义和边界规则；
-- DI 首版以 FP32 precise 为基线，不在同一提交中同时引入 FP16；
-- 直接复用现有 FFmpeg frames、timeline semaphore、slot 和 encoder handoff。
+- CPU retains FP64 for CameraNeutral, dual illuminant, ForwardMatrix, Bradford and DWG matrix
+  setup; only upload the final matrix, exposure and policy parameters as uniform/push data;
+- In the first version, each logical stage has an independent golden test; after it is correct, the profiler will decide pass fusion;
+- Neighborhood semantics and boundary rules must be maintained when sharpening uses tile/shared memory;
+- The first version of DI uses FP32 precise as the baseline and does not introduce FP16 at the same time in the same submission;
+- Directly reuse existing FFmpeg frames, timeline semaphore, slot and encoder handoff.
 
-### 交付物
+### Deliverables
 
-- Vulkan color/exposure pass；
-- Vulkan sharpening pass；
-- Vulkan DI pass；
-- Camera RGB staging writer；
-- stage-level golden tests 和完整 E2E regression；
-- 新旧路径 matched benchmark 与 GPU timestamp breakdown；
-- sidecar 增加实际 pipeline entry 和 precision 标记。
+- Vulkan color/exposure pass;
+- Vulkan sharpening pass;
+- Vulkan DI pass;
+- Camera RGB staging writer;
+- stage-level golden tests and full E2E regression;
+- New and old paths matched benchmark and GPU timestamp breakdown;
+- sidecar adds actual pipeline entry and precision tags.
 
-### 验收门槛
+### Acceptance threshold
 
-- precise 模式最终 YUV ≤1 LSB；
-- 所有现有音频、PTS、MOV cleanup、fallback 和 device-lost tests 继续通过；
-- 不增加 CPU readback；
-- GPU queue 应比当前更持续获得工作；
-- 完整样本端到端性能必须有可重复改善。建议 go/no-go 下限为 ≥20%，否则先 profile，
-  不继续盲目融合 shader。
+- precise mode final YUV ≤1 LSB;
+- All existing audio, PTS, MOV cleanup, fallback and device-lost tests continue to pass;
+- Does not increase CPU readback;
+- The GPU queue should continue to get work more continuously than it currently does;
+- There must be repeatable improvements in full sample end-to-end performance. It is recommended that the lower limit of go/no-go is ≥20%, otherwise profile first.
+  Do not continue to blindly fuse shaders.
 
-### 阶段决策
+### Stage decision-making
 
-- 若颜色链成为 GPU 热点：先分析 occupancy、带宽、pass 间 layout 和 fusion；
-- 若 demosaic 明确成为绝对主瓶颈：冻结 Stage 1 正确版本，进入 Stage 2；
-- 若 PCIe Camera RGB upload 成为热点：Stage 2 优先级进一步提高。
+- If the color chain becomes a GPU hotspot: first analyze occupancy, bandwidth, inter-pass layout and fusion;
+- If demosaic clearly becomes the absolute main bottleneck: freeze the correct version of Stage 1 and enter Stage 2;
+- If PCIe Camera RGB upload becomes a hotspot: Stage 2 priority is further increased.
 
 ---
 
-## Stage 2：U16 RAW upload + GPU calibration + GPU demosaic
+## Stage 2: U16 RAW upload + GPU calibration + GPU demosaic
 
-### 目标
+### Target
 
-把每帧上传量从约 151 MB FP32 RGB 降为约 25.2 MB U16 CFA，并消除 CPU calibration 和
-RCD demosaic 热点。
+Reduces upload size per frame from ~151 MB FP32 RGB to ~25.2 MB U16 CFA and eliminates CPU calibration and
+RCD demosaic hotspot.
 
-### 目标数据流
+### Target data flow
 
 ```text
 CPU official MCRAW decode
@@ -310,489 +307,349 @@ CPU official MCRAW decode
   -> Vulkan ProRes
 ```
 
-### 子阶段
+### Substage
 
-1. **2A：U16 upload 与 calibration shader**
-   - 四 CFA position 独立 black/white；
-   - 不提前 clamp negative/super-white；
-   - 先输出可读回测试 image，仅在测试路径 readback。
+1. **2A: U16 upload and calibration shader**
+   - Four CFA positions independent black/white;
+   - Do not clamp negative/super-white in advance;
+   - First output the test image that can be read back, and only readback in the test path.
 2. **2B：GPU RCD precise prototype**
-   - 先正确，再 tile/shared-memory 优化；
-   - 四种 Bayer pattern 和边缘处理独立验证；
-   - 不与 calibration fusion 同时首次落地。
-3. **2C：GPU-resident 串联与 fusion**
-   - production path 禁止中间 readback；
-   - profiler 证明收益后再融合 calibration/RCD 或后续 color pass；
-   - transfer queue 与 compute overlap 只有在实际 queue family 和 profiler 支持时采用。
+   - Correct first, then optimize tile/shared-memory;
+   - Independent verification of four Bayer patterns and edge processing;
+   - Not first launched at the same time as calibration fusion.
+3. **2C: GPU-resident concatenation and fusion**
+   - production path prohibits intermediate readback;
+   - Profiler proves the benefits before integrating calibration/RCD or subsequent color pass;
+   - Transfer queue and compute overlap are only used when supported by the actual queue family and profiler.
 
-### 交付物
+### Deliverables
 
-- U16 RAW Vulkan input type/ownership；
-- calibration compute shader；
-- GPU RCD precise implementation；
-- stage readback test harness（仅测试）；
-- demosaic quality corpus/report；
-- U16 upload bytes、GPU stage timestamp、VRAM peak 和 E2E benchmark。
+- U16 RAW Vulkan input type/ownership;
+- calibration compute shader;
+- GPU RCD precise implementation;
+- stage readback test harness (test only);
+- demosaic quality corpus/report;
+- U16 upload bytes, GPU stage timestamp, VRAM peak and E2E benchmark.
 
-### 验收门槛
+### Acceptance threshold
 
-- production telemetry 中 FP32 RGB upload 必须为 0；
-- production path 不允许 calibrated/Camera RGB readback；
-- U16 RAW upload byte accounting 精确；
-- precise demosaic 达到正式批准的容差，且无结构性 artifact；
-- 最终 YUV、MOV、音频和错误处理继续满足 Stage 1 标准；
-- 完整样本相对 Stage 1 有可重复性能收益。
+- FP32 RGB upload in production telemetry must be 0;
+- The production path does not allow calibrated/Camera RGB readback;
+- U16 RAW upload byte accounting accurate;
+- precise demosaic meets officially approved tolerances and has no structural artifacts;
+- Finally YUV, MOV, audio and error handling continue to meet Stage 1 standards;
+- Full sample has repeatable performance gains over Stage 1.
 
-### 停止条件
+### Stop condition
 
-- 如果 GPU RCD 质量无法达到 precise 门槛，保留 CPU RCD 路径并将近似算法限制在 fast
-  mode；不能降低 precise 名义标准；
-- 如果 Vulkan ProRes 与完整 GPU image pipeline 开始争用 compute，必须重新 profile
-  queue overlap、async depth 和 shader/encoder占比，再决定优化方向。
-
----
-
-## Stage 3：混合精度与 fast mode
-
-### 前置条件
-
-- Stage 1/2 的 FP32 precise pipeline 已正确、稳定且有完整 golden；
-- 已测得 GPU stage 的带宽、occupancy、VRAM 和 compute 分布；
-- 能证明 FP16/fast 优化针对真实瓶颈，而不是只减少理论字节数。
-
-### 工作项
-
-按一次只改变一个变量的顺序评估：
-
-1. FP16 intermediate storage，FP32 accumulation；
-2. FP16 color/sharpen 部分计算；
-3. texture DI LUT / analytic DI；
-4. 非 bit-exact GPU dither；
-5. precise RCD 与 fast demosaic 的独立选择。
-
-### 验收门槛
-
-- 每个变量都有 A/B output、数值报告、视觉 corpus 和 performance delta；
-- 单项若端到端收益低于噪声或引入不可接受 artifact，则撤销该项；
-- preset/sidecar 必须明确记录 precision、demosaic implementation、dither 和 DI mode；
-- fast 输出不能与 precise 输出使用无法区分的配置身份。
+- If the GPU RCD quality cannot reach the precise threshold, retain the CPU RCD path and limit the approximation algorithm to fast
+  mode; cannot lower the precise nominal standard;
+- If Vulkan ProRes and the full GPU image pipeline start competing for compute, you must re-profile
+  Queue overlap, async depth and shader/encoder ratio determine the optimization direction.
 
 ---
 
-## Stage 3G / Batch D.1：GPU pipeline 结构性清理与受控实验
+## Stage 3: mixed precision and fast mode
 
-### 正式诊断
+### Preconditions
 
-2026-07-15 serialization review 确认两个代码事实：
+- The FP32 precise pipeline of Stage 1/2 is correct, stable and has complete golden;
+- The bandwidth, occupation, VRAM and compute distribution of the GPU stage have been measured;
+- Be able to demonstrate that FP16/fast optimizations target real bottlenecks, rather than just reducing theoretical bytes.
 
-1. vendored FFmpeg 的 `prores_ks_vulkan` compute exec pool 被硬编码为 1，并将用户请求的
-   `async_depth` 覆盖为实际 pool size 1；当前 sidecar 记录的是 requested depth，不是 effective
-   depth；
-2. 应用 processing command 和该单 context encoder 当前都使用第一个 compute family 的 queue
-   index 0，因此两者的 GPU command 在同一 Vulkan queue 上按序执行。
+### Work item
 
-这些是需要修正或实验的结构性限制，但当前 benchmark **没有证明**它们造成可回收的 40～56
-fps 大幅缺口。多个 Vulkan queue 仍共享同一 GPU 的 SM、cache 和 memory bandwidth；第二个
-queue 只提供并发调度机会，不等于第二个硬件 encoder。任何收益必须由相同真实帧、相同进程、
-相同配置的 matched A/B 证明。
+Evaluate in order changing only one variable at a time:
 
-### D.1-A：删除已确认的无意义 wall-time 开销
+1. FP16 intermediate storage, FP32 accumulation;
+2. FP16 color/sharpen part calculation;
+3. texture DI LUT / analytic DI;
+4. Non-bit-exact GPU dither;
+5. Independent selection of precise RCD and fast demosaic.
 
-1. 正常转换不再在 E2E timer 内无条件 `av_read_frame()` 扫描刚写完的整份 MOV。现有约
-   1.40 GB / 240 帧输出的只读复测约为 0.67～0.81 秒，占 6.51 秒完整转换约 10～12%；
-2. 保留轻量 reopen、stream/codec/color metadata、trailer 和已有 writer 内部 packet count/PTS
-   invariant；完整 packet scan 通过显式 verify 模式或 release/test gate 执行；
-3. telemetry 分离 `startup_preflight`、`conversion_core`、`output_validation` 和用户可见
-   `process_wall`，禁止用不同 timer boundary 的 FPS 互相比较；
-4. 消除 capability probe 与真实 writer 对 full-resolution Vulkan runtime/frame pool/encoder 的
-   重复构造。forced Vulkan 可由真实 writer initialization 负责失败；auto fallback 采用轻量
-   probe、资源复用或在提交正式输出前捕获真实 initialization failure。
+### Acceptance threshold
 
-### D.1-B：修正 effective async depth，并把收益视为实验结果
-
-1. 以可持续的 vcpkg patch 修正 `proresenc_kostya_vulkan.c`：compute exec pool 使用受设备
-   queue/resource 限制的 requested depth，不再静默固定为 1；
-2. sidecar 同时记录 requested/effective depth、compute pool size、queue family/index 分配；
-3. 使用完整真实帧单进程 workload 测 depth 1/2/4/8，报告 combined E2E、processing GPU
-   timestamps、`encoder_send/receive`、queue idle、packet transfer、VRAM 和输出正确性；
-4. 不以“`encoder_send` 进入 low single digits”或“E2E 必须达到 40 fps”作为预设验收值。
-   只接受超出 benchmark spread、没有质量/稳定性回归且资源增长合理的 depth。
-
-仅创建多个 `VulkanProResEncoder` 并在当前单一 Vulkan encoder thread 中 round-robin 不会产生
-并发：每次 blocking `send()` 返回后才可能调用下一个实例。若未来评估多 context app-only
-方案，必须明确增加并发 workers、packet reorder、共享 device synchronization 和 VRAM 预算；
-它不是 FFmpeg pool 修正的等价低风险替代品。
-
-### D.1-C：有证据后才实验 queue separation
-
-只有 D.1-B 证明 effective depth 增加后仍存在可重叠的 queue idle/bubble，才进行 queue
-separation：
-
-- 为 processing 与 encoder 明确分配/保留不同 queue index，不能只让 app 改到 index 1，
-  同时又让 FFmpeg exec pool round-robin 占用所有 queue；
-- queue lock/unlock 必须使用实际 family/index，timeline semaphore 的跨 queue ownership 和
-  wait/signal 值必须继续正确；
-- 单独报告 async-only、queue-only、async+queue 三组 matched A/B；
-- 50～56 fps 只能作为探索上界，不能写成预期结果或验收门槛。
-
-### D.1-D：RAW staging、slot depth 和其他次级候选
-
-- `raw_upload` 当前只要求 `HOST_VISIBLE | HOST_COHERENT`；先记录实际 memory type/heap flags，
-  再判断 shader 是否确实直接读取 system-visible memory；
-- device-local RAW staging 不会消除 25.2 MB PCIe transfer，只可能把它移到 copy engine 并与
-  compute 重叠。必须以完整 E2E 改善验收，不能只以 `raw_calibration` timestamp 下降验收；
-- 当前 slot wait、frame allocation、queue-lock wait、submit 和 mux 都不是主瓶颈。只有修正
-  async 后 telemetry 出现 slot backpressure，才提高 resident slot/queue depth；
-- 不再增加完整应用并行进程。现有 1/2/4 process aggregate 已从 32.75 降至 30.02/28.63 fps，
-  同时 VRAM 从约 3.3 GB 增至 6.0/11.2 GB。
-
-### 验收与停止条件
-
-- 每一步一次只改变一个变量，使用相同 executable/config/input 做 warm-up + 至少三次正式 A/B；
-- 保持 `direct_frames == frame_count`、RGB/YUV upload/readback 为 0、最终 YUV/ProRes/PTS/audio
-  和取消/partial cleanup 不回归；
-- 已确认的 validation/preflight 清理以用户可见 wall time 和正确性验收；async/queue/staging
-  以 matched conversion-core 与 process-wall 同时改善验收；
-- 若 async depth、queue separation 或 staging 未超出噪声，正式记录 no-go，并接受 shared GPU
-  useful work 是该硬件上的 steady-state 上限；不得继续用更多进程、slot 或未经证实的复制
-  重构追逐理论并行。
+- A/B output, numerical reports, visual corpus and performance delta for each variable;
+- If the end-to-end revenue of a single item is lower than the noise or introduces unacceptable artifacts, the item will be revoked;
+- preset/sidecar must clearly document precision, demosaic implementation, dither and DI mode;
+- fast output cannot use an indistinguishable configuration identity from precise output.
 
 ---
 
-## Stage 4 / Batch E：完成 CPU MCRAW compression 6/7 decoder
+## Stage 3G / Batch D.1: GPU pipeline structural cleaning and controlled experiments
 
-### 正式边界与目标
+### Formal diagnosis
 
-Batch E 是 CPU decoder 的完整实施批次，不再是 GPU decoder 的前置评估。最终生产数据流为：
+2026-07-15 serialization review confirms two code facts:
 
-```text
-CPU file read/index + metadata
-  -> CPU compression 6/7 decode
-  -> contiguous U16 RAW mosaic
-  -> existing Vulkan calibration/RCD/color/DI/YUV/ProRes
-  -> compressed ProRes packet to CPU mux
-```
+1. vendored FFmpeg’s `prores_ks_vulkan` compute exec pool is hard-coded to 1, and the user requested
+   `async_depth` is overwritten to the actual pool size 1; the current sidecar record is requested depth, not effective
+   depth;
+2. Both the application processing command and the single context encoder currently use the queue of the first compute family.
+   index 0, so the GPU commands of both are executed sequentially on the same Vulkan queue.
 
-Batch E 的目标是：固定 compression 6/7 的 official truth；消除已知 RAW buffer 过度分配；
-以持久、有界的帧级 worker pool 取代 per-frame `std::async`；在统一 CPU 线程预算内建立稳定
-容量；只有 matched benchmark 证明仍有价值时，才引入仓库内的 bit-exact CPU 快速 decoder。
-official decoder 必须始终保留为 golden/reference 和可选择的 fallback。
+These are structural constraints that need fixing or experimentation, but the current benchmark **does not demonstrate** that they result in recoverable 40~56
+Huge fps notch. Multiple Vulkan queues still share the SM, cache and memory bandwidth of the same GPU; the second
+Queue only provides concurrent scheduling opportunities and is not equal to the second hardware encoder. Any gains must be made by the same real frame, the same process,
+Matched A/B proof of the same configuration.
 
-### 格式边界：compression 6 与 7 必须分轨
+### D.1-A: Remove confirmed meaningless wall-time overhead
 
-- 当前固定的 `release/0.2` commit `06bf1a8` 只接受 compression 7，不能作为
-  compression 6 truth source；第一步必须更新并固定真正同时覆盖 6/7 的 immutable commit；
-- compression 7 使用 64-sample block、独立 bits/refs metadata 和 4-row interleave；
-- compression 6 是独立 legacy bitstream，具有不同 block、padding、offset 和逐行交织语义；
-- compression 7 的 block-offset 表、4-row band 或 SIMD kernel 不得未经独立设计直接复用于
-  compression 6；两种格式分别建立 golden corpus、错误输入测试、benchmark 和 telemetry；
+1. Normal conversion no longer unconditionally scans the entire MOV just written within the E2E timer with `av_read_frame()`. Existing approx.
+   The read-only retest of 1.40 GB / 240 frame output is about 0.67~0.81 seconds, accounting for about 10~12% of the 6.51 second complete conversion;
+2. Keep lightweight reopen, stream/co…2716 tokens truncated…tively:
 
-### 项目决策：compression 6 验收豁免（2026-07-16）
+- Memory payload → pure decoder-only for U16;
+- `loadFrame` for real file reading, metadata JSON parse, decode and output buffer;
+- Complete precise/fast Vulkan pipeline;
+- compression 6 and 7;
+- frame workers 1/2/4/6/8, and a combination of intra-frame threads subject to a unified budget.
 
-项目决定不再等待或要求真实 compression 6 素材，放弃本项目内对 compression 6 的素材级
-golden、损坏输入、容量和完整流水测试验收。该决定是测试覆盖豁免，不是格式不支持声明，也
-不改变已冻结的 official upstream decoder。
+Each group runs at least three long samples after warm-up, reporting P50/P90/P95/P99, MP/s, CPU
+core-equivalent, working set, compressed input GB/s, producer wait, queue depth, downstream
+backpressure and end-to-end FPS. Capacity and resource costs continue to be reported for 90/120/130 fps, but these are capacity bins,
+This is not a product promise that all 8-core machines must meet. 2 ms/frame for 4096×2160 is exploratory only
+stretch result, shall not replace the project's official threshold of 4096×3072 corpus.
 
-运行时策略保持为：遇到 metadata 标记为 compression 6 的 MCRAW 时，继续尝试调用 official
-legacy decoder 完成转码；同时必须向控制台输出明确警告，说明 compression 6 未经过本项目
-真实素材验证，输出不具备本项目 compression 7 同等级的验证保证。不得静默宣称 compression
-6 已通过 bit-exact 或生产验收。本文只记录策略与验收边界，本次不修改代码实现。
-- official decoder 更新后先重新审计其 SIMD、分配和输出 API。旧 `06bf1a8` 的标量热点数据
-  只能作为历史背景，不能直接证明新自研 decoder 的收益。
+### E-D: compression 7 fast decoder in the warehouse (conditional implementation)
 
-### E-A：冻结 official truth 与输入语义
+Only if E-C proves that the updated official decoder is still worth optimizing, new modules will be implemented in the following order; no in-place modifications are allowed
+FetchContent source:
 
-1. 固定覆盖 compression 6/7 的 official MotionCam decoder commit，记录 upstream diff、许可证、
-   build flags 和 source hash；
-2. 吸收 RAW output buffer 类型/长度修复：4096×3072 U16 RAW 的有效容量应为 24 MiB/frame，
-   不得再以字节数 resize `std::vector<uint16_t>` 形成 48 MiB capacity；
-3. 明确 `BUFFER` payload、metadata、width/height、encoded width/height、compression type 和
-   output span 的 API 合约，禁止靠调用方 workaround 隐藏 decoder 尺寸错误；
-4. compression 6/7 各选真实首/中/末帧并保存 payload hash、metadata 和 official U16 hash；
-5. 对 unsupported compression、截断 payload、非法 header/offset/bit width、尺寸乘法溢出和
-   output-too-small 建立安全失败测试。
+1. **M0: benchmark, golden, synthetic encoder and bit-width histogram. ** Stable reproduction first
+   official output and real performance;
+2. **M1: scratch reuse and direct writing U16. ** Delete `p0..p3 -> row vectors -> memcpy` intermediate traffic,
+   Maintain single thread and original unpack semantics;
+3. **M2: block offset table and complete input verification. ** After bits metadata is solved, use 64-bit prefix and build absolute
+   offset, verify the final range, and then allow block/band to be scheduled independently;
+4. **M3: 4-row band intra-frame parallelism. ** Use OpenMP or existing persistent executor, tuned by band grain; production
+   Whether the default value is greater than 1 thread is determined by the complete pipeline benchmark under a unified budget;
+5. **M4: independent ISA translation units. ** scalar/SSE4.1/AVX2 are compiled separately and detected at runtime; AVX2
+   Must not be applied to the entire binary. Increase the kernel one by one according to the real bit-width histogram and test the lane separately.
+   interleave, reference add, tail clipping and `vzeroupper`;
+6. **M5: opt-in integration, fuzz and matched A/B. ** The new path can be activated first, and the official path is retained;
+   Default switching is discussed only after all correctness, stability, and performance gates in this section have been met.
 
-### E-B：持久、有界的帧级调度与内存
+It is recommended that the module boundary be the warehouse's own `raw_decode` API: input immutable payload, clear compression type,
+dimensions, writable U16 span, options and external reuse scratch; returns structured error code and metadata/offset/
+payload/total timings. Disable exceptions as normal error branching, hot-loop allocation, misaligned/endian assumptions, or let
+The entire `mcraw_core` depends on AVX2.
 
-1. 将 `src/cli/main.cpp` 的 per-frame `std::async` 替换为转换实例私有的持久 worker pool；
-2. queue 和 in-flight frame 数必须有界，保持输入顺序交付、取消、首错传播、drain、partial
-   output cleanup 和 decoder instance pool 语义；
-3. 每个并发 decoder instance 复用 compressed scratch、metadata scratch 和 U16 output capacity，
-   hot path 不得每帧创建线程或无条件重新分配；
-4. 建立统一 CPU 预算：`frame_workers × decode_threads_per_frame` 不得绕过总线程上限。
-   完整流水默认优先帧级并行，帧内 decode threads 初始为 1；高帧内并行仅用于单帧低延迟
-   或 matched benchmark 证明其端到端更优的配置；
-5. 生产初始候选为 6 个持久 frame workers，但必须按目标硬件、总线程预算、工作集和下游
-   backpressure 自动收敛；不得把 16-worker decoder-only 峰值直接设为默认。
+### E-E: compression 6 optimization strategy
 
-### E-C：重新建立 decoder 基线与容量分档
+compression 6 first only accesses the updated official legacy decoder and bit-exact tests. only reality
+Compression 6 corpus only establishes an independent milestone after proving it is a capacity or latency hotspot; its block offset, row-level
+Parallel, SIMD and tail schemes must be re-derived from the legacy format. There are no real corpus, official golden and
+Does not implement or declare compression 6 fast decoder when matched benchmark.
 
-2026-07-15 的预评估可作为实验设计依据，但不是新实现的验收结果。该 Ryzen 7 3700X、
-4096×3072 compression 7、826 帧 warm 样本结果为：
+### E-F: Acceptance, default path and stop conditions
 
-| Persistent workers | Median decode throughput | Run range | CPU core-equivalent | P95 loadFrame | Peak working set |
-|---:|---:|---:|---:|---:|---:|
-| 1 | 43.77 fps | single run | 1.00 | 20.42 ms | 68 MiB |
-| 2 | 77.25 fps | single run | 2.00 | 24.60 ms | 120 MiB |
-| 4 | 111.02 fps | 108.59-111.48 | 3.95 | 35.42 ms | 235 MiB |
-| 6 | 121.82 fps | 119.83-123.81 | 5.96 | 48.47 ms | 351 MiB |
-| 8 | 126.10 fps | 124.67-127.13 | 7.89 | 62.32 ms | 467 MiB |
-| 12 | 130.74 fps | 130.05-131.29 | 11.65 | 90.90 ms | 697 MiB |
-| 16 | 136.66 fps | 135.59-138.15 | 13.33 | 135.35 ms | 927 MiB |
+Non-relaxable correctness threshold:
 
-更新 official decoder 和 worker pool 后，必须分别测量：
+- Every implementation, ISA and thread combination of compression 6/7 is bit-exact pixel-by-pixel with the corresponding official decoder U16;
+- The output is independent of the number of workers, the number of threads in the frame and the scheduling order;
+- Payload length, header, offset, size, padding, encoded width and output span all boundary verification;
+- Corrupted input, cancellation and decoder exceptions cannot produce a disguised complete MOV;
+- The metadata, PTS, audio, fallback, cleanup and sidecar behaviors of CPU/GPU backend are not returned.
 
-- 内存 payload → U16 的纯 decoder-only；
-- 真实文件读取、metadata JSON parse、decode 和输出 buffer 的 `loadFrame`；
-- 完整 precise/fast Vulkan pipeline；
-- compression 6 与 7；
-- frame workers 1/2/4/6/8，以及受统一预算约束的帧内线程组合。
+Performance go/no-go: Single optimization must exceed noise in matched long samples and satisfy at least one: decoder-only
+Median improvement ≥15%; reduce at least one frame worker in the same throughput bin; or significantly reduce working set/P95 and
+There is no rollback end-to-end. If M1–M4 does not meet this threshold, retain the proven simpler version and do not pursue theoretical SIMD width.
+Keep adding complexity.
 
-每组至少 warm-up 后三次长样本正式运行，报告 P50/P90/P95/P99、MP/s、CPU
-core-equivalent、working set、compressed input GB/s、producer wait、queue depth、downstream
-backpressure 和端到端 FPS。继续报告 90/120/130 fps 的容量与资源成本，但这些是容量分档，
-不是要求所有 8 核机器必须达到的产品承诺。4096×2160 的 2 ms/frame 仅可作为探索性
-stretch result，不得代替项目 4096×3072 corpus 的正式门槛。
+The new decoder must also pass compression 6/7 full corpus, scalar/SSE/AVX2,
+1/2/4/6/8 workers, cancel/corrupt input, long time and full precise/fast Vulkan A/B. Even if the fast path becomes
+By default, the official decoder remains as the reference/diagnostic path. After Batch E is completed, the GPU pipeline boundary is officially
+Freeze on U16 RAW upload; GPU decoder subsequent steps are no longer retained.
 
-### E-D：compression 7 仓库内快速 decoder（条件实施）
-
-只有 E-C 证明更新后的 official decoder 仍值得优化，才按以下顺序实施新模块；不得原地修改
-FetchContent source：
-
-1. **M0：benchmark、golden、synthetic encoder 与 bit-width histogram。** 先稳定复现
-   official 输出和真实性能；
-2. **M1：scratch 复用与直写 U16。** 删除 `p0..p3 -> row vectors -> memcpy` 中间流量，
-   保持单线程和原有 unpack 语义；
-3. **M2：block offset 表与完整输入验证。** bits metadata 解出后用 64-bit 前缀和构建绝对
-   offset，验证最终范围，再允许 block/band 独立调度；
-4. **M3：4-row band 帧内并行。** 使用 OpenMP 或已有持久执行器，按 band grain 调优；生产
-   默认是否大于 1 thread 由统一预算下的完整流水 benchmark 决定；
-5. **M4：独立 ISA translation units。** scalar/SSE4.1/AVX2 分开编译并运行时检测；AVX2
-   不得施加到整个二进制。按真实 bit-width histogram 逐个增加 kernel，单独测试 lane
-   interleave、reference add、尾部裁剪和 `vzeroupper`；
-6. **M5：opt-in 集成、fuzz 和 matched A/B。** 新路径先可选择启用，official 路径保留；
-   达到本节所有正确性、稳定性和性能 gates 后才讨论默认切换。
-
-建议模块边界为仓库自有 `raw_decode` API：输入 immutable payload、明确的 compression type、
-dimensions、可写 U16 span、options 和外部复用 scratch；返回结构化错误码与 metadata/offset/
-payload/total timings。禁止异常作为正常错误分支、hot-loop allocation、未对齐/端序假设或让
-整个 `mcraw_core` 依赖 AVX2。
-
-### E-E：compression 6 优化策略
-
-compression 6 首先只接入更新后的 official legacy decoder 和 bit-exact tests。只有真实
-compression 6 corpus 证明其为容量或延迟热点，才建立独立 milestone；其 block offset、行级
-并行、SIMD 和尾部方案必须从 legacy format 重新推导。没有真实 corpus、official golden 和
-matched benchmark 时，不实现或宣称 compression 6 fast decoder。
-
-### E-F：验收、默认路径与停止条件
-
-不可放宽的正确性门槛：
-
-- compression 6/7 的每个实现、ISA 和线程组合都与对应 official decoder U16 逐像素 bit-exact；
-- 输出与 worker 数、帧内线程数和调度顺序无关；
-- payload 长度、header、offset、尺寸、padding、encoded width 和 output span 全部边界验证；
-- 损坏输入、取消和 decoder 异常不能产生伪装完整的 MOV；
-- CPU/GPU backend 的 metadata、PTS、音频、fallback、cleanup 和 sidecar 行为不回归。
-
-性能 go/no-go：单项优化必须在 matched 长样本中超出噪声，并满足至少一项：decoder-only
-中位数改善 ≥15%；在同一吞吐分档下降低至少一个 frame worker；或显著降低工作集/P95 且
-端到端不回退。若 M1–M4 未达到该门槛，保留已验证的较简单版本，不为追求理论 SIMD 宽度
-继续增加复杂度。
-
-新 decoder 成为默认前还必须通过 compression 6/7 完整 corpus、scalar/SSE/AVX2、
-1/2/4/6/8 workers、取消/损坏输入、长时间和完整 precise/fast Vulkan A/B。即使快速路径成为
-默认，official decoder 仍保留为 reference/诊断路径。Batch E 完成后，GPU pipeline 边界正式
-冻结在 U16 RAW upload；不再保留 GPU decoder 后续步骤。
-
-RAW 解压是整数语义和源数据正确性边界，不属于允许画质误差的 fast mode。
+RAW decompression is bounded by integer semantics and source data correctness, and does not belong to the fast mode that allows image quality errors.
 
 ---
 
-## 5. 性能测量与 go/no-go 规则
+## 5. Performance measurement and go/no-go rules
 
-每个 stage 的报告使用统一表格：
+The report of each stage uses a unified table:
 
-| 类别 | 必须报告 |
+| Category | Must Report |
 |---|---|
-| Build | commit、Release/Debug、FFmpeg commit/config、shader hash |
-| Hardware | CPU、RAM、GPU、VRAM、driver、Vulkan API |
-| Input | 文件 hash、尺寸、帧数、音频、配置 |
-| CPU | total/process utilization、各 CPU stage mean/P50/P95 |
-| GPU | 各 pass timestamp、queue busy/idle、encoder time、utilization |
-| Transfer | compressed input read bytes、U16/RGB upload bytes 与 GB/s、readback bytes |
-| Memory | system RAM peak、VRAM peak、slot/pool count |
-| Queues | capacity、max depth、wait count/time |
-| Output | conversion-core/process wall、validation wall、fps、packet bytes、disk MB/s、frame/PTS/audio validation |
-| Quality | stage error、final YUV error、decoded comparison、人工结论 |
+| Build | commit, Release/Debug, FFmpeg commit/config, shader hash |
+| Hardware | CPU, RAM, GPU, VRAM, driver, Vulkan API |
+| Input | File hash, size, frame number, audio, configuration |
+| CPU | total/process utilization, each CPU stage mean/P50/P95 |
+| GPU | Each pass timestamp, queue busy/idle, encoder time, utilization |
+| Transfer | compressed input read bytes, U16/RGB upload bytes and GB/s, readback bytes |
+| Memory | system RAM peak, VRAM peak, slot/pool count |
+| Queues | capacity, max depth, wait count/time |
+| Output | conversion-core/process wall, validation wall, fps, packet bytes, disk MB/s, frame/PTS/audio validation |
+| Quality | stage error, final YUV error, decoded comparison, manual conclusion |
 
-统一规则：
+Unified rules:
 
-1. 同一 executable/config/input 做 matched A/B；
-2. 先 warm-up，至少三次完整正式运行；
-3. 报告 median 和 min/max 或标准差；
-4. 短 smoke 只验证正确性，不用于承诺最终性能；
-5. stage timer 有并行重叠时，不能把 mean 相加当 wall time；
-6. 优先依据 GPU timestamp 和 queue idle 判断 shader/producer/encoder 瓶颈；
-7. 没有 profiler 证据时，不优先做 descriptor churn、queue 数量或 mux buffer 微调；
-8. `encoder_send` 等 API wall timer 只表示阻塞归属，不自动等于该 stage 的独占执行时间；
-9. 禁止用设备级 sampled GPU utilization × wall time 推导 shader GPU-busy time；
-10. isolated benchmark 与 combined benchmark 的输入内容、upload、进程数和 timer boundary 必须
-    一致或明确披露差异，不能把跨 workload 推导值当作验收事实；
-11. 分别报告 startup/preflight、conversion core、output validation 和 process wall；
-12. 每阶段设置 rollback point，性能未改善且复杂度显著上升时保留上一个稳定切分点。
-
----
-
-## 6. 发布 gates：与性能开发并行但不能跳过
-
-以下问题不阻止实验性 Stage 1/2 开发，但阻止 Vulkan backend 成为默认生产路径：
-
-1. [x] pinned FFmpeg ProRes DCT shader 的 GPU-assisted validation race：已在当前驱动与
-   validation layer 复现，并以 `GPU_BATCH_F_VALIDATION_RACE_WAIVER.md` 记录受限 waiver；
-2. DaVinci Resolve、Adobe Premiere 和至少一个桌面播放器的 decode/seek/color/duration/
-   audio sync 实测；其中 FFmpeg/VLC 已通过，Resolve 因外部脚本禁用未通过，Premiere 未安装，
-   详见 `GPU_BATCH_F_COMPATIBILITY.md`；
-3. [x] 已冻结并验证 chroma siting 与 primaries/TRC metadata 产品决策，CPU/Vulkan 均使用
-   left siting，DWG/DI 无标准 MOV 枚举故 primaries/TRC 保持 unspecified，详见
-   `GPU_BATCH_F_COLOR_METADATA.md`；
-4. AMD、Intel Vulkan 硬件和第二代 NVIDIA driver 覆盖；当前 RTX 3060 / 610.62 已通过，
-   本机无 AMD/Intel physical device 且未安装第二代 NVIDIA driver，缺失行保持阻塞，详见
-   `GPU_BATCH_F_HARDWARE_MATRIX.md`；
-5. 一小时真实素材转换；当前最长真实样本仅约 27.5 秒并已通过两轮，3,600 逻辑秒合成
-   stress 已通过但不替代真实素材，故本项保持阻塞，详见 `GPU_BATCH_F_STABILITY.md`；
-6. 多文件 batch、重复启动、取消、device lost 和资源增长测试；多文件/重复启动/取消语义/
-   资源增长已通过，真实 `VK_ERROR_DEVICE_LOST` 尚未注入，故本项保持阻塞；
-7. [x] 24 fps 已书面确认为最低产品门槛；最终 240 帧 precise 为 37.189 fps，真实 batch
-   为 35.78～38.34 fps，已通过性能门槛。
-
-metadata/chroma 决策必须同时作用于 CPU 与 GPU backend，不能只修 Vulkan 输出导致 reference
-分叉。
+1. Use the same executable/config/input as matched A/B;
+2. Warm-up first and run it at least three times;
+3. Report median and min/max or standard deviation;
+4. Short smoke only verifies correctness and is not used to promise final performance;
+5. When the stage timer has parallel overlap, the mean cannot be added as wall time;
+6. Prioritize the shader/producer/encoder bottleneck based on GPU timestamp and queue idle;
+7. When there is no profiler evidence, fine-tuning of descriptor churn, queue quantity or mux buffer is not given priority;
+8. API wall timers such as `encoder_send` only indicate blocking attribution and do not automatically equal the exclusive execution time of the stage;
+9. It is forbidden to use device-level sampled GPU utilization × wall time to derive shader GPU-busy time;
+10. The input content, upload, number of processes and timer boundary of isolated benchmark and combined benchmark must be
+    Disclose differences consistently or clearly, and do not treat cross-workload derived values as acceptance facts;
+11. Report startup/preflight, conversion core, output validation and process wall respectively;
+12. Set a rollback point in each stage, and retain the last stable split point when the performance has not improved and the complexity has increased significantly.
 
 ---
 
-## 7. 建议的执行批次
+## 6. Release gates: parallel to performance development but cannot be skipped
 
-### Batch A：先建立事实基线
+The following issues do not prevent experimental Stage 1/2 development, but do prevent the Vulkan backend from becoming the default production path:
 
-- 完成 Stage 0 corpus、GPU timestamp 和统一 benchmark 报告；
-- 同时记录并确认 precise/fast 的产品语义；
-- 输出：baseline manifest、benchmark report、quality budget 决策。
+1. [x] pinned FFmpeg ProRes DCT shader’s GPU-assisted validation race: Already running between the current driver and
+   The validation layer reappears and records restricted waiver in `GPU_BATCH_F_VALIDATION_RACE_WAIVER.md`;
+2. decode/seek/color/duration/ for DaVinci Resolve, Adobe Premiere and at least one desktop player
+   Audio sync actual test; FFmpeg/VLC passed, Resolve failed due to external scripts being disabled, and Premiere was not installed.
+   See `GPU_BATCH_F_COMPATIBILITY.md` for details;
+3. [x] Frozen and verified chroma sitting and primaries/TRC metadata product decisions, both used by CPU/Vulkan
+   Left sitting, DWG/DI has no standard MOV enumeration so primaries/TRC remain unspecified, see for details
+   `GPU_BATCH_F_COLOR_METADATA.md`;
+4. AMD, Intel Vulkan hardware and second-generation NVIDIA driver coverage; currently RTX 3060 / 610.62 has passed,
+   This machine does not have an AMD/Intel physical device and the second generation NVIDIA driver is not installed. The missing lines remain blocked. For details, see
+   `GPU_BATCH_F_HARDWARE_MATRIX.md`;
+5. One hour of real material conversion; the current longest real sample is only about 27.5 seconds and has gone through two rounds, 3,600 logical seconds of synthesis
+   The stress has passed but does not replace the real material, so this item remains blocked. For details, see `GPU_BATCH_F_STABILITY.md`;
+6. Multi-file batch, repeated startup, cancellation, device lost and resource growth testing; multi-file/repeated startup/cancellation semantics/
+   The resource growth has passed, but the real `VK_ERROR_DEVICE_LOST` has not yet been injected, so this item remains blocked;
+7. [x] 24 fps has been confirmed in writing as the minimum product threshold; the final 240 frames precise is 37.189 fps, real batch
+   It is 35.78~38.34 fps, which has passed the performance threshold.
 
-### Batch B：迁移最大热点
-
-- 实施 Stage 1 的 GPU color/sharpen/DI；
-- 先分 pass golden，再 profile 和选择性 fusion；
-- 输出：Camera RGB entry 的 precise Vulkan pipeline。
-
-### Batch C：减少 6× 上传并消除 demosaic 热点
-
-- 实施 Stage 2A calibration；
-- 实施 Stage 2B GPU RCD；
-- 串联 Stage 1，生产路径不 readback；
-- 输出：U16 RAW entry 的 precise Vulkan pipeline。
-
-### Batch D：基于 profiler 做性能模式
-
-- 逐项实验 FP16、DI、dither 和 fast demosaic；
-- 只合入具有可测端到端收益并通过质量预算的项；
-- 输出：可明确识别的 precise 与 fast presets。
-
-### Batch D.1：清理确认开销并验证 GPU serialization 假设
-
-- 先把完整 MOV packet scan 从正常 E2E 移到显式 verify/release gate，并消除重复 Vulkan
-  full-resolution preflight；
-- 再修正 FFmpeg effective async depth 和 telemetry，以真实帧单进程 depth matrix 验证收益；
-- 只有 async 证据成立后才实验显式 queue reservation/separation；只有 memory-type 与 transfer
-  timeline 证据成立后才实验 device-local RAW staging；
-- 输出：分离 timer boundary 的 matched benchmark、requested/effective depth 报告，以及每个
-  serialization/staging 候选的 go/no-go 结论；不预先承诺 40～56 fps。
-
-### Batch E：完成 CPU decoder
-
-- 更新并固定真正覆盖 compression 6/7 的 official truth source，修复 RAW buffer 过度分配；
-- 用持久、有界 worker pool 替代 per-frame `std::async`，建立统一 CPU 线程预算；
-- compression 6/7 分轨建立 bit-exact golden、安全测试和 matched benchmark；
-- 仅在新 official baseline 证明有收益时实施 compression 7 直写、offset、帧内并行和独立
-  ISA 快速路径；compression 6 只有在真实 corpus 证明需要时才另做 legacy 优化；
-- 输出：90/120/130 fps 分档下的 CPU decoder capacity、资源成本、默认路径决策，以及冻结在
-  U16 RAW upload 的最终 GPU pipeline 边界。
-
-### Batch F：关闭生产发布 gates
-
-- 多软件、多硬件、长时间、batch 和 validation race；
-- 达到明确产品性能阈值后，才讨论是否把 `backend=auto` 或 Vulkan 设为更积极的默认。
+The metadata/chroma decision must affect both the CPU and GPU backends. You cannot just modify the Vulkan output to cause reference
+Forks.
 
 ---
 
-## 8. 每次实施任务给开发代理的固定要求
+## 7. Recommended execution batches
 
-后续每个任务都应明确提供：
+### Batch A: Establish a factual baseline first
 
-1. **唯一阶段边界**：本次只迁移哪个输入/输出；
-2. **CPU reference**：对应的函数、数据类型和 frozen semantics；
-3. **golden corpus**：使用哪些固定帧和 synthetic case；
-4. **允许误差**：bit-exact、≤1 LSB 或 fast budget，不允许使用“视觉差不多”；
-5. **ownership/sync**：buffer/image/AVFrame 生命周期和 semaphore 合约；
-6. **telemetry**：本次必须新增或保持的 counter/timestamp；
-7. **failure semantics**：fallback、forced Vulkan、device lost、partial cleanup；
-8. **benchmark**：matched A/B 条件和 go/no-go 阈值；
-9. **非目标**：列出本次不顺带修改的 CPU、metadata、算法或配置行为；
-10. **完成定义**：测试、文档、样本验证和性能报告全部满足后才算完成。
+- Complete Stage 0 corpus, GPU timestamp and unified benchmark reports;
+- Also record and confirm the product semantics of precise/fast;
+- Output: baseline manifest, benchmark report, quality budget decision.
 
-GPU 阶段建议每个任务保持“一项新 GPU 语义 + 一套 golden + 一份 benchmark”，不要在同一
-任务中同时引入新 stage、FP16、算法近似和 pass fusion。Batch E 对应的最小变更单位改为
-“一项 decoder/truth/调度语义 + bit-exact golden + matched benchmark”，同样禁止把 worker
-pool、格式迁移、帧内并行和新 ISA kernel 首次落在同一提交中。
+### Batch B: Migrate the largest hot spots
+
+- Implement Stage 1 GPU color/sharpen/DI;
+- Pass golden first, then profile and selective fusion;
+- Output: precise Vulkan pipeline for Camera RGB entry.
+
+### Batch C: Reduce 6× uploads and eliminate demosaic hotspots
+
+- Implement Stage 2A calibration;
+- Implement Stage 2B GPU RCD;
+- Concatenating Stage 1, the production path does not have readback;
+- Output: precise Vulkan pipeline for U16 RAW entry.
+
+### Batch D: Performance mode based on profiler
+
+- Experimental FP16, DI, dither and fast demosaic one by one;
+- Only include items that have measurable end-to-end benefits and pass quality budgets;
+- Output: Unambiguously identifiable precise and fast presets.
+
+### Batch D.1: Clean up acknowledgment overhead and verify GPU serialization assumptions
+
+- First move the full MOV packet scan from normal E2E to explicit verify/release gate and eliminate duplicate Vulkan
+  full-resolution preflight;
+- Revise FFmpeg effective async depth and telemetry again, and verify the benefits with real frame single-process depth matrix;
+- Only after the async evidence is established, try explicit queue reservation/separation; only memory-type and transfer
+  Experiment with device-local RAW staging only after the timeline evidence is established;
+- Output: separated timer boundary matched benchmark, requested/effective depth report, and each
+  Go/no-go conclusion for serialization/staging candidate; no pre-commitment to 40-56 fps.
+
+### Batch E: Complete CPU decoder
+
+- Update and fix the official truth source that actually covers compression 6/7, fix RAW buffer over-allocation;
+- Replace per-frame `std::async` with a persistent, bounded worker pool to establish a unified CPU thread budget;
+- compression 6/7 split track build bit-exact golden, safety testing and matched benchmark;
+- Implement compression 7 direct writing, offset, intra-parallelism and independence only if new official baseline proves beneficial
+  ISA fast path; compression 6 only performs additional legacy optimizations when the real corpus proves necessary;
+- Output: CPU decoder capacity, resource cost, default path decision at 90/120/130 fps bins, and frozen in
+  Final GPU pipeline boundaries for U16 RAW upload.
+
+### Batch F: Close production release gates
+
+- Multi-software, multi-hardware, long time, batch and validation race;
+- Discuss whether to make `backend=auto` or Vulkan a more aggressive default until clear product performance thresholds are reached.
 
 ---
 
-## 9. 下一步立即执行清单
+## 8. Fixed requirements for the development agent for each implementation task
 
-正式行动建议从以下顺序开始：
+Each subsequent task should explicitly provide:
 
-- [x] 批准本文作为下一阶段实施总纲；
-- [x] 确认最低性能目标是 24 fps，30 fps 为扩展目标；
-- [x] 确认 precise 保持 ≤1 LSB，fast 使用独立 preset/sidecar 身份；
-- [x] 执行 Stage 0：冻结 baseline manifest、quality corpus 和 GPU timestamp；
-- [x] 为 Stage 1 写独立技术设计，冻结 Camera RGB input format、shader pass、uniform 和
-      golden boundary；
-- [x] 实施并验收 Stage 1，不同时启用 FP16；Stage 1G 中位数 `13.791 fps`，相对
-      重建 Stage 0 为 `+100.943%`，通过 `+20%` gate；
-- [x] 用 Stage 1 profiler 决定 pass fusion 与 Stage 2 优先级；回退根因是 CPU finite
-      全帧重复扫描及 pack/encoder 串行，而非 shader fusion；修正后瓶颈回到 CPU producer；
-- [x] 实施 Stage 2A/2B，把生产上传切换到 U16 RAW；Stage 2E 中位数
-      `37.747 fps`，相对 Stage 1G `+173.710%`，final YUV `<=1 LSB`；
-- [x] precise 完成后才开始 mixed/fast A/B；Batch D 最终 precise/fast
-      中位数为 `34.776/36.857 fps`；合入 FP16 intermediate storage 与
-      analytic DI，移除未作为公开模式的 balanced preset，拒绝 dither-off 和
-      质量不合格的 bilinear demosaic；
-- [x] Batch D.1-A：从正常 E2E 移除完整 MOV packet scan，分离 startup/conversion/validation/
-      process timers，并消除重复 full-resolution Vulkan preflight；
-- [x] Batch D.1-B：修正并报告 FFmpeg requested/effective async depth，使用真实帧单进程
-      depth 1/2/4/8 做 matched A/B；未证明收益前不实施 queue separation；
-- [x] Batch D.1-C/D：只在前置 telemetry 证明可回收 idle 或 PCIe/heap 问题后，分别实验
-      queue reservation 与 device-local RAW staging；未超出噪声则记录 no-go；
-- [x] Batch E-A：official truth 更新到同时覆盖 compression 6/7 的 immutable commit，吸收
-      RAW buffer 过度分配修复，并确认现有 compression 7 首/中/末帧 U16 hash 不变；
-- [x] Batch E-B/E-C：实现持久、有界 frame worker pool，完成更新后 compression 7 的
-      decoder-only、loadFrame 与完整 precise/fast Vulkan 1/2/4/6/8 worker matrix；
-- [x] Batch E-D/E-E go/no-go：更新后的 official compression 7 decoder 已超过
-      90/120/130 fps 容量分档且不是完整流水瓶颈，自研 fast decoder 为 no-go；无真实
-      compression 6 corpus，不启动 legacy fast decoder；
-- [x] Batch E-F compression 6 corpus gate：按 2026-07-16 项目决策放弃素材级 compression 6
-      测试验收，记录为显式 waiver；运行时继续尝试 official legacy decoder，并要求控制台
-      警告未验证状态；GPU pipeline 边界保持冻结在 U16 RAW upload；
-- [x] Batch F 已执行当前主机、软件、硬件与真实样本允许的全部 NLE/硬件/长时间发布 gate
-      行动；本机已通过项、waiver 与仍需外部环境的阻塞项汇总于
-      `GPU_BATCH_F_RELEASE_GATE_STATUS.md`，阻塞项未被伪装为通过。
+1. **Unique stage boundary**: Which input/output is only migrated this time;
+2. **CPU reference**: corresponding functions, data types and frozen semantics;
+3. **golden corpus**: Which fixed frames and synthetic cases to use;
+4. **Allowable error**: bit-exact, ≤1 LSB or fast budget, "visual almost" is not allowed;
+5. **ownership/sync**: buffer/image/AVFrame life cycle and semaphore contract;
+6. **telemetry**: counter/timestamp that must be added or maintained this time;
+7. **failure semantics**: fallback, forced Vulkan, device lost, partial cleanup;
+8. **benchmark**: matched A/B conditions and go/no-go threshold;
+9. **Non-target**: List the CPU, metadata, algorithms or configuration behaviors that are not modified this time;
+10. **Definition of Done**: It is not complete until testing, documentation, sample verification and performance reporting are all met.
 
-Stage 0～3 / Batch A～D、Batch D.1-A～D 以及 Batch E-A～E-F 已完成；D.1-C/D 的
-queue/staging 候选与 E-D/E-E fast decoder 均记录 no-go。compression 6 素材级验收按
-2026-07-16 决策显式豁免；该格式继续走 official legacy decoder，并以控制台警告标记未验证
-状态，不得将其描述为已完成本项目级 golden/安全/容量验收。
+In the GPU stage, it is recommended that each task maintains "a new GPU semantic + a set of golden + a benchmark" and not in the same
+New stages, FP16, algorithm approximation and pass fusion are also introduced in the task. The minimum change unit corresponding to Batch E is changed to
+"A decoder/truth/scheduling semantics + bit-exact golden + matched benchmark" also prohibits using workers
+Pool, format migration, intra-parallelism and the new ISA kernel fall into the same commit for the first time.
 
-Batch F 的当前主机行动已完成：validation race 受限 waiver、FFmpeg/VLC 兼容性、颜色 metadata、
-当前 NVIDIA 硬件、真实多文件重复 batch、3,600 逻辑秒资源增长和 24 fps 门槛均已有证据。
-Resolve/Premiere、AMD/Intel、第二代 NVIDIA driver、一小时真实素材和实际 device-lost 注入仍阻止
-生产发布；因此 Vulkan 继续 opt-in，CPU backend 继续作为默认与 fallback。
+---
+
+## 9. Next step is to execute the list immediately
+
+Formal recommendations for action begin with the following sequence:
+
+- [x] Approve this article as the general outline for the next phase of implementation;
+- [x] Confirmed minimum performance target is 24 fps, with 30 fps as a stretch target;
+- [x] Confirm that precise remains ≤1 LSB and fast uses independent preset/sidecar identity;
+- [x] Execution Stage 0: freeze baseline manifest, quality corpus and GPU timestamp;
+- [x] Write independent technical design for Stage 1, freeze Camera RGB input format, shader pass, uniform and
+      golden boundary;
+- [x] Implement and accept Stage 1 without simultaneously enabling FP16; Stage 1G median `13.791 fps`, relative
+      Rebuild Stage 0 to `+100.943%`, passing `+20%` gate;
+- [x] Use Stage 1 profiler to determine pass fusion and Stage 2 priorities; the root cause of fallback is CPU finite
+      Full frame repeated scanning and pack/encoder serialization instead of shader fusion; after correction, the bottleneck returns to the CPU producer;
+- [x] Implement Stage 2A/2B, switch production uploads to U16 RAW; Stage 2E median
+      `37.747 fps`, relative to Stage 1G `+173.710%`, final YUV `<=1 LSB`;
+- [x] precise starts after completion mixed/fast A/B; Batch D final precise/fast
+      Median is `34.776/36.857 fps`; combined with FP16 intermediate storage and
+      analytic DI, removes balanced presets not exposed as modes, rejects dither-off and
+      bilinear demosaic of substandard quality;
+- [x] Batch D.1-A: Remove full MOV packet scan from normal E2E, separate startup/conversion/validation/
+      process timers, and eliminate duplication full-resolution Vulkan preflight;
+- [x] Batch D.1-B: Fix and report FFmpeg requested/effective async depth, use real frame single process
+      depth 1/2/4/8 does matched A/B; queue separation will not be implemented before the benefits are proven;
+- [x] Batch D.1-C/D: Only after the pre-telemetry proves that idle or PCIe/heap problems can be recovered, experiment separately
+      queue reservation and device-local RAW staging; record no-go if the noise is not exceeded;
+- [x] Batch E-A: official truth updated to immutable commit that also covers compression 6/7, absorbed
+      RAW buffer over-allocation repair, and confirm that the existing compression 7 first/middle/last frame U16 hash remains unchanged;
+- [x] Batch E-B/E-C: implement persistent, bounded frame worker pool, compression 7 after completion of update
+      decoder-only, loadFrame and full precise/fast Vulkan 1/2/4/6/8 worker matrix;
+- [x] Batch E-D/E-E go/no-go: updated official compression 7 decoder has been exceeded
+      90/120/130 fps capacity is divided into batches and is not a complete pipeline bottleneck. The self-developed fast decoder is no-go; no real
+      compression 6 corpus, do not start legacy fast decoder;
+- [x] Batch E-F compression 6 corpus gate: abandon material-level compression 6 as per 2026-07-16 project decision
+      Test acceptance, recorded as explicit waiver; continue to try official legacy decoder at runtime, and ask for console
+      Warning about unverified status; GPU pipeline boundaries remain frozen at U16 RAW upload;
+- [x] Batch F has executed all NLE/hardware/long-term release gates allowed by the current host, software, hardware and real samples
+      Action; local passed items, waiters, and blocked items that still require external environment are summarized in
+      `GPU_BATCH_F_RELEASE_GATE_STATUS.md`, blocking entries are not pretended to pass.
+
+Stage 0～3 / Batch A～D, Batch D.1-A～D and Batch E-A～E-F have been completed; D.1-C/D
+Both queue/staging candidates and E-D/E-E fast decoder log no-go. compression 6 material level acceptance button
+2026-07-16 Decision explicit exemption; the format continues to use the official legacy decoder and is marked as unverified with a console warning
+status and shall not be described as having completed golden/safety/capacity acceptance for this project.
+
+Current host actions for Batch F are complete: validation race limited waiver, FFmpeg/VLC compatibility, color metadata,
+Evidence exists on current NVIDIA hardware, real multi-file duplication batches, 3,600 logical second resource growth, and 24 fps threshold.
+Resolve/Premiere, AMD/Intel, 2nd generation NVIDIA driver, one hour of real footage and actual device-lost injection still blocking
+Production release; therefore Vulkan continues to be opt-in and the CPU backend continues to be the default with fallback.

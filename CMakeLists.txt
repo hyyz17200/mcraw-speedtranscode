@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.25)
 
-project(mcraw_transcoder VERSION 0.1.0 LANGUAGES CXX)
+project(mcraw_speedtranscode VERSION 0.1.0 LANGUAGES CXX)
 
 option(MCRAW_BUILD_TESTS "Build unit and sample tests" ON)
 option(MCRAW_FETCH_DEPENDENCIES "Fetch MotionCam, librtprocess, and Catch2" ON)
@@ -374,8 +374,8 @@ if(MCRAW_ENABLE_VULKAN)
   target_link_libraries(mcraw_core PUBLIC Vulkan::Headers Vulkan::Loader)
 endif()
 
-add_executable(mcraw-transcoder src/cli/main.cpp)
-target_link_libraries(mcraw-transcoder PRIVATE mcraw_core)
+add_executable(mcraw-speedtranscode src/cli/main.cpp)
+target_link_libraries(mcraw-speedtranscode PRIVATE mcraw_core)
 
 if(MCRAW_BUILD_BENCHMARKS)
   add_executable(mcraw-decoder-benchmark tools/cpu_decoder_benchmark.cpp)

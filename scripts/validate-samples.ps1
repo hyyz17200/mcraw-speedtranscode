@@ -1,5 +1,5 @@
 param(
-    [string]$Executable = ".\build\msvc-release\Release\mcraw-transcoder.exe",
+    [string]$Executable = ".\build\msvc-release\Release\mcraw-speedtranscode.exe",
     [string]$SampleDirectory = ".\mcraw_sample",
     [switch]$ValidateGpuPipeline,
     [int]$ConversionFrames = 30,

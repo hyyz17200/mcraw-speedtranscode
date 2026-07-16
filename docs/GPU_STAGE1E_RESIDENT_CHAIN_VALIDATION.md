@@ -110,7 +110,7 @@ These hashes describe the validated candidate based on Stage 1D commit
 | Artifact | SHA-256 |
 |---|---|
 | `src/vulkan/vulkan_rgb_to_yuv_frame.cpp` | `E97A9B4089EB55FFBBE0EF0AA7293FC4DFF35D101BF371F4D65425B135D23CF2` |
-| Release `mcraw-transcoder.exe` | `C27EB9ECC411FFBD4B4EE79FAB39BDAB457DB6D5B75C49EE318E552BCE021559` |
+| Historical pre-rename release executable | `C27EB9ECC411FFBD4B4EE79FAB39BDAB457DB6D5B75C49EE318E552BCE021559` |
 | Release `mcraw_tests.exe` | `E1A7A64CD87A2B1FB8E76008817D19DDBA2DA032D6C9F5BA9B7476B6903588E7` |
 
 ## Next boundary

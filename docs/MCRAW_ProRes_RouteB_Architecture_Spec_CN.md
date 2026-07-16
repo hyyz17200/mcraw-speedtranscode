@@ -1,215 +1,215 @@
-# MCRAW → 高品质 ProRes 转码器：路线 B 架构与实现规范
+# MCRAW → High-quality ProRes transcoder: Route B architecture and implementation specifications
 
-> 文档用途：作为 VS Code / Codex 开展项目时的总体设计依据。  
-> 当前阶段：Phase 0～2 CPU 路径已实现并完成并行优化；GPU 阶段尚未开始。  
-> 暂定项目名：`mcraw-transcoder`。
+> Document Purpose: As the overall design basis for VS Code/Codex projects.  
+> Current stage: Phase 0~2 CPU path has been implemented and parallel optimization has been completed; the GPU stage has not yet started.  
+> Project name: `MCRAW SpeedTranscode` (`mcraw-speedtranscode`).
 
 ---
 
-## 1. 项目目标
+## 1. Project goals
 
-开发一个专门处理 MotionCam `.mcraw` 的高品质、高性能转码器：
+Develop a high-quality, high-performance transcoder specifically for MotionCam `.mcraw`:
 
-1. 直接解析 MCRAW 容器和逐帧元数据。
-2. CPU 参考解码必须与 MotionCam 官方 decoder 位级一致。
-3. 后续提供 Vulkan GPU MCRAW 解压路径。
-4. 提供多种高品质 Bayer 去马赛克算法：
+1. Directly parse MCRAW containers and frame-by-frame metadata.
+2. The CPU reference decoder must be bit-exact with MotionCam's official decoder.
+3. Provide a Vulkan GPU MCRAW decompression path in a later phase.
+4. Provides a variety of high-quality Bayer demosaicing algorithms:
    - AMaZE
    - RCD
    - IGV
    - DCB
    - LMMSE
-   - 可扩展其他算法
-5. 黑电平、白电平、镜头校正和坏点修复等节点可配置。
-6. 严格实现 DNG 双矩阵、双光源色温适配，不沿用不明确的简化插值。
-7. 精确实现常见场景线性 Log/色域组合，包括：
-   - F-Log / BT.2020
+   - Extensible to other algorithms
+5. Nodes such as black level, white level, lens correction and bad pixel repair are configurable.
+6. Strictly implement DNG dual matrix and dual light source color temperature adaptation, and do not use unclear simplified interpolation.
+7. Accurately implement linear Log/gamut combinations for common scenarios, including:
+   - F-Log/BT.2020
    - S-Log2 / S-Gamut
-   - S-Log3 / S-Gamut3
+   - S-Log3/S-Gamut3
    - S-Log3 / S-Gamut3.Cine
    - DaVinci Intermediate / DaVinci Wide Gamut
    - ARRI LogC3 / ARRI Wide Gamut 3
-8. 使用 FFmpeg/libavcodec 编码 ProRes，不自行实现 ProRes 编码器。
-9. 保留音频、时间戳和必要元数据。
-11. 所有高开销步骤都可被独立测量、关闭或替换。
+8. Use FFmpeg/libavcodec to encode ProRes and do not implement the ProRes encoder by yourself.
+9. Preserve audio, timestamps, and necessary metadata.
+11. All high-overhead steps can be independently measured, turned off, or replaced.
 
 ---
 
-## 2. 明确的非目标
+## 2. Clear non-goals
 
-第一阶段不做：
+Not to do in the first stage:
 
-- 非线性“美化”或自动风格化。
-- 显示变换、HDR tone mapping、Rec.709 成片 Look。
-- AI 去马赛克或 AI 降噪。
-- RAW、色度或时域降噪；噪声处理留给后期调色。
-- 自行实现 ProRes 码流。
-- 依赖 DNG 中间文件。
-- 把整个 vkdt 或 RawTherapee 框架嵌入项目。
-- 一开始就追求所有算法 GPU 化。
-- GUI 优先；先完成稳定 CLI 和库接口。
+- Non-linear "beautification" or automatic stylization.
+- Display transformation, HDR tone mapping, Rec.709 film look.
+- AI Demosaic or AI Noise Reduction.
+- RAW, chroma or temporal noise reduction; noise processing is left to post-production color correction.
+- Implement ProRes code stream by yourself.
+- Depends on DNG intermediate files.
+- Embed the entire vkdt or RawTherapee framework into your project.
+- Pursue GPU-ization of all algorithms from the beginning.
+- GUI first; complete stable CLI and library interfaces first.
 
-项目应输出“可进一步调色的数字负片”，而不是自动完成风格化成片。
-
----
-
-## 3. 核心设计原则
-
-### 3.1 正确性优先于融合优化
-
-每个阶段先建立独立、可验证的参考实现，再考虑：
-
-- kernel 融合；
-- FP16；
-- fast-math；
-- 近似曲线；
-- LUT 替代解析公式；
-- GPU 专用优化。
-
-默认质量模式不得使用未经误差量化的近似算法。
-
-### 3.2 格式解析与图像处理分离
-
-MCRAW 容器、帧索引、音频、JSON 元数据属于 I/O 层。
-
-RAW 解压、校正、去马赛克、颜色变换、Log 编码属于处理层。
-
-ProRes、MOV、音频复用属于输出层。
-
-三层不能互相依赖内部实现细节。
-
-### 3.3 节点化，而不是主流程堆条件分支
-
-每个处理功能都应是一个具有明确输入和输出格式的节点。节点具备：
-
-- 名称与版本；
-- 输入、输出像素类型；
-- CPU/GPU 后端能力；
-- 是否原地处理；
-- 边界/halo 需求；
-- 是否支持分块；
-- 是否确定性；
-- 预计显存和内存；
-- 计时统计；
-- 可序列化参数；
-- 校验规则。
-
-配置文件只是构建节点图，不应存在隐藏行为。
-
-### 3.4 参考路径与高速路径并存
-
-保留两条路径：
-
-- **Reference**：CPU、FP32/FP64、无 fast-math，便于验证。
-- **Accelerated**：Vulkan、异步流水线、可选受控近似。
-
-高速路径必须能与参考路径逐阶段比较。
+The project should output a "digital negative ready for further color correction" rather than automatically stylizing the finished film.
 
 ---
 
-## 4. 推荐技术栈
+## 3. Core design principles
 
-### 4.1 主语言与构建
+### 3.1 Correctness takes precedence over fusion optimization
+
+Each stage first establishes an independent and verifiable reference implementation, and then considers:
+
+- kernel fusion;
+- FP16;
+- fast-math;
+- Approximate curve;
+- LUT replaces analytical formula;
+- GPU-specific optimizations.
+
+The default quality mode must not use approximation algorithms without error quantization.
+
+### 3.2 Separation of format analysis and image processing
+
+MCRAW containers, frame index, audio, JSON metadata belong to the I/O layer.
+
+RAW decompression, correction, demosaicing, color conversion, and Log encoding belong to the processing layer.
+
+ProRes, MOV, and audio multiplexing belong to the output layer.
+
+The three layers cannot depend on each other for internal implementation details.
+
+### 3.3 Nodeization instead of main process heap conditional branch
+
+Each processing function should be a node with clear input and output formats. The node has:
+
+- name and version;
+- Input and output pixel types;
+- CPU/GPU backend capabilities;
+- Whether to process it in situ;
+- Boundary/halo requirements;
+- Whether to support chunking;
+- Is it certain?
+- Estimated video memory and memory;
+- Timing statistics;
+- Serializable parameters;
+- Verification rules.
+
+The configuration file just builds the node graph and there should be no hidden behavior.
+
+### 3.4 Reference path and high-speed path coexist
+
+Two paths remain:
+
+- **Reference**: CPU, FP32/FP64, no fast-math for easy verification.
+- **Accelerated**: Vulkan, asynchronous pipeline, optional controlled approximation.
+
+The high-speed path must be comparable stage by stage with the reference path.
+
+---
+
+## 4. Recommended technology stack
+
+### 4.1 Primary language and build system
 
 - C++20
 - CMake
-- Windows 11 和 Linux 为首要平台
-- Vulkan 1.2/1.3 作为 GPU 后端
+- Windows 11 and Linux are the primary platforms
+- Vulkan 1.2/1.3 as GPU backend
 - SPIR-V shader
 - FFmpeg/libavcodec/libavformat/libswresample
-- JSON 配置及元数据解析
-- 单元测试框架：Catch2 或 GoogleTest
-- 基准测试：Google Benchmark 或自建稳定 benchmark runner
+- JSON configuration and metadata parsing
+- Unit testing framework: Catch2 or GoogleTest
+- Benchmark test: Google Benchmark or self-built stable benchmark runner
 
-### 4.2 外部组件
+### 4.2 External components
 
-| 组件 | 用途 | 原则 |
+| Components | Purpose | Principles |
 |---|---|---|
-| MotionCam 官方 `motioncam-decoder` | 容器、索引、元数据、CPU 参考解码 | 作为兼容性基准 |
-| FFmpeg | ProRes、MOV、PCM/音频复用 | 不重写编码与封装 |
-| Vulkan | GPU RAW 解压及图像处理 | 主加速后端 |
-| librtprocess | AMaZE/RCD/IGV CPU 参考实现 | 受 GPLv3 影响，需先决定许可证 |
-| OpenColorIO Config ACES / CLF | 精确颜色变换的验证来源 | 默认不要求作为运行时依赖 |
-| Adobe DNG SDK/规范 | 双矩阵颜色模型的规范依据 | 用于测试与行为对照 |
+| MotionCam official `motioncam-decoder` | Containers, indexes, metadata, CPU reference decoding | As a compatibility baseline |
+| FFmpeg | ProRes, MOV, PCM/audio multiplexing | No rewriting of encoding and packaging |
+| Vulkan | GPU RAW decompression and image processing | Main acceleration backend |
+| librtprocess | AMaZE/RCD/IGV CPU reference implementation | Affected by GPLv3, you need to decide on the license first |
+| OpenColorIO Config ACES/CLF | Validation source for accurate color transformations | Not required as a runtime dependency by default |
+| Adobe DNG SDK/Specification | Specification basis for dual matrix color model | For testing and behavioral comparison |
 
 ---
 
-## 5. 许可证先决决策
+## 5. License pre-decisions
 
-`motioncam-decoder` 是 Apache-2.0；FFmpeg 的许可取决于具体构建；`librtprocess` 整体为 GPLv3 或 GPLv3+；vkdt 仓库存在不同许可文件，必须逐文件确认。
+`motioncam-decoder` is Apache-2.0; the license of FFmpeg depends on the specific build; `librtprocess` is GPLv3 or GPLv3+ as a whole; different license files exist in the vkdt repository and must be confirmed file by file.
 
-### 推荐二选一
+### Recommended to choose one of the two
 
-#### 方案 L1：整个应用采用 GPLv3
+#### Solution L1: The entire application adopts GPLv3
 
-优点：
+Advantages:
 
-- 可以直接链接 librtprocess。
-- 可以较自由地复用 GPL 兼容代码。
-- 最快获得成熟的 AMaZE、RCD、IGV。
+- Can link directly to librtprocess.
+- GPL-compliant code can be reused more freely.
+- The fastest way to get mature AMaZE, RCD, and IGV.
 
-缺点：
+Disadvantages:
 
-- 分发时整个组合程序必须履行 GPL 义务。
-- 对未来闭源或商业集成限制较大。
+- The entire combined program must comply with GPL obligations when distributed.
+- Greater restrictions on future closed source or commercial integration.
 
-#### 方案 L2：核心保持宽松许可
+#### Scenario L2: Core remains permissive
 
-要求：
+Requirements:
 
-- 不直接复制或链接 GPL 去马赛克代码。
-- 根据公开论文和算法描述重新实现。
-- OpenColorIO/ACES CLF 可作为测试参考，但仍需检查具体文件许可和版权头。
-- vkdt 代码只能在逐文件许可确认后使用。
+- Do not copy or link directly with GPL demosaiced code.
+- Reimplemented based on public papers and algorithm descriptions.
+- OpenColorIO/ACES CLF can be used as a reference for testing, but still need to check specific file permissions and copyright headers.
+- vkdt code can only be used after per-file permission confirmation.
 
-**重要：** 动态插件或独立进程并不自动规避 GPL 义务。许可证结构应在写大量代码前决定；必要时寻求专业法律意见。
+**Important:** Dynamic plug-ins or standalone processes do not automatically circumvent GPL obligations. The license structure should be decided before writing a large amount of code; seek professional legal advice if necessary.
 
-### 实际开发建议
+### Practical development suggestions
 
-若目标首先是自用和开源，采用 GPLv3 最省时间。  
-若未来可能闭源分发，则从第一天就选择宽松核心，并把 librtprocess 仅用于本地对照测试，不进入发布构建。
+If the goal is firstly self-use and open source, adopting GPLv3 will save the most time.  
+If closed source distribution is possible in the future, choose a loose core from day one and use librtprocess only for local control testing and not enter the release build.
 
 ---
 
-## 6. 总体架构
+## 6. Overall architecture
 
 ```text
-Application / CLI
+Application/CLI
 │
 ├── mcraw_io
-│   ├── container reader
-│   ├── frame index
-│   ├── metadata normalization
-│   ├── compressed frame reader
-│   └── audio reader
+│ ├── container reader
+│ ├── frame index
+│ ├── metadata normalization
+│ ├── compressed frame reader
+│ └── audio reader
 │
 ├── raw_reference
-│   └── official CPU decompression adapter
+│ └── official CPU decompression adapter
 │
 ├── processing_graph
-│   ├── raw calibration nodes
-│   ├── demosaic plugins
-│   ├── color science
-│   ├── target gamut / transfer function
-│   └── YCbCr / chroma subsampling
+│ ├── raw calibration nodes
+│ ├── demosaic plugins
+│ ├── color science
+│ ├── target gamut / transfer function
+│ └── YCbCr / chroma subsampling
 │
 ├── backend_cpu
-│   ├── scalar reference
-│   ├── SIMD/OpenMP
-│   └── optional librtprocess
+│ ├── scalar reference
+│ ├── SIMD/OpenMP
+│ └── optional librtprocess
 │
 ├── backend_vulkan
-│   ├── compressed RAW unpack
-│   ├── GPU correction nodes
-│   ├── GPU demosaic implementations
-│   ├── color transforms
-│   └── output packing
+│ ├── compressed RAW unpack
+│ ├── GPU correction nodes
+│ ├── GPU demosic implementations
+│ ├── color transforms
+│ └── output packing
 │
 ├── media_output
-│   ├── ProRes encoder
-│   ├── MOV muxer
-│   ├── audio
-│   └── sidecar metadata
+│ ├── ProRes encoder
+│ ├── MOV muxer
+│ ├── audio
+│ └── sidecar metadata
 │
 └── validation
     ├── frame compare
@@ -221,104 +221,104 @@ Application / CLI
 
 ---
 
-## 7. 模块职责
+## 7. Module responsibilities
 
 ### 7.1 `mcraw_io`
 
-职责：
+Responsibilities:
 
-- 打开和验证 MCRAW。
-- 读取容器版本。
-- 建立帧、音频和元数据索引。
-- 提供线程安全的随机读取。
-- 返回压缩帧字节，而不是强制 CPU 解压。
-- 保留原始 JSON，另生成标准化强类型结构。
-- 兼容旧字段拼写，例如历史上的 `sensorArrangment`。
-- 不负责颜色处理。
+- Open and verify MCRAW.
+- Read container version.
+- Indexing of frames, audio and metadata.
+- Provides thread-safe random reads.
+- Return compressed frame bytes instead of forcing CPU to decompress.
+- Keep the original JSON and generate a standardized strongly typed structure.
+- Compatible with old field spellings, such as the historical `sensorArrangment`.
+- Not responsible for color processing.
 
-若官方 decoder API 只能直接返回已解压帧，应增加薄适配层或最小 fork，让 GPU 路径能取得原始压缩 payload。官方 CPU 解码器仍保留为参考。
+If the official decoder API can only directly return decompressed frames, a thin adaptation layer or minimum fork should be added to allow the GPU path to obtain the original compressed payload. The official CPU decoder remains as a reference.
 
 ### 7.2 `raw_reference`
 
-职责：
+Responsibilities:
 
-- 调用官方 CPU 解压。
-- 对 compression type 6/7 等格式提供基准。
-- 输出未做黑电平处理的原始 U16 Bayer。
-- 用于自动验证 GPU 解压结果。
+- Call the official CPU decompression.
+- Provides benchmarks for formats such as compression type 6/7.
+- Output original U16 Bayer without black level processing.
+- For automatic verification of GPU decompression results.
 
 ### 7.3 `processing_graph`
 
-职责：
+Responsibilities:
 
-- 根据配置构建有向无环图。
-- 验证节点顺序是否合法。
-- 自动插入必要的格式转换。
-- 估算内存、显存和队列深度。
-- 收集每个节点的耗时、吞吐和错误。
-- 允许从中间节点导出测试帧。
+- Build directed acyclic graph based on configuration.
+- Verify whether the node sequence is legal.
+- Automatically insert necessary format conversions.
+- Estimate memory, video memory and queue depth.
+- Collect the time consumption, throughput and errors of each node.
+- Allow test frames to be exported from intermediate nodes.
 
 ### 7.4 `backend_cpu`
 
-职责：
+Responsibilities:
 
-- 正确性参考。
-- 高品质 CPU 去马赛克。
-- 无 GPU 或 GPU 不支持时的完整回退。
-- 可用 SIMD/OpenMP，但必须保持确定性模式。
+- Correctness reference.
+- High-quality CPU demosaicing.
+- Full fallback when GPU is not available or not supported by GPU.
+- SIMD/OpenMP is available, but must remain in deterministic mode.
 
 ### 7.5 `backend_vulkan`
 
-职责：
+Responsibilities:
 
-- 压缩数据上传。
-- GPU MCRAW 解压。
-- 可选 RAW 节点。
-- 后续逐步实现 GPU 去马赛克。
-- 色彩矩阵、Log、YUV 和量化。
-- 使用持久映射 staging ring 和多帧异步流水线。
+- Compressed data upload.
+- GPU MCRAW decompression.
+- Optional RAW node.
+- GPU demosaicing will be gradually implemented in the future.
+- Color matrix, Log, YUV and quantization.
+- Use persistent mapping staging ring and multi-frame asynchronous pipeline.
 
 ### 7.6 `media_output`
 
-职责：
+Responsibilities:
 
-- 接收 RGB log 或 YUV422P10。
-- 使用 FFmpeg `prores_ks` 或经验证的 ProRes encoder。
-- MOV 封装。
-- 音频对齐。
-- 写入可表达的色彩元数据。
-- 生成完整 sidecar JSON。
+- Receive RGB log or YUV422P10.
+- Use FFmpeg `prores_ks` or the proven ProRes encoder.
+- MOV packaging.
+- Audio alignment.
+- Write expressible color metadata.
+- Generate full sidecar JSON.
 
 ---
 
-## 8. 像素数据类型和阶段
+## 8. Pixel data types and stages
 
-应使用明确类型，禁止使用含糊的“float image”。
+Explicit types should be used, and the use of ambiguous "float image" is prohibited.
 
-| 类型 | 含义 |
+| Type | Meaning |
 |---|---|
-| `CompressedFrame` | MCRAW 原始压缩帧 |
-| `RawMosaicU16` | 解压后的传感器码值，未减黑 |
-| `RawMosaicF32` | 已转 float 的 Bayer，可包含负值和超白 |
-| `RawNormalizedF32` | 按 CFA 通道完成黑电平和白场尺度归一化 |
-| `CameraRGBF32` | 去马赛克后的相机原生线性 RGB |
-| `XYZD50F32` | 依照 DNG 模型得到的场景线性 XYZ D50 |
-| `TargetLinearRGBF32` | 目标色域中的场景线性 RGB |
-| `TargetLogRGBF32` | 精确 OETF 后的目标 Log RGB |
-| `YUV444F32` | 非线性 R'G'B' 转换所得 Y'CbCr |
-| `YUV422P10` | 滤波、色度抽样和量化后的 10-bit planar 422 |
+| `CompressedFrame` | MCRAW original compressed frame |
+| `RawMosaicU16` | The decompressed sensor code value, without blackening |
+| `RawMosaicF32` | Bayer converted to float, can include negative values and super white |
+| `RawNormalizedF32` | Complete black level and white point scale normalization by CFA channel |
+| `CameraRGBF32` | Camera native linear RGB after demosaicing |
+| `XYZD50F32` | Scene linear XYZ D50 obtained according to DNG model |
+| `TargetLinearRGBF32` | Scene linear RGB in the target gamut |
+| `TargetLogRGBF32` | Target Log RGB after accurate OETF |
+| `YUV444F32` | Nonlinear R'G'B' conversion to Y'CbCr |
+| `YUV422P10` | 10-bit planar 422 after filtering, chroma sampling and quantization |
 
-### 精度原则
+### Precision principle
 
-- RAW、去马赛克、颜色和 Log 默认 FP32。
-- 矩阵生成、白点求解、参考曲线和测试向量使用 FP64。
-- FP16 只能作为单独的 `fast` 模式，并必须给出误差报告。
-- 中间阶段不要提前裁剪到 `[0,1]`。
-- 保留负值与超白，直到具体输出策略要求限制。
+- RAW, Demosaic, Color and Log default FP32.
+- Matrix generation, white point solution, reference curves and test vectors use FP64.
+- FP16 can only be used as a standalone `fast` mode and must give error reports.
+- Do not crop to `[0,1]` in advance in the intermediate stage.
+- Reserve negative values ​​and super white until specific output strategies require limits.
 
 ---
 
-## 9. 推荐处理顺序
+## 9. Recommended processing order
 
 ```text
 MCRAW compressed frame
@@ -344,299 +344,339 @@ MCRAW compressed frame
 → MOV/audio mux
 ```
 
-### “镜头校正”必须拆分
+### "Lens Correction" must be split
 
-它不是一个单独节点：
+It is not a single node:
 
-1. **镜头阴影/平场校正**：RAW mosaic 域，去马赛克之前。
-2. **横向色差**：通常 RGB 域或专用 RAW 算法。
-3. **几何畸变**：RGB 域，去马赛克以后。
-4. **裁切/缩放**：在 CFA 阶段需特别注意 Bayer 相位；一般最终 RGB 域更安全。
+1. **Lens Shading/Flat Field Correction**: RAW mosaic field, before demosaicing.
+2. **Lateral Chromatic Aberration**: Usually RGB domain or dedicated RAW algorithm.
+3. **Geometric distortion**: RGB domain, after demosaicing.
+4. **Crop/Scale**: Pay special attention to the Bayer phase during the CFA stage; generally the final RGB domain is safer.
 
 ---
 
-## 10. 黑电平和白电平的处理规则
+## 10. Black level and white level processing rules
 
-用户界面可以把黑白场显示为“可选节点”，但从颜色科学上它们不是普通画质特效。
+The user interface can display black and white fields as "optional nodes", but from a color science point of view they are not ordinary image quality effects.
 
-### 黑电平
+### Black level
 
-默认按文件元数据应用：
+Applied by file metadata by default:
 
-- 支持 1 个、2 个或 4 个 CFA 通道黑电平。
-- 根据实际 CFA 布局映射，不假设固定 RGGB。
-- 减黑后允许负值。
-- 不在此阶段裁剪。
-- 支持手动覆盖和诊断关闭。
+- Supports 1, 2 or 4 CFA channel black levels.
+- Based on actual CFA layout mapping, fixed RGGB is not assumed.
+- Allow negative values ​​after blackening.
+- No cropping at this stage.
+- Supports manual override and diagnostic shutdown.
 
-### 白电平
+### White level
 
-白电平用于把传感器码值转为相对场景线性比例：
+The white level is used to convert the sensor code value into a linear scale relative to the scene:
 
 \[
 R_\mathrm{norm} = \frac{R_\mathrm{raw}-B_c}{W_c-B_c}
 \]
 
-其中 \(c\) 是 CFA 颜色位置。
+where \(c\) is the CFA color position.
 
-### 三种模式
+### Three modes
 
-- `metadata`：默认，使用 MCRAW 元数据。
-- `manual`：用户指定。
-- `bypass`：只用于诊断或 RAW 导出。
+- `metadata`: By default, use MCRAW metadata.
+- `manual`: user specified.
+- `bypass`: only used for diagnostics or RAW export.
 
-正常 Log/色彩输出若选择 `bypass`，程序应警告，最好要求 `force`，因为此时曝光尺度、白平衡和 Log 映射缺乏可靠物理含义。
+If `bypass` is selected for normal Log/color output, the program should warn that it is better to ask for `force`, because the exposure scale, white balance and log mapping lack reliable physical meaning at this time.
 
-### 高光
+### Highlights
 
-- 不要在白电平处自动硬裁切。
-- 白电平上方若存在有效超白，应保留。
-- 饱和检测与高光重建使用单独掩码。
-- 每通道饱和阈值可独立配置。
-
----
-
-## 11. CFA 和裁切相位
-
-MCRAW 可能记录 RGGB、BGGR、GRBG 或 GBRG。
-
-必须满足：
-
-- 原始 CFA 排列强类型化。
-- 任何奇数像素 crop 都会改变 CFA 相位。
-- 去马赛克插件接收的是“当前图像原点对应的 CFA”，不是只读原始容器值。
-- 分块去马赛克时，每个 tile 的局部 CFA 相位由全局坐标计算。
-- 不支持的传感器排列应明确报错，不能猜测。
-
-第一阶段只承诺常规 2×2 Bayer。Quad Bayer、X-Trans 或特殊排列应作为未来能力，不应误用 Bayer 算法。
+- Do not automatically hard crop at white level.
+- If there is a valid super white above the white level, it should be retained.
+- Separate masks for saturation detection and highlight reconstruction.
+- Each channel saturation threshold can be configured independently.
 
 ---
 
-## 12. 去马赛克子系统
+## 11. CFA and cropping phase
 
-### 12.1 插件接口概念
+MCRAW may record RGGB, BGGR, GRBG, or GBRG.
 
-每个 demosaicer 应声明：
+Must meet:
 
-- 算法 ID 和版本。
-- 支持 CFA。
-- CPU、Vulkan 或其他后端。
-- 输入范围要求。
-- 是否要求先裁剪负值。
-- 边界 halo 宽度。
-- 最小 tile 尺寸。
-- 是否支持独立 tile。
-- 是否内部多线程。
-- 是否确定性。
-- 临时内存需求。
-- 输出通道布局。
-- 可调参数和推荐范围。
+- Strong typing of original CFA permutations.
+- Any odd pixel crop will change the CFA phase.
+- The demosaic plug-in receives the "CFA corresponding to the current image origin", not the read-only original container value.
+- When tile demosaicing, the local CFA phase of each tile is calculated from the global coordinates.
+- Unsupported sensor arrangements should be reported as clear errors, not guesswork.
 
-### 12.2 首批算法
+The first phase only commits to regular 2×2 Bayer. Quad Bayer, X-Trans or special permutations should be considered future capabilities and Bayer algorithms should not be misused.
+
+---
+
+## 12. Demosaic subsystem
+
+### 12.1 Plug-in interface concept
+
+Each demosaicer should declare:
+
+- Algorithm ID and version.
+- Support CFA.
+- CPU, Vulkan or other backend.
+- Enter range requirements.
+- Whether to require negative values ​​to be clipped first.
+- Border halo width.
+- Minimum tile size.
+- Whether to support independent tiles.
+- Whether internally multi-threaded.
+- Is it certain?
+- Temporary memory requirements.
+- Output channel layout.
+- Adjustable parameters and recommended ranges.
+
+### 12.2 The first batch of algorithms
 
 #### AMaZE
 
-定位：最高质量候选之一，重点测试细节、边缘和假色。
+Positioning: One of the highest quality candidates, focused on testing details, edges and false colors.
 
-注意：
+Note:
 
-- 分支和邻域复杂，GPU 移植工作量大。
-- 第一版可先用成熟 CPU 实现建立黄金参考。
-- 不应预设它在所有素材上都优于其他算法。
+- The branches and neighborhoods are complex and the GPU porting workload is heavy.
+- The first version can be implemented first with mature CPU to establish a golden reference.
+- It should not be assumed that it will outperform other algorithms on all materials.
 
 #### RCD
 
-定位：质量与性能平衡候选。
+Positioning: Candidate for balancing quality and performance.
 
-注意：
+Note:
 
-- 适合作为首个 GPU 高品质移植对象。
-- 仍需针对细密纹理、饱和边缘和高噪场景测试。
+- Suitable as a first GPU high-quality port.
+- Still needs to be tested on fine textures, saturated edges and high-noise scenes.
 
 #### IGV
 
-定位：另一种高品质候选，重点评估噪声和伪色表现。
+Positioning: Another high-quality candidate, focusing on noise and false color performance.
 
-注意：
+Note:
 
-- 不将算法名称等同于固定场景优势。
-- 最终默认值应由测试集决定，不凭经验命名为“最好”。
+- Do not equate algorithm names with fixed scenario advantages.
+- The final default should be determined by the test set, not empirically named "best".
 
-### 12.3 可附带的低成本算法
+### 12.3 Available low-cost algorithms
 
-- Bilinear：只用于预览、调试和性能下限。
-- BayerFast/VNG4：可选快速模式。
-- 不允许把 Bilinear 作为默认高质量模式。
+- Bilinear: only used for preview, debugging and performance floor.
+- BayerFast/VNG4: Optional fast mode.
+- Bilinear is not allowed as the default high quality mode.
 
-### 12.4 推荐预设
+### 12.4 Recommended presets
 
-预设必须只是公开参数组合：
+Presets must simply expose combinations of parameters:
 
-| 预设 | 建议 |
+| Default | Suggestions |
 |---|---|
-| `preview` | 快速去马赛克、关闭高开销修复 |
-| `balanced` | 历史预设名；当前 GPU 公开配置不再提供 |
-| `quality` | AMaZE，使用算法自身的高质量重建 |
-| `alternate` | IGV，用于用户比较 |
-| `reference` | CPU、FP32、单一确定版本 |
+| `preview` | Quickly demosaic and turn off expensive repairs |
+| `balanced` | Historical preset name; current GPU public configuration is no longer available |
+| `quality` | AMaZE, high-quality reconstruction using the algorithm itself |
+| `alternate` | IGV, used for user comparison |
+| `reference` | CPU, FP32, single definite version |
 
-默认算法在完成样片和 chart 测试前标记为“暂定”。
+The default algorithm is marked "tentative" until sample and chart testing is completed.
 
-### 12.5 分块与视频并行
+### 12.5 Chunking and video parallelism
 
-高品质算法可能需要较大邻域，因此：
+High-quality algorithms may require larger neighborhoods, so:
 
-- 插件报告 halo。
-- tile 内部使用完整 halo，最终只写中心区域。
-- 边界策略必须与整帧参考完全一致。
-- 先实现整帧正确版本，再实现 tile。
-- 视频天然适合帧级并行；避免算法内部 OpenMP 与外部多帧线程池发生过度订阅。
-- 提供线程预算器，统一分配 I/O、demosaic 和 encoder 线程。
-
----
-
-## 13. 伪色抑制（已移除）
-
-CPU 首版曾实现独立全帧伪色抑制，但正式样本 profile 显示其约占总耗时 60%，
-而画质收益不足以支持这一成本。产品路径不再提供 FCS 节点、等级或配置项；伪色表现
-由所选 demosaic 算法自身负责。若未来重新评估，必须以新的 ADR、独立质量样片和性能
-预算重新进入架构，不能恢复旧的全帧中值实现。
+- Plugin reporting halo.
+- The full halo is used internally in the tile, and only the center area is ultimately written.
+- The boundary policy must be exactly consistent with the whole frame reference.
+- Implement the correct version of the whole frame first, then the tiles.
+- Video is naturally suitable for frame-level parallelism; avoiding oversubscription between OpenMP within the algorithm and external multi-frame thread pools.
+- Provides a thread budgeter to uniformly allocate I/O, demosaic and encoder threads.
 
 ---
 
-## 14. 坏点修复
+## 13. False color suppression (removed)
 
-作为可选 RAW 节点，位于去马赛克之前。
-
-### 两种来源
-
-1. **静态坏点表**
-   - 来自用户校准文件或元数据。
-   - 最低开销，推荐优先使用。
-2. **动态检测**
-   - 与同色 CFA 邻居比较。
-   - 阈值考虑局部梯度和噪声模型。
-   - 区分 hot pixel、dead pixel 和真实高亮小点。
-
-### 视频注意事项
-
-- 动态检测阈值要有时间稳定性，避免坏点 mask 帧间跳变。
-- 可缓存稳定检测结果。
-- 插值只使用同色 CFA 邻域，防止提前混色。
-- 提供坏点 mask 输出和计数统计。
+The first CPU version implemented independent full-frame false-color suppression, but the official sample profile showed that it consumed about 60% of total runtime.
+The image-quality benefit did not justify that cost. Product paths no longer expose an FCS node, level, or configuration item; false-color behavior is the responsibility of the selected demosaic algorithm.
+Any future reconsideration requires a new ADR, an independent quality corpus, and a performance budget; the old full-frame median implementation must not be restored.
 
 ---
 
-## 15. 降噪边界
+## 14. Bad pixel repair
 
-转码器不实现 RAW、色度或时域降噪。输出定位为可继续调色的数字负片，噪声处理
-交给具备镜头、场景与时间上下文的后期 grading 工具，避免转码阶段不可逆地损失纹理。
+As an optional RAW node, before demosaicing.
+
+### Two sources
+
+1. **Static bad pixel table**
+   - From user calibration files or metadata.
+   - The lowest cost, recommended to be used first.
+2. **Dynamic detection**
+   - Compare with CFA neighbors of the same color.
+   - Thresholding takes into account local gradients and noise models.
+   - Distinguish between hot pixels, dead pixels and real highlighted dots.
+
+### Video Notes
+
+- The dynamic detection threshold must have temporal stability to avoid bad pixel mask inter-frame jumps.
+- Can cache stable detection results.
+- Interpolation only uses CFA ne…4203 tokens truncated…Persistent mapping staging buffer.
+- timeline semaphore.
+- Multi-frame in-flight.
+- Try to keep compressed data directly into GPU-accessible buffers.
+- Avoid decompressing the complete CPU Bayer and then uploading it again.
+- Independent timestamp query for each node.
+- shader uses explicit precision.
+- Correctness phase does not enable `fast-math`.
+- Keep the independent kernel first, and then determine the integration based on the profiler.
+
+### 24.4 Real-life Problems of CPU High-Quality Demosaic
+
+If the GPU completes RAW decompression while AMaZE/RCD/IGV is still on the CPU, a GPU→CPU readback will occur.
+
+So in stages:
+
+1. **Correctness Phase**: CPU decompression + CPU demosaic.
+2. **GPU decompression verification phase**: Read back after GPU decompression, only for testing.
+3. **Hybrid production phase**: Evaluate whether there are still benefits from host-visible buffering and readback.
+4. **Full GPU Phase**: Port at least common RCD to Vulkan.
+5. AMaZE/IGV may continue to be the "highest quality" option for slower CPUs until GPU version verification is complete.
+
+Don't port complex algorithms prematurely to avoid readback; the cost of incorrect GPU demosaic outweighs the temporary slowness.
+
+### 24.5 Coding bottleneck
+
+After GPU image processing is accelerated, `prores_ks` is likely to become a bottleneck. Therefore the benchmark must measure separately:
+
+- MCRAW I/O
+- CPU decompression
+- GPU decompression
+- black and white field
+- bad pixels
+- RAW NR
+- demosaic
+- color/matrix
+- Log
+- RGB→YUV
+- chroma filter
+- ProRes
+- mux/write
+
+Simply reporting end-to-end FPS is not enough to guide optimization.
 
 ---
 
-## 16. 镜头阴影与几何校正
+## 15. Noise reduction boundary
 
-### 镜头阴影/平场
-
-- 位于 RAW 域。
-- 对 CFA 位置分别施加 gain。
-- 若 MCRAW 有逐帧或容器级 shading map，先确认字段语义和网格布局，再启用。
-- 不得因为字段名相似就猜测。
-- 支持外部校准网格。
-- 网格插值应可选双线性或更高质量方法。
-- 大增益区域应记录噪声放大。
-
-### 几何畸变
-
-- 在 RGB 域。
-- 可通过外部 lens profile 系统实现。
-- 初期可以不做，接口先预留。
-- 处理后需要定义输出尺寸、裁切与边缘填充策略。
-
-### 横向色差
-
-- 可单独放在 RGB 域。
-- 若使用 RAW 专用 CA 修正，应作为另一实现，并有测试证明不会破坏 CFA 细节。
+The transcoder does not implement RAW, chroma, or temporal noise reduction. The output is positioned as a digital negative film that can continue to be color graded, noise processing
+Leave it to post-grading tools with lens, scene and time context to avoid irreversible texture loss during the transcoding phase.
 
 ---
 
-## 17. MCRAW 元数据标准化
+## 16. Lens shading and geometric correction
 
-官方示例可读取：
+### Lens shading / flat field
+
+- Located in the RAW domain.
+- Apply gain to CFA positions individually.
+- If MCRAW has a frame-by-frame or container-level shading map, confirm the field semantics and grid layout before enabling it.
+- Do not make guesses just because field names are similar.
+- Supports external calibration grid.
+- Grid interpolation may use bilinear or higher-quality interpolation.
+- Noise amplification should be recorded in large gain areas.
+
+### Geometric distortion
+
+- In the RGB domain.
+- Possible via external lens profile system.
+- Not required in the initial stage; reserve the interface first.
+- After processing, you need to define the output size, cropping and edge filling strategies.
+
+### Horizontal chromatic aberration
+
+- Can be placed separately in RGB domain.
+- If RAW-specific CA correction is used, it should be implemented as an alternative and tested to prove that it does not break the CFA details.
+
+---
+
+## 17. MCRAW metadata standardization
+
+The official example contains:
 
 - `width`
 - `height`
-- 每帧 `asShotNeutral`
+- `asShotNeutral` per frame
 - `blackLevel`
 - `whiteLevel`
-- `sensorArrangement` 或历史拼写
+- `sensorArrangement` or historical spelling
 - `colorMatrix1`
 - `colorMatrix2`
 - `forwardMatrix1`
 - `forwardMatrix2`
 
-其他分支或工具还可能出现：
+Other branches or tools may also appear:
 
 - `calibrationMatrix1`
 - `calibrationMatrix2`
 - `colorIlluminant1`
 - `colorIlluminant2`
-- 噪声模型
+- Noise model
 - lens shading
 - crop/active area
 - baseline exposure
-- per-frame exposure、ISO/gain、时间戳
+- per-frame exposure, ISO/gain, timestamp
 
-### 处理要求
+### Processing requirements
 
-1. 保留原始 JSON。
-2. 生成 `NormalizedCameraMetadata`。
-3. 记录每个标准化字段来源：
+1. Keep the original JSON.
+2. Generate `NormalizedCameraMetadata`.
+3. Record the source of each standardized field:
    - container
    - frame
    - external override
    - default
-4. 检查矩阵：
-   - 元素数量；
-   - 行列定义；
-   - 是否有限数；
-   - 行列式/条件数；
-   - 是否全零；
-   - 是否两个矩阵误填为相同；
-   - 是否存在转置风险。
-5. 缺失字段不得静默伪造。
-6. `inspect` 输出完整诊断。
-7. 为不同 MotionCam 版本建立样本库。
+4. Check the matrix:
+   - number of elements;
+   - definition of rows and columns;
+   - whether all values are finite;
+   - Determinant/condition number;
+   - whether it is all zeros;
+   - whether the two matrices were accidentally populated with the same values;
+   - whether there is a risk of transposition.
+5. Missing fields must not be silently fabricated.
+6. `inspect` must output complete diagnostics.
+7. Create sample libraries for different MotionCam versions.
 
 ---
 
-## 18. 白平衡与双矩阵颜色模型
+## 18. White balance and dual matrix color model
 
-这部分以 Adobe DNG 1.7.1 的 camera color model 为规范，而不是照搬 vkdt 的具体行为。
+This part is based on the camera color model of Adobe DNG 1.7.1 as the specification, rather than copying the specific behavior of vkdt.
 
-### 18.1 基本定义
+### 18.1 Basic definition
 
-对每个校准光源有：
+For each calibration light source there are:
 
 - ColorMatrix \(CM_i\)
-- CameraCalibration \(CC_i\)，缺失时为单位矩阵
-- ForwardMatrix \(FM_i\)，可能缺失
+- CameraCalibration \(CC_i\), if missing, it is the identity matrix
+- ForwardMatrix \(FM_i\), may be missing
 - CalibrationIlluminant \(I_i\)
-- AnalogBalance \(AB\)，缺失时为单位对角矩阵
+- AnalogBalance \(AB\), if missing, it is the unit diagonal matrix
 
-逐帧白平衡通常来自 `asShotNeutral`，记为 `CameraNeutral`。
+Frame-by-frame white balance usually comes from `asShotNeutral`, notated as `CameraNeutral`.
 
-### 18.2 双矩阵插值规则
+### 18.2 Double matrix interpolation rules
 
-DNG 1.2 及以后规定：
+DNG 1.2 and later specify:
 
-- 根据用户白平衡和两个校准光源的相关色温计算权重。
-- 在**倒数相关色温**上做线性插值。
-- 白平衡超出两个校准光源范围时，夹到最近一个矩阵。
-- 分别插值 CM、CC、FM；不能只插值最终 Camera→RGB 矩阵。
-- 不应简单根据“相机设置的 Kelvin 数”直接插值，而应从白平衡 neutral 求得 xy/CCT。
+- Calculate weights from the user white balance and the correlated color temperatures of the two calibrated light sources.
+- Perform linear interpolation in **reciprocal correlated color temperature**.
+- When the white balance falls outside the range of the two calibrated light sources, clamp it to the nearest matrix.
+- Interpolate CM, CC, and FM separately; do not interpolate only the final Camera→RGB matrix.
+- Do not interpolate directly from the camera setting's Kelvin value; derive xy/CCT from the white-balance neutral.
 
-权重可概念化为：
+Weight can be conceptualized as:
 
 \[
 w =
@@ -644,38 +684,38 @@ w =
      {1/T_2-1/T_1}
 \]
 
-之后夹到 `[0,1]`。矩阵顺序必须按实际低/高色温整理，不能假设 Matrix1 一定是低色温。
+Then clip to `[0,1]`. The matrix order must be sorted according to the actual low/high color temperature. It cannot be assumed that Matrix1 must be a low color temperature.
 
-### 18.3 CameraNeutral → xy 的迭代
+### 18.3 Iteration of CameraNeutral → xy
 
-因为插值矩阵依赖白点，而白点又由 CameraNeutral 和矩阵决定，需要迭代：
+Because the interpolation matrix depends on the white point, and the white point is determined by the CameraNeutral and the matrix, iteration is required:
 
-1. 用一个合理 xy 作为初值。
-2. 由当前 xy/CCT 得到双矩阵权重。
-3. 插值得到 CM、CC、FM。
-4. 计算：
+1. Use a reasonable xy as the initial value.
+2. Obtain the double matrix weight from the current xy/CCT.
+3. Interpolate to obtain CM, CC, FM.
+4. Compute:
    \[
    XYZtoCamera = AB \cdot CC \cdot CM
    \]
-5. 求：
+5. Derive:
    \[
    XYZ = (XYZtoCamera)^{-1} \cdot CameraNeutral
    \]
-6. XYZ 转 xy。
-7. 迭代到收敛。
+6. XYZ to xy.
+7. Iterate until convergence.
 
-要求：
+Requirements:
 
-- FP64。
-- 最大迭代次数。
-- 明确收敛容差。
-- 记录失败原因。
-- 矩阵非方阵时使用稳定 pseudo-inverse。
-- 对低条件数、异常 neutral 做错误处理。
+- FP64.
+- Maximum number of iterations.
+- Explicit convergence tolerances.
+- Record the reason for failure.
+- Use stable pseudo-inverse when the matrix is ​​non-square.
+- Error handling for anomalous condition numbers and invalid neutral values.
 
-### 18.4 有 ForwardMatrix 的路径
+### 18.4 Path with ForwardMatrix
 
-遵循 DNG：
+Follow DNG:
 
 \[
 ReferenceNeutral=(AB\cdot CC)^{-1}\cdot CameraNeutral
@@ -689,48 +729,48 @@ D=\mathrm{Invert}(\mathrm{Diagonal}(ReferenceNeutral))
 CameraToXYZ_{D50}=FM\cdot D\cdot(AB\cdot CC)^{-1}
 \]
 
-ForwardMatrix 已包含 profile 设计者的 D50 映射意图，因此不要再额外做一遍错误的校准光源→D50 适配。
+ForwardMatrix already contains the profile designer's D50 mapping intention, so there is no need to do an additional wrong calibration light source→D50 adaptation.
 
-### 18.5 无 ForwardMatrix 的路径
+### 18.5 Path without ForwardMatrix
 
-1. 求逆：
+1. Find the inverse:
    \[
    CameraToXYZ=(AB\cdot CC\cdot CM)^{-1}
    \]
-2. 用线性 Bradford 将选定白点适配到 D50：
+2. Use Linear Bradford to fit the selected white point to D50:
    \[
    CameraToXYZ_{D50}=CA\cdot CameraToXYZ
    \]
 
-### 18.6 白平衡与曝光必须分离
+### 18.6 White balance and exposure must be separated
 
-- 白平衡改变三通道比例。
-- 曝光偏移是场景线性统一乘数。
-- 不要把绿色归一化、曝光补偿和白平衡混成同一个不可解释的 gain。
-- 日志输出中记录：
-  - 原始 `asShotNeutral`
-  - 求得 xy、CCT、Duv（若计算）
-  - 矩阵插值权重
-  - 最终相机→XYZ D50 矩阵
-  - 曝光偏移
+- White balance changes the proportion of three channels.
+- Exposure offset is a linear unity multiplier of the scene.
+- Don't mix green normalization, exposure compensation and white balance into the same unexplainable gain.
+- Recorded in the log output:
+  - Original `asShotNeutral`
+  - Find xy, CCT, Duv (if calculated)
+  - Matrix interpolation weights
+  - Final Camera→XYZ D50 Matrix
+  - Exposure shift
 
-### 18.7 手动白平衡
+### 18.7 Manual white balance
 
-支持：
+Support:
 
 - `as-shot`
 - CCT + tint
 - xy
-- 直接 CameraNeutral
-- 直接 RGB gains（高级/诊断）
+- Direct CameraNeutral
+- Direct RGB gains (advanced/diagnostic)
 
-CCT+tint 必须先转换为 xy，再进入统一 DNG 求解路径。不能为不同输入方式维护多套颜色逻辑。
+CCT+tint must be converted to xy before entering the unified DNG solution path. Multiple sets of color logic cannot be maintained for different input methods.
 
 ---
 
-## 19. 颜色转换主路径
+## 19. Color conversion main path
 
-建议把 `XYZ D50` 作为相机 profile 与输出色域之间的规范中间锚点：
+It is recommended to use `XYZ D50` as the canonical intermediate anchor point between the camera profile and the output color gamut:
 
 ```text
 Camera RGB linear
@@ -741,21 +781,21 @@ Camera RGB linear
 → exact target Log OETF
 ```
 
-大多数目标 Log 色域使用 D65，因此需要从 D50 到 D65 的明确 chromatic adaptation。建议：
+Most target Log gamuts use D65, so explicit chromatic adaptation from D50 to D65 is required. Suggestions:
 
-- 默认线性 Bradford。
-- 适配方法记录在元数据中。
-- 不允许隐式将 D50 XYZ 直接乘 D65 RGB matrix。
-- 目标 RGB matrix 使用官方公布矩阵；若只有 primaries，则由 FP64 计算并固定测试向量。
+- Default linear Bradford.
+- Adaptation methods are recorded in metadata.
+- Implicit multiplication of D50 XYZ directly by D65 RGB matrix is ​​not allowed.
+- The target RGB matrix uses the officially announced matrix; if there are only primaries, the test vector is calculated and fixed by FP64.
 
-对于没有后续编辑节点的纯转码，不必强行绕经 ACEScg。  
-若未来加入 RGB 域高级处理，可提供 ACEScg 或其他工作空间，但不能改变基础颜色转换的定义。
+For pure transcoding without subsequent edit nodes, there is no need to force a detour through ACEScg.  
+If advanced processing of the RGB domain is added in the future, ACEScg or other workspaces can be provided, but the definition of the basic color conversion cannot be changed.
 
 ---
 
-## 20. “Log 格式”必须定义为色域 + OETF
+## 20. "Log format" must be defined as color gamut + OETF
 
-用户选择项不能只叫 `S-Log3`，而应是明确 profile：
+The user option cannot just be called `S-Log3`, but should be an explicit profile:
 
 - `FLog_BT2020`
 - `SLog2_SGamut`
@@ -764,41 +804,41 @@ Camera RGB linear
 - `DaVinciIntermediate_DWG`
 - `LogC3_AWG3_EI800`
 
-每个 profile 固定：
+Fixed per profile:
 
-1. 目标 RGB primaries。
-2. 白点。
-3. XYZ↔RGB 矩阵。
-4. OETF/EOTF 精确公式。
-5. 负值策略。
-6. scene-linear 基准。
-7. 18% 灰映射。
-8. RGB→YCbCr matrix。
-9. packing range。
-10. QuickTime/FFmpeg 色彩标签策略。
-11. sidecar 名称和版本。
-12. 官方来源和校验向量。
+1. Target RGB primaries.
+2. White point.
+3. XYZ↔RGB matrix.
+4. OETF/EOTF exact formula.
+5. Negative value strategy.
+6. scene-linear benchmark.
+7. 18% gray mapping.
+8. RGB→YCbCr matrix.
+9. packing range.
+10. QuickTime/FFmpeg color labeling strategy.
+11. Sidecar name and version.
+12. Official sources and check vectors.
 
 ---
 
-## 21. 精确 Log 实现规则
+## 21. Precise Log implementation rules
 
-### 21.1 通用规则
+### 21.1 General rules
 
-- 使用解析分段公式，不使用 spline 拟合。
-- 不用粗 LUT 作为参考实现。
-- 可有高精度 LUT 加速模式，但必须与解析公式比较并限制误差。
-- CPU 参考使用 FP64。
-- GPU 默认 FP32，禁用会改变结果的激进 fast-math。
-- 每条曲线都实现 forward 和 inverse。
-- 断点两侧做连续性测试。
-- 对负输入、NaN、Inf 和极高超白明确处理。
-- 生成密集测试网格与官方/ACES CLF 对比。
-- 记录公式版本和来源文档版本。
+- Use analytic piecewise formula, not spline fitting.
+- Do not use a dense LUT as the reference implementation.
+- A high-precision LUT acceleration mode is possible, but it must be compared with the analytical formulas and its error must be bounded.
+- CPU reference uses FP64.
+- GPU defaults to FP32, disabling aggressive fast-math which can change results.
+- Each curve implements forward and inverse.
+- Do continuity tests on both sides of the breakpoint.
+- Explicit handling of negative input, NaN, Inf and very high super white.
+- Generate dense test grids for comparison with official/ACES CLF.
+- Record formula version and source document version.
 
-### 21.2 F-Log / BT.2020
+### 21.2 F-Log/BT.2020
 
-使用 Fujifilm 官方分段公式和常数：
+Using Fujifilm's official step-by-step formulas and constants:
 
 - `a=0.555556`
 - `b=0.009468`
@@ -809,52 +849,52 @@ Camera RGB linear
 - linear cut `0.00089`
 - log-domain cut `0.100537775223865`
 
-官方参考：
+Official reference:
 
-- 0% 反射约 10-bit 95
-- 18% 反射约 470
-- 90% 反射约 705
-- gamut 为 BT.2020/D65
-- 官方资料称 F-Log 使用 full range
+- 0% reflection about 10-bit 95
+- 18% reflection approx. 470
+- 90% reflective approx. 705
+- gamut for BT.2020/D65
+- Official information states that F-Log uses full range
 
-实现时把“Log 信号归一化”和“最终 ProRes YUV range packing”分开，不能因为 F-Log 原始相机记录是 full range，就直接假设任意 MOV/ProRes 打包行为。
+During implementation, "Log signal normalization" and "final ProRes YUV range packing" are separated. Just because the original F-Log camera record is full range, we cannot directly assume any MOV/ProRes packing behavior.
 
 ### 21.3 S-Log3
 
-使用 Sony 官方公式：
+Using Sony's official formula:
 
-- 分段点：scene linear `0.01125`
-- 18% 灰应映射到 10-bit code 420
-- 0% 黑参考 code 95
-- 90% 参考 code 598
-- 公式不随 EI 改变
+- Segmentation point: scene linear `0.01125`
+- 18% gray should be mapped to 10-bit code 420
+- 0% black reference code 95
+- 90% reference code 598
+- The formula does not change with EI
 
-必须支持：
+Must support:
 
 - S-Gamut3
 - S-Gamut3.Cine
 
-二者共用 S-Log3 OETF，但 gamut matrix 不同。
+Both share the S-Log3 OETF, but the gamut matrix is different.
 
 ### 21.4 S-Log2
 
-S-Log2 必须单独实现并绑定 S-Gamut。
+S-Log2 must be implemented separately and bound to S-Gamut.
 
-实施规则：
+Implementation rules:
 
-- 不从图表拟合。
-- 不从 S-Log3 反推。
-- 采用 Sony 官方技术文档、官方 LUT 或经 ACES/OCIO 采用的明确 reference transform。
-- 在拿到可追溯的公式/transform 前，profile 标记为 `experimental`，不可声称 bit-exact。
-- 至少校验 Sony 参考点：
-  - 0% 黑 code 90
-  - 18% 灰 code 347
-  - 90% 白 code 582
-- 记录 S-Log2 版本和对哪类 Sony 实现兼容。
+- Does not fit from graphs.
+- No backcasting from S-Log3.
+- Use official Sony technical documentation, official LUTs, or explicit reference transforms adopted by ACES/OCIO.
+- Before getting the traceable formula/transform, the profile is marked as `experimental` and cannot claim to be bit-exact.
+- Verify at least Sony reference points:
+  - 0% black code 90
+  - 18% gray code 347
+  - 90% white code 582
+- Document S-Log2 version and which Sony implementations are compatible.
 
 ### 21.5 DaVinci Intermediate / DWG
 
-使用 Blackmagic 官方参数：
+Use official Blackmagic specs:
 
 - `DI_A = 0.0075`
 - `DI_B = 7.0`
@@ -863,57 +903,57 @@ S-Log2 必须单独实现并绑定 S-Gamut。
 - `DI_LIN_CUT = 0.00262409`
 - `DI_LOG_CUT = 0.02740668`
 
-参考：
+Reference:
 
 - scene-linear 0.18 → 0.336043
 - scene-linear 1.0 → 0.513837
 - scene-linear 100 → 1.0
 
-使用官方 DWG primaries、白点和公布矩阵，不采用近似 spline。
+Uses official DWG primaries, whitepoints and published matrices, no approximate splines.
 
-### 21.6 ARRI LogC3 / AWG3
+### 21.6 ARRI LogC3/AWG3
 
-LogC3 不是单一固定曲线。
+LogC3 is not a single fixed curve.
 
-其参数取决于：
+Its parameters depend on:
 
-1. linear domain 是 sensor signal 还是 exposure value；
-2. EI。
+1. Is linear domain sensor signal or exposure value?
+2. EI.
 
-对于从 MCRAW 场景线性数据生成数字负片，默认采用 **exposure-value** 路径。
+For generating digital negatives from MCRAW scene linear data, the **exposure-value** path is used by default.
 
-设计：
+Design:
 
 - `logc3_domain = exposure_value | sensor_signal`
-- `logc3_ei = 160...1600`，必要时扩展更高 EI 参数
-- 默认 `EI800`
-- 参数表直接来自 ARRI 官方规范，禁止手抄后无测试
-- 18% 灰应映射到约 0.391，即 10-bit 400/1023
-- 输出 profile 名称必须包含 EI，例如 `LogC3_AWG3_EI800`
+- `logc3_ei = 160...1600`, expand to higher EI parameters if necessary
+- Default `EI800`
+- The parameter table comes directly from ARRI official specifications, hand-copied without testing is prohibited
+- 18% gray should map to approximately 0.391, which is 10-bit 400/1023
+- The output profile name must contain EI, for example `LogC3_AWG3_EI800`
 
-ARRI 明确说明不同 EI 曲线不同；仅为了兼容而固定 EI800可以作为默认，但不能隐藏这一事实。
+ARRI clearly states that different EI curves are different; it is fixed only for compatibility. EI800 can be used as the default, but it cannot hide this fact.
 
-### 21.7 负值策略
+### 21.7 Negative value strategy
 
-全局提供：
+Supported globally:
 
-- `preserve_by_curve`：使用曲线官方线性 toe，可编码则保留。
-- `clamp_zero`：进入 OETF 前裁到 0。
-- `soft_floor`：可配置平滑压缩负值。
-- `error`：发现负值即停止，用于验证。
+- `preserve_by_curve`: Use the official linear toe of the curve, and preserve it if it can be encoded.
+- `clamp_zero`: Clamp to 0 before entering OETF.
+- `soft_floor`: Configurable smooth compression of negative values.
+- `error`: Stop when a negative value is found, used for verification.
 
-默认按曲线规范。  
-不得为了避免 `log()` 非法而无条件静默 clamp。
+The default is curve specification.  
+Unconditional clamping must not be performed to avoid illegal `log()`.
 
 ---
 
-## 22. RGB → YCbCr 与 ProRes 422
+## 22. RGB → YCbCr and ProRes 422
 
-这一步必须与 Log OETF 分离。
+This step must be separate from Log OETF.
 
-### 22.1 输出 profile 还需定义 packing profile
+### 22.1 Output profile also needs to define packing profile
 
-例如：
+For example:
 
 ```text
 color encoding:
@@ -924,106 +964,106 @@ packing:
     10-bit
     video or full range
     YCbCr matrix identifier
-    chroma siting
+    chroma sitting
     chroma filter
 ```
 
-### 22.2 避免的错误
+### 22.2 Mistakes to avoid
 
-- 把 Log RGB 的 0–1 直接当作 Y 平面码值。
-- 未定义 RGB→YCbCr matrix。
-- 把 full-range Log 曲线定义与 MOV YUV range 混为一谈。
-- 先做 4:2:2 再做 Log。
-- 在场景线性 RGB 上直接做标准 Y'CbCr。
-- 使用 nearest/box 作为高质量色度下采样。
-- 写错或遗漏色彩标签，却依赖 NLE 自动识别。
+- Treat 0–1 of Log RGB directly as Y plane code value.
+- Failing to define the RGB→YCbCr matrix.
+- Confusing full-range Log curve definition with MOV YUV range.
+- Performing 4:2:2 conversion before Log encoding.
+- Do standard Y'CbCr directly on scene linear RGB.
+- Using nearest-neighbor or box filtering for high-quality chroma downsampling.
+- Wrong or missing color labels, but rely on NLE to automatically recognize them.
 
-### 22.3 4:2:2 下采样
+### 22.3 4:2:2 downsampling
 
-- 在非线性 R'G'B' 转换成 Y'CbCr 后进行。
-- 使用明确的低通滤波器。
-- 定义水平 chroma siting。
-- 处理画面边界。
-- 独立测试饱和彩色细线和高频图案。
-- 提供 `fast` 与 `quality` 两种滤波器，但默认 `quality`。
+- Performed after nonlinear R'G'B' conversion to Y'CbCr.
+- Use a clear low pass filter.
+- Define horizontal chroma siting.
+- Handle screen borders.
+- Independently test saturated color fine lines and high-frequency patterns.
+- Provide `fast` and `quality` filters, defaulting to `quality`.
 
-### 22.4 量化
+### 22.4 Quantification
 
-- FP32/FP64 到 10-bit 前增加可控 dither。
-- 默认使用确定性、固定 seed 或基于帧/坐标的可重复噪声。
-- 避免视频帧间固定条纹或随机闪烁。
-- 对 legal/full range 分别测试端点。
-- 统计裁剪像素比例。
+- Add controllable dither before FP32/FP64 reaches 10-bit.
+- Defaults to using deterministic, fixed seed or frame/coordinate based repeatable noise.
+- Avoid fixed streaks or random flickering between video frames.
+- Test endpoints separately for legal/full range.
+- Measure the proportion of clipped pixels.
 
-### 22.5 元数据现实限制
+### 22.5 Metadata Realistic Limitations
 
-QuickTime/ProRes 的标准色彩标签不能完整表达所有“相机 Log + 宽色域”组合。
+QuickTime/ProRes's standard color tags cannot fully express all "Camera Log + Wide Color Gamut" combinations.
 
-因此：
+Therefore:
 
-1. 尽可能写正确的 `colr`/nclc/nclx 标签。
-2. 无法精确表达时使用 `unspecified`，而不是写一个错误标准。
-3. 始终写 sidecar JSON。
-4. 文件名或 metadata 明确 profile。
-5. 在 DaVinci Resolve 中进行导入识别测试。
-6. 文档说明需要手动指定 Input Color Space 的情况。
+1. Write correct `colr`/nclc/nclx tags as much as possible.
+2. Use `unspecified` when it cannot be expressed accurately, instead of writing an incorrect standard.
+3. Always write sidecar JSON.
+4. The file name or metadata clearly indicates the profile.
+5. Conduct an import recognition test in DaVinci Resolve.
+6. The documentation explains situations where Input Color Space needs to be specified manually.
 
-不要假设一个 `color_trc` 标签就足以表示完整摄影机色彩空间。
+Do not assume that a `color_trc` tag is sufficient to represent the full camera color space.
 
 ---
 
-## 23. ProRes 与 MOV 输出
+## 23. ProRes and MOV output
 
-### 编码
+### Encoding
 
-首选 FFmpeg `prores_ks`，支持：
+Preferred FFmpeg `prores_ks`, supports:
 
 - ProRes 422 Proxy
-- ProRes 422 LT
+- ProRes 422LT
 - ProRes 422
-- ProRes 422 HQ
+- ProRes 422HQ
 
-内部输入：
+Internal input:
 
 - `yuv422p10le`
 
-未来可加：
+May be added in the future:
 
 - ProRes 4444
-- ProRes 4444 XQ
-- 16-bit TIFF/EXR 测试输出
+- ProRes 4444XQ
+- 16-bit TIFF/EXR test output
 
-处理架构不应在颜色节点前假定最终一定是 422，以便未来扩展 4444。
+Processing architectures should not assume that the final color node must be 422 to allow for future extensions to 4444.
 
-### 时间
+### Time
 
-MCRAW 帧时间戳为事实来源。
+MCRAW frame timestamps are the source of truth.
 
-提供：
+Provided by:
 
-- `source_timestamps`：保留实际时间。
-- `cfr`：按指定帧率重建，明确处理缺帧。
-- `drop/duplicate/error` 策略。
+- `source_timestamps`: keep actual times.
+- `cfr`: Rebuild according to the specified frame rate and explicitly handle missing frames.
+- `drop/duplicate/error` strategy.
 
-默认先尝试保留源时间关系，但需验证 NLE 对 MOV 时间基的兼容性。
+The default is to first try to preserve source time relationships, but NLE compatibility with the MOV time base needs to be verified.
 
-### 音频
+### Audio
 
-- 保留采样率、声道数和时间戳。
-- 输出 PCM。
-- 不以第一帧简单假定音频起点。
-- 统计 A/V 起点差和结束差。
-- 提供静音补齐或裁切策略。
-- 输出同步报告。
+- Preserve sample rate, number of channels and timestamps.
+- Output PCM.
+- Don't simply assume the audio starting point is the first frame.
+- Statistics of A/V start difference and end difference.
+- Provide silent filling or cropping strategies.
+- Output sync reports.
 
 ---
 
-## 24. 性能架构
+## 24. Performance architecture
 
-### 24.1 目标流水线
+### 24.1 Target pipeline
 
 ```text
-async read / prefetch
+async read/prefetch
     ↓
 compressed frame ring
     ↓
@@ -1031,67 +1071,67 @@ Vulkan RAW unpack
     ↓
 RAW processing
     ↓
-demosaic
+demosic
     ↓
-color + log
+color+log
     ↓
-RGB/YUV + 4:2:2
+RGB/YUV+4:2:2
     ↓
 CPU ProRes encoding
     ↓
 async mux/write
 ```
 
-在稳态时：
+In steady state:
 
-- GPU 处理帧 N+1；
-- CPU 编码帧 N；
-- I/O 读取帧 N+2；
-- 磁盘写入更早的 packet。
+- GPU processes frame N+1;
+- CPU encoding frame N;
+- I/O read frame N+2;
+- Disk writes older packets.
 
 ### 24.2 I/O
 
-- 使用 `pread`、memory mapping 或独立句柄，避免共享 seek 锁。
-- 根据 frame index 直接随机读取。
-- 支持预取。
-- 压缩帧缓冲使用有限 ring，防止内存无限增长。
-- 记录读取、等待和 page fault 时间。
+- Use `pread`, memory mapping or independent handles to avoid shared seek locks.
+- Directly read randomly according to frame index.
+- Support prefetching.
+- The compressed frame buffer uses a limited ring to prevent unlimited memory growth.
+- Log read, wait and page fault times.
 
 ### 24.3 Vulkan
 
-- 持久映射 staging buffer。
-- timeline semaphore。
-- 多帧 in-flight。
-- 尽量让压缩数据直接进入 GPU 可访问缓冲。
-- 避免解压出完整 CPU Bayer 后再次上传。
-- 每个节点独立 timestamp query。
-- shader 使用明确精度。
-- 正确性阶段不启用 `fast-math`。
-- 先保留独立 kernel，后续依据 profiler 决定融合。
+- Persistent mapping staging buffer.
+- timeline semaphore.
+- Multi-frame in-flight.
+- Try to keep compressed data directly into GPU-accessible buffers.
+- Avoid decompressing the complete CPU Bayer and then uploading it again.
+- Independent timestamp query for each node.
+- shader uses explicit precision.
+- Correctness phase does not enable `fast-math`.
+- Keep the independent kernel first, and then determine the integration based on the profiler.
 
-### 24.4 CPU 高品质去马赛克的现实问题
+### 24.4 Real-life Problems of CPU High-Quality Demosaic
 
-若 GPU 完成 RAW 解压而 AMaZE/RCD/IGV 仍在 CPU，会发生 GPU→CPU 读回。
+If the GPU completes RAW decompression while AMaZE/RCD/IGV is still on the CPU, a GPU→CPU readback will occur.
 
-因此分阶段：
+So in stages:
 
-1. **正确性阶段**：CPU 解压 + CPU demosaic。
-2. **GPU 解压验证阶段**：GPU 解压后读回，只用于测试。
-3. **混合生产阶段**：评估 host-visible buffer 和读回是否仍有收益。
-4. **完整 GPU 阶段**：至少将常用 RCD 移植到 Vulkan。
-5. AMaZE/IGV 可继续作为较慢 CPU“最高质量”选项，直到 GPU 版本验证完成。
+1. **Correctness Phase**: CPU decompression + CPU demosaic.
+2. **GPU decompression verification phase**: Read back after GPU decompression, only for testing.
+3. **Hybrid production phase**: Evaluate whether there are still benefits from host-visible buffering and readback.
+4. **Full GPU Phase**: Port at least common RCD to Vulkan.
+5. AMaZE/IGV may continue to be the "highest quality" option for slower CPUs until GPU version verification is complete.
 
-不要为了避免读回而过早移植复杂算法；错误 GPU demosaic 的代价大于暂时较慢。
+Don't port complex algorithms prematurely to avoid readback; the cost of incorrect GPU demosaic outweighs the temporary slowness.
 
-### 24.5 编码瓶颈
+### 24.5 Coding bottleneck
 
-GPU 图像处理加速后，`prores_ks` 很可能成为瓶颈。因此 benchmark 必须分别测：
+After GPU image processing is accelerated, `prores_ks` is likely to become a bottleneck. Therefore the benchmark must measure separately:
 
 - MCRAW I/O
-- CPU 解压
-- GPU 解压
-- 黑白场
-- 坏点
+- CPU decompression
+- GPU decompression
+- black and white levels
+- bad pixels
 - RAW NR
 - demosaic
 - color/matrix
@@ -1101,15 +1141,14 @@ GPU 图像处理加速后，`prores_ks` 很可能成为瓶颈。因此 benchmark
 - ProRes
 - mux/write
 
-只报告端到端 FPS 不足以指导优化。
+Simply reporting end-to-end FPS is not enough to guide optimization.
 
 ---
+## 25. Configure the system
 
-## 25. 配置系统
+JSON or YAML is recommended; it has version number and schema verification internally.
 
-建议 JSON 或 YAML；内部有版本号和 schema 校验。
-
-### 顶层概念
+### Top-level concepts
 
 - input
 - timing
@@ -1126,42 +1165,42 @@ GPU 图像处理加速后，`prores_ks` 很可能成为瓶颈。因此 benchmark
 - performance
 - diagnostics
 
-### 原则
+### Principles
 
-- 所有默认值都能在 `print-effective-config` 中显示。
-- preset 展开后就是普通配置。
-- 配置写入 sidecar。
-- 非法组合在运行前失败。
-- 输入元数据和 override 的优先级固定且可见。
-- 配置 schema 带版本，未来可迁移。
+- All default values can be displayed in `print-effective-config`.
+- After preset is expanded, it is a normal configuration.
+- Configuration written to sidecar.
+- Illegal combination fails before running.
+- Priority of input metadata and overrides is fixed and visible.
+- Configure schema with version, which can be migrated in the future.
 
 ---
 
-## 26. CLI 功能规划
+## 26. CLI function planning
 
 ### `inspect`
 
-输出：
+Output:
 
-- MCRAW/container 版本
-- 帧数、时间戳、帧率统计
-- 分辨率、CFA
+- MCRAW/container version
+- Frame number, timestamp, frame rate statistics
+- Resolution, CFA
 - compression type
 - black/white levels
 - matrices
 - illuminants
-- as-shot neutral 范围
-- 音频
-- 可选元数据
-- 字段来源和异常
+- as-shot neutral range
+- Audio
+- optional metadata
+- Field sources and exceptions
 
 ### `convert`
 
-执行转码。
+Perform transcoding.
 
 ### `extract-frame`
 
-输出指定阶段：
+Output the specified stage:
 
 - compressed payload
 - raw U16
@@ -1174,340 +1213,340 @@ GPU 图像处理加速后，`prores_ks` 很可能成为瓶颈。因此 benchmark
 
 ### `validate`
 
-- CPU 官方解压 vs 自定义 CPU/GPU
-- 矩阵和曲线
-- 选定帧逐像素比较
-- 输出差异热图和统计
+- CPU official decompression vs custom CPU/GPU
+- Matrices and curves
+- Pixel-by-pixel comparison of selected frames
+- Output difference heatmaps and statistics
 
 ### `benchmark`
 
 - warm-up
-- 每阶段时间
+- Time of each stage
 - P50/P95/P99
-- 吞吐 FPS
-- CPU/GPU 利用率
-- 内存/显存峰值
-- 队列等待比例
+- Throughput FPS
+- CPU/GPU utilization
+- Memory/Video memory peak
+- Queue waiting ratio
 
 ### `list-capabilities`
 
-列出：
+List:
 
-- 可用 demosaic 算法
+- demosaic algorithm available
 - CPU/GPU backend
-- 可用 Log profile
+- Available Log profiles
 - FFmpeg encoder
-- 支持 CFA
+- Support CFA
 - build license/features
 
 ---
 
-## 27. 错误处理与回退
+## 27. Error handling and rollback
 
-### 必须停止的错误
+### Errors that must be stopped
 
-- 帧索引越界或损坏。
-- 压缩 payload 长度不一致。
-- GPU 解压与参考算法不一致。
-- CFA 未知。
-- 矩阵维度错误、NaN/Inf、不可接受的条件数。
-- 双矩阵有矩阵但无可解释 illuminant。
-- 目标 profile 缺失必要 gamut/OETF 定义。
-- 编码器返回损坏 packet。
-- 音视频时间戳倒退。
+- The frame index is out of bounds or corrupted.
+- Compressed payload lengths are inconsistent.
+- GPU decompression is inconsistent with the reference algorithm.
+- CFA Unknown.
+- Wrong matrix dimensions, NaN/Inf, unacceptable condition number.
+- Double matrix has matrix but no explanation illuminant.
+- The target profile is missing necessary gamut/OETF definitions.
+- Encoder returns corrupted packet.
+- Audio and video timestamps are reversed.
 
-### 可警告回退
+### Can warn and roll back
 
-- 缺少 ForwardMatrix：使用 ColorMatrix + Bradford。
-- 缺少 CameraCalibration：单位矩阵。
-- 缺少 AnalogBalance：单位矩阵。
-- 仅一个 ColorMatrix：单光源模式。
-- 缺少噪声模型：关闭物理 RAW NR。
-- 缺少镜头 shading 数据：关闭该节点。
-- GPU 不可用：CPU backend。
-- 某 demosaic 无 GPU 实现：CPU 或用户指定 fallback。
+- Missing ForwardMatrix: use ColorMatrix + Bradford.
+- Missing CameraCalibration: identity matrix.
+- Missing AnalogBalance: identity matrix.
+- Only one ColorMatrix: single light mode.
+- Missing noise model: Turn off physical RAW NR.
+- Missing lens shading data: close this node.
+- GPU not available: CPU backend.
+- A demosaic without GPU implementation: CPU or user-specified fallback.
 
-所有回退写入日志和 sidecar，不能静默。
+All rollbacks are written to the log and sidecar and cannot be silent.
 
 ---
 
-## 28. 测试体系
+## 28. Test system
 
-### 28.1 MCRAW 解压
+### 28.1 MCRAW decompression
 
-- compression 6/7 等实际版本样本。
-- 所有 CFA。
-- 不同宽度、非典型 stride。
-- 首帧、末帧、随机帧。
-- CPU 官方结果和自定义结果必须 bit-exact。
-- GPU 结果必须 bit-exact。
-- 异常/截断文件应安全失败。
+- compression 6/7 and other actual version samples.
+- All CFA.
+- Different widths, atypical strides.
+- First frame, last frame, random frame.
+- CPU official results and custom results must be bit-exact.
+- GPU results must be bit-exact.
+- Exceptions/truncated files should fail safely.
 
-### 28.2 元数据
+### 28.2 Metadata
 
-- 历史字段拼写。
-- 缺失矩阵。
-- 单矩阵/双矩阵。
-- ForwardMatrix 有/无。
-- 每帧白平衡变化。
-- 异常 matrix。
-- 元数据读取结果保存为 golden JSON。
+- History field spelling.
+- Missing matrix.
+- Single matrix/double matrix.
+- ForwardMatrix Yes/No.
+- White balance changes every frame.
+- Exception matrix.
+- Metadata reading results are saved as golden JSON.
 
-### 28.3 去马赛克
+### 28.3 Demosaic
 
-建立素材集：
+Create a material set:
 
 - Siemens star
 - zone plate
-- 黑白细线
-- 斜线与文字
-- 织物
-- 叶片
-- 屋顶瓦片
-- 远处栅栏
-- 饱和红蓝 LED
-- 肤色
-- 低照高噪
-- 单通道剪切高光
-- 坏点
-- 图像边界
+- black and white thin lines
+- Slashes and text
+- Fabric
+- Blades
+- roof tiles
+- Fence in the distance
+- Saturated red and blue LEDs
+- Skin color
+- Low light and high noise
+- Single channel clipping highlights
+- bad pixels
+- Image borders
 
-比较：
+Compare:
 
 - AMaZE
 - RCD
 - IGV
-- RawTherapee/librtprocess 参考
-- DaVinci CinemaDNG 结果
+- RawTherapee/librtprocess reference
+- DaVinci CinemaDNG results
 
-指标不能只用 PSNR；还需观察假色、拉链、摩尔纹、时间闪烁和边缘形状。
+Metrics can't just be PSNR; look for false colors, zippers, moiré, temporal flicker, and edge shapes as well.
 
-### 28.4 双矩阵颜色
+### 28.4 Double matrix color
 
-单元测试：
+Unit tests:
 
-- 已知 identity profile。
-- 已知合成 ColorMatrix。
-- 校准光源端点权重应精确为 0/1。
-- 中间色温按 inverse CCT。
-- 超范围 clamp。
-- CameraNeutral→xy 迭代收敛。
-- 有/无 ForwardMatrix 两条路径。
-- neutral 变换到 D50 后应中性。
-- 与 Adobe DNG SDK 或受信参考实现比较。
-- 由相同 MCRAW 生成 DNG，在 Adobe/Resolve 中做参考比较。
+- Known identity profile.
+- Known to synthesize ColorMatrix.
+- Calibration light endpoint weights should be exactly 0/1.
+- Press inverse CCT for intermediate color temperature.
+- Over range clamp.
+- CameraNeutral→xy iteration converges.
+- Two paths with/without ForwardMatrix.
+- neutral should be neutral when converted to D50.
+- Compare to Adobe DNG SDK or trusted reference implementation.
+- Generate DNG from the same MCRAW for reference comparison in Adobe/Resolve.
 
-### 28.5 Log 曲线
+### 28.5 Log Curve
 
-对每条曲线：
+For each curve:
 
-- forward/inverse round-trip。
-- 断点前、断点、断点后。
-- 0、18%、90%、1.0 和多个超白。
-- 负值。
-- 密集 FP64 网格。
-- GPU FP32 vs CPU FP64。
-- 官方 reference code value。
-- ACES CLF/OCIO reference 对比。
-- 目标：在量化前误差足够低，使已知 10-bit 点不超过 0.5 code value；参考点四舍五入结果精确一致。
+- forward/inverse round-trip.
+- Before breakpoint, breakpoint, after breakpoint.
+- 0, 18%, 90%, 1.0 and multiple super whites.
+- Negative value.
+- Dense FP64 mesh.
+- GPU FP32 vs CPU FP64.
+- Official reference code value.
+- ACES CLF/OCIO reference comparison.
+- Goal: The error is low enough before quantization so that the known 10-bit points do not exceed 0.5 code value; the reference point rounding results are accurate and consistent.
 
 ### 28.6 YUV/ProRes
 
-- 灰阶 ramp。
-- 饱和 RGB patch。
-- 单像素/双像素彩色线。
-- full/video range。
-- chroma siting。
-- 码值端点。
-- FFmpeg decode round-trip。
-- DaVinci Resolve 导入。
-- 检查 waveform、RGB parade、metadata 和手动 input color space。
-- ProRes profile/bit depth/tag 验证。
+- Grayscale ramp.
+- Saturated RGB patch.
+- Single pixel/dual pixel color lines.
+- full/video range.
+- chroma sitting.
+- Code value endpoint.
+- FFmpeg decode round-trip.
+- DaVinci Resolve import.
+- Check waveform, RGB parade, metadata and manual input color space.
+- ProRes profile/bit depth/tag verification.
 
-### 28.7 视频稳定性
+### 28.7 Video Stability
 
-- 静止场景检查 demosaic 伪色与时间闪烁。
-- 坏点 mask 稳定性。
-- RAW NR 稳定性。
-- 帧时间戳和音频同步。
-- 长片内存泄漏。
-- 中止和恢复。
-- 输出损坏处理。
+- Still scene checks for demosaic false color and temporal flickering.
+- Bad pixel mask stability.
+- RAW NR stability.
+- Frame timestamps and audio synchronization.
+- Long movie memory leak.
+- Suspend and resume.
+- Output corruption handling.
 
 ---
 
-## 29. 性能验收方法
+## 29. Performance acceptance method
 
-每次 benchmark 固定：
+Fixed for each benchmark:
 
-- 输入文件 checksum。
-- CPU/GPU/驱动版本。
-- 编译器和 flags。
-- backend。
-- 算法配置。
-- 线程数。
-- 输出盘。
-- warm-up。
-- 是否写文件。
-- 是否启用音频。
-- 分辨率和帧数。
+- Input file checksum.
+- CPU/GPU/driver version.
+- Compilers and flags.
+- backend.
+- Algorithm configuration.
+- Number of threads.
+- Output tray.
+- warm-up.
+- Whether to write files.
+- Whether to enable audio.
+- Resolution and frame rate.
 
-报告：
+Report:
 
-| 阶段 | ms/frame | FPS 等价 | CPU% | GPU% | 内存/显存 | 等待 |
+| Phase | ms/frame | FPS Equivalent | CPU% | GPU% | Memory/Video Memory | Wait |
 |---|---:|---:|---:|---:|---:|---:|
 
-提供三种基准：
+Three benchmarks are provided:
 
-1. `compute-only`：不编码、不写盘。
-2. `encode-only`：输入预生成 YUV。
-3. `end-to-end`：完整 MCRAW→MOV。
+1. `compute-only`: No encoding, no writing to disk.
+2. `encode-only`: input pre-generated YUV.
+3. `end-to-end`: complete MCRAW→MOV.
 
 ---
 
-## 30. 实现阶段建议
+## 30. Implementation phase suggestions
 
-### Phase 0：规范冻结和样本
+### Phase 0: Spec Freeze and Samples
 
-- 建立测试 MCRAW 集。
-- 固定官方 decoder commit。
-- 固定 DNG、Sony、Fujifilm、Blackmagic、ARRI 规范版本。
-- 决定项目许可证。
-- 建立 golden metadata 和 raw frame。
-- 写 architecture decision records。
+- Build test MCRAW set.
+- Fixed official decoder commit.
+- Fixed DNG, Sony, Fujifilm, Blackmagic, ARRI spec versions.
+- Determine project license.
+- Create golden metadata and raw frame.
+- Write architecture decision records.
 
-### Phase 1：I/O 和参考解压
+### Phase 1: I/O and reference decompression
 
 - `inspect`
 - frame/audio index
 - CPU official decode adapter
-- raw U16 导出
-- 时间戳和音频读取
-- 异常文件测试
+- raw U16 export
+- Timestamp and audio reading
+- Abnormal file testing
 
-验收：所有样本可稳定解析，官方 raw 可复现。
+Acceptance: All samples can be stably analyzed, and official raw can be reproduced.
 
-### Phase 2：CPU 高质量正确路径
+### Phase 2: CPU High Quality Correct Path
 
-- 黑/白场
+- black/white
 - CFA/crop
 - RCD
 - AMaZE
 - IGV
-- DNG 双矩阵
+- DNG Dual Matrix
 - XYZ D50
-- 首个精确输出 profile：建议 DWG/DaVinci Intermediate
-- ProRes 422 HQ
+- First accurate output profile: DWG/DaVinci Intermediate recommended
+- ProRes 422HQ
 - sidecar
 
-验收：单帧颜色、曲线和 ProRes round-trip 正确。
+Acceptance: Single frame colors, curves, and ProRes round-trip are correct.
 
-### Phase 3：完整 Log profile
+### Phase 3: Complete Log profile
 
 - F-Log
-- S-Log3 两种 gamut
-- LogC3 EI 参数
-- S-Log2 reference 确认后加入
-- 颜色/packing metadata
-- Resolve 对照项目
+- S-Log3 two kinds of gamut
+- LogC3 EI parameters
+- S-Log2 reference will be added after confirmation.
+- Color/packing metadata
+- Resolve control project
 
-### Phase 4：Vulkan MCRAW 解压
+### Phase 4: Vulkan MCRAW decompression
 
-- 参考 vkdt 算法结构
-- compressed payload 直达 GPU
+- Refer to vkdt algorithm structure
+- compressed payload directly to GPU
 - prefix/offset
 - decode shader
-- bit-exact 自动验证
-- 多帧 ring
+- bit-exact automatic verification
+- Multi-frame ring
 
-验收：所有测试帧与官方 CPU 完全一致。
+Acceptance: All test frames are exactly the same as the official CPU.
 
-### Phase 5：GPU 颜色和输出准备
+### Phase 5: GPU color and output preparation
 
 - black/white
 - matrix
 - chromatic adaptation
-- exact OETF
+- exactOETF
 - RGB→YUV
 - quality 422
 - dither/quantization
-- 异步 read/compute/encode/write
+- Asynchronous read/compute/encode/write
 
-### Phase 6：可选 RAW 修复
+### Phase 6: Optional RAW Repair
 
-- 坏点
+- bad pixels
 - lens shading
 - RAW spatial NR
 - highlight reconstruction
-- CA/geometry 接口
+- CA/geometry interface
 
-每项独立 benchmark 和质量回归。
+Each independent benchmark and quality regression.
 
-### Phase 7：GPU 高品质 demosaic
+### Phase 7: GPU high quality demosaic
 
-优先顺序建议：
+Prioritization suggestions:
 
-1. RCD
-2. IGV 或 AMaZE，依据前期 profile 结果决定
+1.RCD
+2. IGV or AMaZE, determined based on previous profile results
 
-GPU 算法必须逐像素或按明确容差与 CPU reference 比较。
+GPU algorithms must be compared to a CPU reference on a pixel-by-pixel basis or by explicit tolerances.
 
-### Phase 8：产品化
+### Phase 8: Productization
 
-- 稳定 preset
-- 配置 schema 迁移
-- 崩溃恢复
-- 日志
-- 批处理
-- GUI 作为 CLI/library 的薄前端
-
----
-
-## 31. Codex 工作拆分原则
-
-不要让 Codex 一次生成“完整转码器”。每个任务应具有：
-
-- 一个模块边界。
-- 一个输入/输出契约。
-- 一个对应测试。
-- 一个完成标准。
-- 不跨越多个尚未验证的颜色阶段。
-
-### 建议任务粒度
-
-1. 建项目骨架和依赖锁定。
-2. 封装 MotionCam decoder。
-3. 输出标准化 metadata。
-4. 做 CPU raw golden test。
-5. 定义像素类型和 frame buffer。
-6. 实现 black/white reference node。
-7. 适配单个 demosaic。
-8. 加另外两个 demosaic。
-9. 建 CPU 线程预算和有界多帧执行接口。
-10. 实现 DNG neutral→xy 迭代。
-11. 实现双矩阵插值。
-12. 实现 ForwardMatrix 路径。
-13. 实现 XYZ D50→DWG。
-14. 实现 DI exact OETF。
-15. FFmpeg ProRes 单帧编码。
-16. MOV 和时间戳。
-17. 音频。
-18. 端到端 CPU CLI。
-19. Vulkan device/context。
-20. GPU compressed frame input。
-21. GPU decode bit-exact。
-22. GPU color/log。
-23. GPU YUV422。
-24. pipeline overlap。
-25. optional correction nodes。
-
-每次只要求 Codex 修改有限文件，并让测试先失败、后通过。
+- stable preset
+- Configure schema migration
+- Crash recovery
+- Log
+- Batch processing
+- GUI as a thin front-end to CLI/library
 
 ---
 
-## 32. 架构决策记录建议
+## 31. Codex work splitting principle
 
-在仓库建立 `docs/adr/`：
+Don't let Codex generate the "full transcoder" in one go. Each task should have:
+
+- A module boundary.
+- An input/output contract.
+- A correspondence test.
+- A completion standard.
+- Does not span multiple yet-to-be-validated color stages.
+
+### Recommended task granularity
+
+1. Build the project skeleton and dependency locking.
+2. Encapsulate MotionCam decoder.
+3. Output standardized metadata.
+4. Do CPU raw golden test.
+5. Define pixel type and frame buffer.
+6. Implement black/white reference node.
+7. Adapt a single demosaic.
+8. Add two more demosaics.
+9. Build CPU thread budget and bounded multi-frame execution interface.
+10. Implement DNG neutral→xy iteration.
+11. Implement dual matrix interpolation.
+12. Implement the ForwardMatrix path.
+13. Implement XYZ D50→DWG.
+14. Implement DI exact OETF.
+15. FFmpeg ProRes single frame encoding.
+16. MOV and timestamps.
+17. Audio.
+18. End-to-end CPU CLI.
+19. Vulkan device/context.
+20. GPU compressed frame input.
+21. GPU decode bit-exact.
+22. GPU color/log.
+23. GPU YUV422.
+24. pipeline overlap.
+25. optional correction nodes.
+
+Codex is only required to modify a limited number of files each time, and the test fails first and then passes.
+
+---
+
+## 32. Recommendations for recording architectural decisions
+
+Create `docs/adr/` in the repository:
 
 - ADR-001 License posture
 - ADR-002 Official MotionCam decoder role
@@ -1517,103 +1556,103 @@ GPU 算法必须逐像素或按明确容差与 CPU reference 比较。
 - ADR-006 Demosaic plugin ABI
 - ADR-007 Exact analytic Log functions
 - ADR-008 ProRes via FFmpeg
-- ADR-009 YUV range and chroma siting
+- ADR-009 YUV range and chroma sitting
 - ADR-010 Timestamp policy
 - ADR-011 Negative linear value policy
 - ADR-012 CPU/GPU determinism and tolerance
 
-每个 ADR 包含：背景、选择、替代方案、后果、测试方式。
+Each ADR contains: context, choices, alternatives, consequences, and testing methods.
 
 ---
 
-## 33. 首版默认值建议
+## 33. First version default value suggestions
 
-这些默认值可在测试后更改：
+These default values can be changed after testing:
 
-| 项目 | 暂定默认 |
+| Project | Tentative Default |
 |---|---|
 | black/white | metadata |
-| bad pixel | off，静态 map 有效时可 on |
-| lens shading | off，除非可靠 metadata/profile |
+| bad pixel | off, can be on when static map is valid |
+| lens shading | off, unless reliable metadata/profile |
 | RAW NR | off |
-| demosaic | RCD（暂定，等待测试） |
+| demosaic | RCD (tentative, waiting for testing) |
 | white balance | as-shot |
-| color transform | DNG dual-illuminant + ForwardMatrix 优先 |
+| color transform | DNG dual-illuminant + ForwardMatrix priority |
 | target | DWG / DaVinci Intermediate |
 | exposure offset | 0 |
 | negative policy | preserve_by_curve |
 | chroma filter | quality |
 | dither | on, deterministic |
-| ProRes | 422 HQ |
+| ProRes | 422HQ |
 | timing | source timestamps |
 | audio | PCM passthrough/repack |
-| backend | auto，reference 可强制 CPU |
+| backend | auto, reference can force CPU |
 | precision | FP32 pixels + FP64 setup/reference |
 
-对输出数字负片，降噪留给后期、几何校正默认关闭；黑白场和颜色校准默认开启，
-因为它们属于正确解释传感器数据的基础步骤。
+For output digital negatives, noise reduction is left to post-production and geometric correction is turned off by default; black and white field and color calibration are turned on by default.
+Because they are fundamental steps in correctly interpreting sensor data.
 
 ---
 
-## 34. 仍需在开始前确认的事项
+## 34. Things that still need to be confirmed before starting
 
-1. 项目采用 GPLv3 还是宽松许可证。
-2. 是否允许直接链接 librtprocess。
-3. 第一目标平台是否为 Windows + NVIDIA。
-4. Vulkan 是否唯一 GPU backend，还是未来加 CUDA。
-5. 首版只做 ProRes 422 HQ，还是同时做 Standard/LT。
-6. 是否需要 ProRes 4444 作为颜色验证和高质量备选。
-7. 对 Log YUV packing 的默认 range 和 matrix 需通过 Resolve 实测最终确定。
-8. S-Log2 的权威 reference transform 需要单独收集和固化。
-9. MCRAW 中 lens shading、noise model、baseline exposure 等字段需用真实样本审计。
-10. MotionCam 不同版本、不同手机、不同镜头的矩阵和元数据兼容性需要样本库。
+1. Whether the project adopts GPLv3 or permissive license.
+2. Whether to allow direct linking to librtprocess.
+3. Whether the first target platform is Windows + NVIDIA.
+4. Is Vulkan the only GPU backend, or will CUDA be added in the future?
+5. The first version will only be ProRes 422 HQ, or also Standard/LT.
+6. Is ProRes 4444 required as a color verification and high quality alternative.
+7. The default range and matrix of Log YUV packing need to be finalized through actual measurement of Resolve.
+8. The authoritative reference transform of S-Log2 needs to be collected and solidified separately.
+9. Fields such as lens shading, noise model, and baseline exposure in MCRAW need to be audited with real samples.
+10. Sample library is required for matrix and metadata compatibility of different versions of MotionCam, different mobile phones, and different lenses.
 
 ---
 
-## 35. 关键风险
+## 35. Key Risks
 
-| 风险 | 应对 |
+| Risk | Response |
 |---|---|
-| 误解 MCRAW 版本差异 | 官方 decoder 基准 + 多版本样本 |
-| GPU RAW 解压非 bit-exact | 自动逐帧比较，失败禁止生产输出 |
-| 高品质 demosaic 许可冲突 | 开工前决定许可证 |
-| 双矩阵实现错误 | 按 DNG 规范 + Adobe/DNG 对照 |
-| ForwardMatrix 重复色适配 | 明确两条 DNG 路径 |
-| Log 曲线近似 | 解析公式 + 官方测试向量 |
-| Log 与 gamut 名称混淆 | profile 必须成对命名 |
-| full range 与 ProRes range 混淆 | 分离 encoding 和 packing |
-| 4:2:2 造成额外假色 | 高质量滤波 + 4444 测试输出 |
-| ProRes 变成瓶颈 | encode-only benchmark |
-| CPU demosaic 导致 GPU 读回 | 分阶段实现，优先 GPU RCD |
-| 视频帧间闪烁 | 静止序列回归测试 |
-| 元数据自动识别不可靠 | sidecar + Resolve 手动 profile 测试 |
+| Misunderstanding MCRAW version differences | Official decoder benchmark + multi-version samples |
+| GPU RAW decompression is not bit-exact | Automatic frame-by-frame comparison, failure to prohibit production output |
+| High quality demosaic license conflicts | Decide on license before starting construction |
+| Double matrix implementation error | According to DNG specification + Adobe/DNG comparison |
+| ForwardMatrix repeated color adaptation | Clarify two DNG paths |
+| Log curve approximation | Analytical formula + official test vector |
+| Log and gamut names are confused | profiles must be named in pairs |
+| Confusing full range with ProRes range | Separating encoding and packing |
+| 4:2:2 causing extra false colors | High quality filtering + 4444 test outputs |
+| ProRes becomes a bottleneck | encode-only benchmark |
+| CPU demosaic causes GPU readback | Implemented in stages, prioritizing GPU RCD |
+| Flicker between video frames | Still sequence regression test |
+| Metadata automatic identification is unreliable | Sidecar + Resolve manual profile testing |
 
 ---
 
-## 36. 参考资料
+## 36. References
 
 ### MCRAW
 
-- MotionCam official decoder  
+- MotionCam official decoder
   https://github.com/mirsadm/motioncam-decoder
-- MotionCam decoder example showing matrices and AsShotNeutral  
+- MotionCam decoder example showing matrices and AsShotNeutral
   https://github.com/mirsadm/motioncam-decoder/blob/main/example.cpp
-- vkdt  
+- vkdt
   https://github.com/hanatos/vkdt
 
 ### Demosaic
 
-- librtprocess  
+- librtprocess
   https://github.com/CarVac/librtprocess
-- RawTherapee  
+- RawTherapee
   https://github.com/Beep6581/RawTherapee
 
 ### DNG color model
 
-- Adobe DNG Specification 1.7.1.0  
+- Adobe DNG Specification 1.7.1.0
   https://helpx.adobe.com/content/dam/help/en/camera-raw/digital-negative/jcr_content/root/content/flex/items/position/position-par/download_section_733958301/download-1/DNG_Spec_1_7_1_0.pdf
 
-重点章节：
+Key chapters:
 
 - One, Two, or Three Color Calibrations
 - inverse correlated color temperature interpolation
@@ -1623,38 +1662,38 @@ GPU 算法必须逐像素或按明确容差与 CPU reference 比较。
 
 ### Log and gamut specifications
 
-- Blackmagic DaVinci Wide Gamut / Intermediate  
+- Blackmagic DaVinci Wide Gamut / Intermediate
   https://documents.blackmagicdesign.com/InformationNotes/DaVinci_Resolve_17_Wide_Gamut_Intermediate.pdf
-- Fujifilm F-Log Data Sheet  
+- Fujifilm F-Log Data Sheet
   https://dl.fujifilm-x.com/support/lut/F-Log_DataSheet_E_Ver.1.2.pdf
-- Sony S-Gamut3.Cine/S-Log3 and S-Gamut3/S-Log3 Technical Summary  
+- Sony S-Gamut3.Cine/S-Log3 and S-Gamut3/S-Log3 Technical Summary
   https://pro.sony/s3/cms-static-content/uploadfile/06/1237494271406.pdf
-- ARRI LogC3 specification/downloads  
+- ARRI LogC3 specification/downloads
   https://www.arri.com/en/learn-help/learn-help-camera-system/technical-downloads
-- ARRI ALEXA Log C Curve in VFX  
+- ARRI ALEXA Log C Curve in VFX
   https://www.arri.com/resource/blob/31918/66f56e6abb6e5b6553929edf9aa7483e/2017-03-alexa-logc-curve-in-vfx-data.pdf
-- OpenColorIO Config ACES reference transforms  
+- OpenColorIO Config ACES reference transforms
   https://github.com/AcademySoftwareFoundation/OpenColorIO-Config-ACES
 
 ---
 
-## 37. 给 Codex 的最高层指令摘要
+## 37. Summary of top-level instructions given to Codex
 
-1. 不要一次实现整个应用。
-2. 不允许猜测 MCRAW 字段或颜色公式。
-3. 官方 MotionCam CPU decoder 是 RAW 解压真值。
-4. Adobe DNG 规范是双矩阵颜色真值。
-5. 相机 neutral 求白点需要迭代。
-6. 双矩阵使用 inverse CCT 权重。
-7. 有 ForwardMatrix 与无 ForwardMatrix 是不同路径。
-8. Log 必须使用官方解析公式，不使用 spline。
-9. Log 曲线与 RGB gamut 必须成对定义。
-10. 色彩 encoding 与 YUV packing 必须分离。
-11. 不提前 clamp 负值和超白。
-12. 高品质 demosaic 是可插拔模块。
-13. 不提供独立 FCS；伪色质量由 demosaic 选择和回归样片负责。
-14. 黑白场默认开启；坏点、镜头和 RAW NR 默认可关闭。
-15. 任何 GPU 优化都要有 CPU reference 和自动比较。
-16. FFmpeg 负责 ProRes 和 MOV。
-17. 每个阶段必须有单元测试、黄金数据和 benchmark。
-18. 所有 fallback、override 和近似都必须记录到日志与 sidecar。
+1. Don’t implement the entire application at once.
+2. No guessing on MCRAW fields or color formulas allowed.
+3. The official MotionCam CPU decoder is the true value of RAW decompression.
+4. The Adobe DNG specification is a dual matrix color truth.
+5. Finding the white point of camera neutral requires iteration.
+6. Bi-matrix uses inverse CCT weights.
+7. There are different paths with and without ForwardMatrix.
+8. Log must use the official analytical formula and do not use spline.
+9. Log curve and RGB gamut must be defined in pairs.
+10. Color encoding and YUV packing must be separated.
+11. Do not clamp negative values ​​and super white in advance.
+12. High quality demosaic is pluggable module.
+13. No independent FCS is provided; false color quality is the responsibility of demosaic selection and regression swatches.
+14. Black and white field is turned on by default; bad pixels, lenses and RAW NR can be turned off by default.
+15. Any GPU optimization requires CPU reference and automatic comparison.
+16. FFmpeg takes care of ProRes and MOV.
+17. Each stage must have unit tests, golden data and benchmarks.
+18. All fallbacks, overrides and approximations must be recorded to logs and sidecars.

@@ -1,77 +1,80 @@
-# H.265 NVENC 单流 Benchmark
+# H.265 NVENC Single-Stream Benchmark
 
-日期：2026-07-15  
-GPU：NVIDIA GeForce RTX 3060  
-输入：4096×3072，30 fps，`testsrc2`  
-目标码率：200 Mbps，实际输出约 200.009 Mbps
+Date: 2026-07-15  
+GPU: NVIDIA GeForce RTX 3060  
+Input: 4096×3072, 30 fps, `testsrc2`  
+Target bitrate: 200 Mbps, actual output about 200.009 Mbps
 
-## 测试目的
+## Test objective
 
-验证单个 NVENC 编码流是否需要额外的软件并行，以及 FFmpeg 的
-`-surfaces` 是否能提高单流吞吐。每个配置运行 3 次，每次 90 帧，结果取
-中位数。其他编码参数与中间片 benchmark 相同：
+Determine whether a single NVENC encoding stream needs additional software
+parallelism, and whether FFmpeg's `-surfaces` option can improve single-stream
+throughput. Each configuration ran three times, with 90 frames per run; the
+median is reported. Other encoding parameters matched the intermediate-video
+benchmark:
 
 ```text
 preset=p1, tune=ll, rc=cbr, cbr_padding=1
 g=30, bf=0, rc-lookahead=0, zerolatency=1
 ```
 
-## 单流结果
+## Single-stream results
 
-### HEVC Main 10，4:2:0
+### HEVC Main 10, 4:2:0
 
-| `surfaces` | 吞吐中位数 | 平均单帧成本 | NVENC平均 | 三次吞吐 |
+| `surfaces` | Median throughput | Mean cost/frame | Mean NVENC utilization | Three-run throughput |
 |---:|---:|---:|---:|---:|
-| 0（自动） | **50.36 fps** | **19.86 ms** | 45.75% | 50.36 / 52.19 / 48.00 |
+| 0 (automatic) | **50.36 fps** | **19.86 ms** | 45.75% | 50.36 / 52.19 / 48.00 |
 | 8 | 47.55 fps | 21.03 ms | 42.58% | 47.55 / 47.20 / 48.79 |
 | 16 | 41.77 fps | 23.94 ms | 37.77% | 43.64 / 40.59 / 41.77 |
 | 32 | 36.36 fps | 27.50 ms | 26.56% | 36.26 / 36.88 / 36.36 |
 
-### HEVC RExt 10-bit，4:4:4
+### HEVC RExt 10-bit, 4:4:4
 
-| `surfaces` | 吞吐中位数 | 平均单帧成本 | NVENC平均 | 三次吞吐 |
+| `surfaces` | Median throughput | Mean cost/frame | Mean NVENC utilization | Three-run throughput |
 |---:|---:|---:|---:|---:|
-| 0（自动） | **29.02 fps** | **34.46 ms** | 37.88% | 29.02 / 29.02 / 28.87 |
+| 0 (automatic) | **29.02 fps** | **34.46 ms** | 37.88% | 29.02 / 29.02 / 28.87 |
 | 8 | 27.63 fps | 36.18 ms | 34.38% | 27.64 / 27.63 / 27.25 |
 | 16 | 24.91 fps | 40.15 ms | 32.75% | 25.23 / 24.90 / 24.91 |
 | 32 | 20.57 fps | 48.60 ms | 21.12% | 20.57 / 21.18 / 20.29 |
 
-## 单流与 8 路聚合对照
+## Single-stream versus eight-stream aggregate
 
-8 路数据来自同一编码参数、同一输入和同一 GPU 的独立编码进程测试；它表示
-总吞吐，不是单条视频流的延迟。
+The eight-stream data comes from independent encoding-process tests using the
+same encoding parameters, input, and GPU. It represents aggregate throughput,
+not the latency of one video stream.
 
-| 模式 | 单流中位数 | 8路总吞吐中位数 | 聚合吞吐增幅 | 8路NVENC峰值 |
+| Mode | Single-stream median | Eight-stream aggregate median | Aggregate throughput increase | Eight-stream NVENC peak |
 |---|---:|---:|---:|---:|
 | HEVC Main10 4:2:0 | 50.36 fps | 88.92 fps | +76.6% | 97% |
 | HEVC RExt 10-bit 4:4:4 | 29.02 fps | 36.73 fps | +26.6% | 94% |
 
-8 路时单路墙钟帧间隔分别约为 89.97 ms 和 217.81 ms；因此多路并行提高的是
-GPU 的总吞吐，不会把单个流的端到端延迟降到对应的合计单帧成本。
+At eight streams, the per-stream wall-clock frame intervals were about 89.97 ms
+and 217.81 ms, respectively. Parallelism therefore improves total GPU
+throughput; it does not reduce one stream's end-to-end latency to the aggregate
+mean cost per frame.
 
-## 结论
+## Conclusion
 
-- RTX 3060 单个 NVENC 流不需要额外的 `surfaces` 并行优化；`surfaces=0`
-  自动配置是本次单流最佳点。
-- 对 4:2:0，单流约 **50.36 fps**，已经明显高于 30 fps；8 路只将总吞吐
-  提高到 **88.92 fps**，并非单流编码速度提高到 88.92 fps。
-- 对 4:4:4，单流约 **29.02 fps**，接近但略低于实时 30 fps；8 路总吞吐
-  约 **36.73 fps**，但单路延迟显著增加。
-- 显式设置 `surfaces=8/16/32` 会使单流吞吐继续下降，因此中间片单流配置
-  应保留 `surfaces=0`，不应照搬多路并行方案。
+- A single NVENC stream on the RTX 3060 does not need additional `surfaces` parallelism; automatic `surfaces=0` was the best single-stream point in this test.
+- For 4:2:0, a single stream reached about **50.36 fps**, clearly above 30 fps. Eight streams increased only aggregate throughput to **88.92 fps**; they did not make one stream encode at 88.92 fps.
+- For 4:4:4, a single stream reached about **29.02 fps**, close to but slightly below real-time 30 fps. Eight streams reached about **36.73 fps** aggregate, with substantially higher per-stream latency.
+- Explicit `surfaces=8/16/32` continued to reduce single-stream throughput. The intermediate-video single-stream configuration should therefore keep `surfaces=0` rather than copying the multi-stream configuration.
 
-## 码率敏感性补充测试
+## Additional bitrate-sensitivity test
 
-在 4:2:0 单流、`surfaces=0`、其他参数不变的情况下，使用
-`cbr_padding=1` 测试不同目标码率：
+For one 4:2:0 stream with `surfaces=0` and all other parameters unchanged,
+`cbr_padding=1` was tested at different target bitrates:
 
-| 目标码率 | 吞吐中位数 | 平均单帧成本 | 三次吞吐 |
+| Target bitrate | Median throughput | Mean cost/frame | Three-run throughput |
 |---:|---:|---:|---:|
 | 50 Mbps | 47.55 fps | 21.03 ms | 47.42 / 47.55 / 50.49 |
 | 150 Mbps | 47.17 fps | 21.20 ms | 45.67 / 47.17 / 48.38 |
 | 200 Mbps | 50.48 fps | 19.81 ms | 48.79 / 51.33 / 50.48 |
 
-50/150/200 Mbps 的差异没有呈现出随码率升高而下降的趋势，当前测试误差内
-不能把单流吞吐偏低归因于 200 Mbps。更可能影响 HandBrake 对比结果的因素包括
-输入分辨率和像素格式、CQ/VBR 与 CBR 的区别、preset、B 帧/lookahead、AQ，
-以及是否把颜色转换和 CPU→GPU 上传时间算进编码耗时。
+The 50/150/200 Mbps results do not show a downward trend as bitrate increases.
+Within the current test error, the lower single-stream throughput cannot be
+attributed to 200 Mbps. Factors more likely to affect a HandBrake comparison
+include input resolution and pixel format, CQ/VBR versus CBR, preset, B-frames /
+lookahead, AQ, and whether color conversion plus CPU-to-GPU upload time is
+included in the encoding time.

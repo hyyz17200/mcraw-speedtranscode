@@ -1190,16 +1190,16 @@ int command_convert(const Arguments& args) {
 
 void print_help() {
     std::cout <<
-        "mcraw-transcoder 0.1.0\n"
+        "mcraw-speedtranscode 0.1.0\n"
         "Usage:\n"
-        "  mcraw-transcoder inspect <input.mcraw> [--raw-json]\n"
-        "  mcraw-transcoder convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite] [--validation] [--verify-output]\n"
-        "  mcraw-transcoder extract-frame <input.mcraw> --frame N --stage STAGE --output PATH\n"
-        "  mcraw-transcoder validate <input.mcraw> [--frame N] [--compare-fused] [--config file.json]\n"
-        "  mcraw-transcoder benchmark <input.mcraw> [--frames N] [--config file.json]\n"
-        "  mcraw-transcoder print-effective-config [--config file.json]\n"
-        "  mcraw-transcoder list-capabilities\n"
-        "  mcraw-transcoder vulkan-smoke [--gpu SELECTOR] [--iterations N] [--validation]\n";
+        "  mcraw-speedtranscode inspect <input.mcraw> [--raw-json]\n"
+        "  mcraw-speedtranscode convert <input.mcraw> <output.mov> [--config file.json] [--frames N] [--overwrite] [--validation] [--verify-output]\n"
+        "  mcraw-speedtranscode extract-frame <input.mcraw> --frame N --stage STAGE --output PATH\n"
+        "  mcraw-speedtranscode validate <input.mcraw> [--frame N] [--compare-fused] [--config file.json]\n"
+        "  mcraw-speedtranscode benchmark <input.mcraw> [--frames N] [--config file.json]\n"
+        "  mcraw-speedtranscode print-effective-config [--config file.json]\n"
+        "  mcraw-speedtranscode list-capabilities\n"
+        "  mcraw-speedtranscode vulkan-smoke [--gpu SELECTOR] [--iterations N] [--validation]\n";
 }
 
 } // namespace

@@ -25,7 +25,7 @@ Scope: CPU `yuv422p10le` upload to FFmpeg-owned Vulkan frames, `prores_ks_vulkan
 Command:
 
 ```powershell
-& .\build\msvc-release\Release\mcraw-transcoder.exe convert `
+& .\build\msvc-release\Release\mcraw-speedtranscode.exe convert `
   .\mcraw_sample\260710_142121_VIDEO_49mm.mcraw `
   .\test-output\phase3-vulkan-full.mov `
   --config .\config\vulkan-upload-bridge.json --overwrite

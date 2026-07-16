@@ -32,7 +32,7 @@ After building, run:
 
 The check calls the project's `list-capabilities` command. That command probes
 `avcodec_find_encoder_by_name("prores_ks_vulkan")` in the libraries actually
-linked into `mcraw-transcoder`, and records `av_version_info()` plus the linked
+linked into `mcraw-speedtranscode`, and records `av_version_info()` plus the linked
 libavcodec configuration. A system `ffmpeg.exe -encoders` result is diagnostic
 only and cannot satisfy this gate.
 

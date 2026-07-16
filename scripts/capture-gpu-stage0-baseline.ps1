@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Executable = ".\build\msvc-release\Release\mcraw-transcoder.exe",
+    [string]$Executable = ".\build\msvc-release\Release\mcraw-speedtranscode.exe",
     [string]$Corpus = ".\config\gpu-stage0-corpus.json",
     [string]$OutputDirectory = ".\test-output\gpu-stage0-baseline"
 )
@@ -19,7 +19,7 @@ function Resolve-RepoPath([string]$Path) {
 function Invoke-Json([string[]]$Arguments) {
     $text = (& $script:executablePath @Arguments | Out-String)
     if ($LASTEXITCODE -ne 0) {
-        throw "mcraw-transcoder failed: $($Arguments -join ' ')"
+        throw "mcraw-speedtranscode failed: $($Arguments -join ' ')"
     }
     return $text | ConvertFrom-Json -Depth 100
 }

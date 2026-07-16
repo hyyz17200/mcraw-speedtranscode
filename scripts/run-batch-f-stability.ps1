@@ -1,5 +1,5 @@
 param(
-    [string]$Executable = ".\build\msvc-release\Release\mcraw-transcoder.exe",
+    [string]$Executable = ".\build\msvc-release\Release\mcraw-speedtranscode.exe",
     [string]$SampleDirectory = ".\mcraw_sample",
     [string]$Config = ".\config\vulkan-gpu-pipeline.json",
     [string]$OutputDirectory = ".\test-output\batch-f\stability",
@@ -61,4 +61,3 @@ $report = [ordered]@{
 $reportPath = Join-Path $OutputDirectory "report.json"
 $report | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $reportPath -Encoding utf8
 $report | ConvertTo-Json -Depth 6
-

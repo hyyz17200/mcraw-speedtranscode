@@ -34,5 +34,5 @@ if (-not $SkipTests) {
 }
 
 $capabilityCheck = Join-Path $PSScriptRoot "check-vulkan-capability.ps1"
-& $capabilityCheck -Binary (Join-Path $repoRoot "build\$preset\$Configuration\mcraw-transcoder.exe")
+& $capabilityCheck -Binary (Join-Path $repoRoot "build\$preset\$Configuration\mcraw-speedtranscode.exe")
 if ($LASTEXITCODE -ne 0) { throw "Vulkan capability check failed" }

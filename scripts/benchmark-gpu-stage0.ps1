@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Executable = ".\build\msvc-release\Release\mcraw-transcoder.exe",
+    [string]$Executable = ".\build\msvc-release\Release\mcraw-speedtranscode.exe",
     [string]$Corpus = ".\config\gpu-stage0-corpus.json",
     [string]$Config = "",
     [string]$OutputDirectory = ".\test-output\gpu-stage0-benchmark",
