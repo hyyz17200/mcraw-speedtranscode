@@ -45,11 +45,11 @@ The same validation script also passed a 30-frame CPU reference conversion,
 invalid-device `auto` CPU fallback with an explicit reason, and an
 invalid-device forced-Vulkan failure that produced no final MOV.
 
-The current full-sample throughput is approximately 6.95 fps. The matched
-eight-frame profiling comparison and the reason for the TargetLog producer
-optimization are recorded in `GPU_PHASE7_OPTIMIZATION.md`. This is not a 4K30
-result: RAW decode, calibration, demosaic, camera color, sharpening, and DI
-encoding remain on CPU, and FP32 RGB is still staged to the Vulkan shader.
+The historical Phase 8 result above predates the U16 RAW resident pipeline.
+The 2026-07-16 Batch F precise release candidate reached 37.853 fps for all 240
+frames, and the two-iteration real batch measured 35.78-38.34 fps. Current
+evidence is recorded in `GPU_BATCH_F_COMPATIBILITY.md` and
+`GPU_BATCH_F_STABILITY.md`.
 
 ## Compatibility matrix
 
@@ -74,11 +74,10 @@ claimed. The remaining gates from the guide are:
 - actual AMD or Intel hardware coverage and a second NVIDIA driver generation;
 - resolution or formal waiver of the pinned FFmpeg ProRes DCT shader's
   GPU-assisted validation race recorded in `GPU_PHASE3_VALIDATION.md`;
-- a one-hour real conversion and batch/resource-growth run (the existing
-  30,000-frame synthetic direct test covers 1,000 logical seconds, not one
-  hour);
-- an agreed project performance threshold; current 4096x3072 throughput is
-  below real time.
+- a one-hour real conversion (the 108,000-frame single-process synthetic run
+  covers one logical hour but does not replace real material);
+- actual device-loss fault injection;
+- the NLE and cross-vendor/second-driver rows listed above.
 
 Until those gates close, Vulkan is documented and configured as opt-in while
 the CPU backend remains the production default and fallback.

@@ -154,7 +154,8 @@ std::size_t stress_iterations() {
     const char* value = std::getenv("MCRAW_VULKAN_STRESS_ITERATIONS");
     if (value == nullptr) return 1U;
     const auto parsed = std::stoul(value);
-    return std::clamp<std::size_t>(parsed, 1U, 100U);
+    // 360 ten-second iterations cover one logical hour in a single process.
+    return std::clamp<std::size_t>(parsed, 1U, 360U);
 }
 
 std::uint64_t private_memory_bytes() {
