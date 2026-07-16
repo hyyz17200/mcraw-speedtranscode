@@ -11,7 +11,7 @@ Decision: local Batch F actions complete; production release not approved
 | Hardware and driver matrix | Partial | RTX 3060 / 610.62 passes; AMD, Intel, and second NVIDIA driver unavailable |
 | One-hour real material | Blocked | Longest real source is about 27.5 seconds; logical-hour synthetic test does not waive this |
 | Batch/restart/cancel/device-loss/resources | Partial | Real batch, restarts, failure cancellation semantics, and logical-hour resource guard pass; actual device loss not injected |
-| 24 fps minimum | Pass | 240-frame precise: 37.853 fps; repeated real batch: 35.78-38.34 fps |
+| 24 fps minimum | Pass | final 240-frame precise: 37.189 fps; repeated real batch: 35.78-38.34 fps |
 
 ## Release decision
 
@@ -26,4 +26,3 @@ These are not converted into waivers. Until they pass or receive separate
 written waivers, the CPU backend remains the default and Vulkan remains opt-in.
 Batch F produced reproducible scripts and exact rerun instructions for every
 open row.
-

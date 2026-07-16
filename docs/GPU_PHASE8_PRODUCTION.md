@@ -46,7 +46,7 @@ invalid-device `auto` CPU fallback with an explicit reason, and an
 invalid-device forced-Vulkan failure that produced no final MOV.
 
 The historical Phase 8 result above predates the U16 RAW resident pipeline.
-The 2026-07-16 Batch F precise release candidate reached 37.853 fps for all 240
+The final 2026-07-16 Batch F precise release candidate reached 37.189 fps for all 240
 frames, and the two-iteration real batch measured 35.78-38.34 fps. Current
 evidence is recorded in `GPU_BATCH_F_COMPATIBILITY.md` and
 `GPU_BATCH_F_STABILITY.md`.

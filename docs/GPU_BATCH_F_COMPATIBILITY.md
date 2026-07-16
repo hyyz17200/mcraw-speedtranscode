@@ -7,7 +7,7 @@ Candidate: `test-output/batch-f/compatibility-candidate.mov` (local artifact)
 
 - source: `260710_142121_VIDEO_49mm.mcraw`, all 240 frames;
 - output: 4096x3072 ProRes 422 HQ, `yuv422p10le`, PCM audio;
-- Vulkan precise pipeline: 37.853 fps, 6.340 s process wall;
+- Vulkan precise pipeline: 37.189 fps, 6.454 s process wall;
 - container duration: 8.031021 s;
 - video/audio duration: 7.990744 / 8.031021 s;
 - output size: 1,402,782,733 bytes.
@@ -40,4 +40,3 @@ The desktop-player portion of the compatibility gate is closed by VLC. The
 Resolve and Premiere portions remain release-blocking until their actual runs
 are recorded. The candidate and scripts are ready for those runs without a new
 build.
-
