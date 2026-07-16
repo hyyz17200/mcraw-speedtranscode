@@ -18,10 +18,6 @@ public:
         if (config.width <= 0 || config.height <= 0 || (config.width & 1) != 0) {
             throw Error(ErrorCode::invalid_argument, "invalid CPU ProRes frame dimensions");
         }
-        if (config.profile != "hq") {
-            throw Error(ErrorCode::unsupported_format,
-                        "v0.1 CPU ProRes adapter supports only the hq profile");
-        }
         const AVCodec* codec = avcodec_find_encoder_by_name("prores_ks");
         if (codec == nullptr) {
             throw Error(ErrorCode::encode_failed, "FFmpeg build has no prores_ks encoder");
@@ -35,7 +31,6 @@ public:
         context->pix_fmt = AV_PIX_FMT_YUV422P10LE;
         context->time_base = config.time_base;
         context->framerate = config.frame_rate;
-        context->profile = AV_PROFILE_PRORES_HQ;
         context->color_range = AVCOL_RANGE_MPEG;
         context->colorspace = AVCOL_SPC_BT2020_NCL;
         context->color_primaries = AVCOL_PRI_UNSPECIFIED;

@@ -31,6 +31,7 @@ struct FfmpegVideoBackendConfig {
     bool deterministic_dither{true};
     GpuPrecision precision{GpuPrecision::fp32};
     GpuPerformanceMode performance_mode{GpuPerformanceMode::precise};
+    std::string prores_profile{"hq"};
 };
 
 struct FfmpegWriterTelemetry {
@@ -225,8 +226,10 @@ private:
 
 // Reopens a completed temporary MOV and verifies the minimum contract before
 // the caller is allowed to rename it to the requested final path.
-void validate_prores_mov_metadata(const std::filesystem::path& path);
+void validate_prores_mov_metadata(const std::filesystem::path& path,
+                                  const std::string& prores_profile = "hq");
 void validate_prores_mov(const std::filesystem::path& path,
-                         std::uint64_t expected_video_packets);
+                         std::uint64_t expected_video_packets,
+                         const std::string& prores_profile = "hq");
 
 } // namespace mcraw

@@ -58,6 +58,19 @@ TEST_CASE("CPU ProRes adapter accepts owned frames and drains packets") {
     CHECK(packets.front().time_base.den == 90'000);
 }
 
+TEST_CASE("CPU ProRes adapter opens every FFmpeg profile") {
+    for (const auto* profile : {"proxy", "lt", "standard", "hq", "4444", "4444xq"}) {
+        mcraw::CpuProResEncoder encoder({64, 32, {1, 90'000}, {30, 1}, profile, 1});
+        encoder.send(make_neutral_frame(64, 32, 0));
+        auto packets = encoder.drain();
+        auto tail = encoder.flush();
+        packets.insert(packets.end(), std::make_move_iterator(tail.begin()),
+                       std::make_move_iterator(tail.end()));
+        INFO("profile=" << profile);
+        CHECK(packets.size() == 1);
+    }
+}
+
 TEST_CASE("Vulkan encoder stub fails explicitly") {
     mcraw::VulkanProResEncoderStub encoder("runtime not implemented");
     const auto capabilities = encoder.capabilities();

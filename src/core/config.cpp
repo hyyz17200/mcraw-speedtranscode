@@ -79,8 +79,12 @@ void EffectiveConfig::validate() const {
     if (target_profile != "DaVinciIntermediate_DWG") {
         throw Error(ErrorCode::unsupported_format, "v0.1 supports only DaVinciIntermediate_DWG");
     }
-    if (prores_profile != "hq") {
-        throw Error(ErrorCode::unsupported_format, "v0.1 supports only ProRes 422 HQ");
+    static const std::set<std::string_view> prores_profiles{
+        "proxy", "lt", "standard", "hq", "4444", "4444xq"
+    };
+    if (!prores_profiles.contains(prores_profile)) {
+        throw Error(ErrorCode::invalid_argument,
+                    "prores_profile must be one of: proxy, lt, standard, hq, 4444, 4444xq");
     }
     if (!preserve_source_timestamps) {
         throw Error(ErrorCode::unsupported_format, "v0.1 requires source timestamp preservation");

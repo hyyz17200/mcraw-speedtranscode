@@ -23,7 +23,10 @@
     "cpu_threads": {"type": "integer", "minimum": 0, "maximum": 256, "default": 0},
     "max_parallel_frames": {"type": "integer", "minimum": 0, "maximum": 64, "default": 0},
     "target_profile": {"const": "DaVinciIntermediate_DWG"},
-    "prores_profile": {"const": "hq"},
+    "prores_profile": {
+      "enum": ["proxy", "lt", "standard", "hq", "4444", "4444xq"],
+      "default": "hq"
+    },
     "backend": {"enum": ["auto", "cpu", "vulkan"], "default": "cpu"},
     "gpu_selector": {"type": "string", "minLength": 1, "default": "auto"},
     "async_depth": {"type": "integer", "minimum": 1, "maximum": 64, "default": 8},

@@ -43,6 +43,16 @@ extern "C" {
 namespace mcraw {
 namespace {
 
+std::uint32_t prores_codec_tag(std::string_view profile) {
+    if (profile == "proxy") return MKTAG('a', 'p', 'c', 'o');
+    if (profile == "lt") return MKTAG('a', 'p', 'c', 's');
+    if (profile == "standard") return MKTAG('a', 'p', 'c', 'n');
+    if (profile == "hq") return MKTAG('a', 'p', 'c', 'h');
+    if (profile == "4444") return MKTAG('a', 'p', '4', 'h');
+    if (profile == "4444xq") return MKTAG('a', 'p', '4', 'x');
+    throw Error(ErrorCode::invalid_argument, "unknown ProRes profile: " + std::string(profile));
+}
+
 std::int64_t pts_from_ns(std::int64_t timestamp_ns,
                          std::int64_t origin_ns,
                          AVRational time_base) {
@@ -162,7 +172,7 @@ public:
             vulkan_encoder = std::make_unique<VulkanProResEncoder>(
                 *vulkan_frames,
                 VulkanProResEncoderConfig{static_cast<int>(width), static_cast<int>(height),
-                                          {1, 90'000}, {30, 1}, "hq",
+                                          {1, 90'000}, {30, 1}, backend_config.prores_profile,
                                           backend_config.async_depth});
             video_stream->time_base = vulkan_encoder->time_base();
             vulkan_encoder->copy_parameters_to(video_stream->codecpar);
@@ -191,7 +201,6 @@ public:
             // compatible MOV track timescale (including QuickTime readers).
             context->time_base = AVRational{1, 90'000};
             context->framerate = AVRational{30, 1};
-            context->profile = AV_PROFILE_PRORES_HQ;
             context->color_range = AVCOL_RANGE_MPEG;
             context->colorspace = AVCOL_SPC_BT2020_NCL;
             context->color_primaries = AVCOL_PRI_UNSPECIFIED;
@@ -203,7 +212,9 @@ public:
             // already comes from the writer's own encoder contexts.
             context->thread_type = FF_THREAD_SLICE;
             if ((format->oformat->flags & AVFMT_GLOBALHEADER) != 0) context->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-            require_ffmpeg(av_opt_set(context->priv_data, "profile", "hq", 0), "select ProRes HQ profile");
+            require_ffmpeg(av_opt_set(context->priv_data, "profile",
+                                      backend_config.prores_profile.c_str(), 0),
+                           "select ProRes profile");
             require_ffmpeg(avcodec_open2(context, codec, nullptr), "open prores_ks encoder");
         }
         video_stream->time_base = video_codecs.front()->time_base;
@@ -1434,7 +1445,8 @@ void FfmpegWriter::write_audio(const AudioChunk& chunk) { impl_->write_audio(chu
 void FfmpegWriter::finish() { impl_->finish(); }
 FfmpegWriterTelemetry FfmpegWriter::telemetry() const { return impl_->telemetry(); }
 
-void validate_prores_mov_metadata(const std::filesystem::path& path) {
+void validate_prores_mov_metadata(const std::filesystem::path& path,
+                                  const std::string& prores_profile) {
     AVFormatContext* input = nullptr;
     const auto path_utf8 = path.u8string();
     const std::string path_string(path_utf8.begin(), path_utf8.end());
@@ -1450,18 +1462,19 @@ void validate_prores_mov_metadata(const std::filesystem::path& path) {
     require_ffmpeg(stream_index, "find completed MOV video stream");
     const auto* parameters = input->streams[stream_index]->codecpar;
     if (parameters->codec_id != AV_CODEC_ID_PRORES ||
-        parameters->codec_tag != MKTAG('a', 'p', 'c', 'h') ||
+        parameters->codec_tag != prores_codec_tag(prores_profile) ||
         parameters->color_range != AVCOL_RANGE_MPEG ||
         parameters->color_space != AVCOL_SPC_BT2020_NCL ||
         parameters->color_primaries != AVCOL_PRI_UNSPECIFIED ||
         parameters->color_trc != AVCOL_TRC_UNSPECIFIED) {
         throw Error(ErrorCode::encode_failed,
-                    "completed MOV does not match the ProRes HQ/color metadata contract");
+                    "completed MOV does not match the requested ProRes/color metadata contract");
     }
 }
 
 void validate_prores_mov(const std::filesystem::path& path,
-                         std::uint64_t expected_video_packets) {
+                         std::uint64_t expected_video_packets,
+                         const std::string& prores_profile) {
     AVFormatContext* input = nullptr;
     const auto path_utf8 = path.u8string();
     const std::string path_string(path_utf8.begin(), path_utf8.end());
@@ -1477,13 +1490,13 @@ void validate_prores_mov(const std::filesystem::path& path,
     require_ffmpeg(stream_index, "find completed MOV video stream");
     const auto* parameters = input->streams[stream_index]->codecpar;
     if (parameters->codec_id != AV_CODEC_ID_PRORES ||
-        parameters->codec_tag != MKTAG('a', 'p', 'c', 'h') ||
+        parameters->codec_tag != prores_codec_tag(prores_profile) ||
         parameters->color_range != AVCOL_RANGE_MPEG ||
         parameters->color_space != AVCOL_SPC_BT2020_NCL ||
         parameters->color_primaries != AVCOL_PRI_UNSPECIFIED ||
         parameters->color_trc != AVCOL_TRC_UNSPECIFIED) {
         throw Error(ErrorCode::encode_failed,
-                    "completed MOV does not match the ProRes HQ/color metadata contract");
+                    "completed MOV does not match the requested ProRes/color metadata contract");
     }
     auto packet = make_av_packet();
     std::uint64_t video_packets = 0;

@@ -770,7 +770,8 @@ int command_convert(const Arguments& args) {
                                                mcraw::GpuPerformanceMode::precise
                                            ? mcraw::GpuPrecision::fp32
                                            : mcraw::GpuPrecision::fp16,
-                                       config.gpu_performance_mode});
+                                       config.gpu_performance_mode,
+                                       config.prores_profile});
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -829,9 +830,9 @@ int command_convert(const Arguments& args) {
     timings.add("conversion_core", conversion_core_ms);
     {
         mcraw::StageTimer timer(timings, "output_validation");
-        mcraw::validate_prores_mov_metadata(partial);
+        mcraw::validate_prores_mov_metadata(partial, config.prores_profile);
         if (args.flag("--verify-output")) {
-            mcraw::validate_prores_mov(partial, frame_limit);
+            mcraw::validate_prores_mov(partial, frame_limit, config.prores_profile);
         } else if (writer_telemetry.video_packets != frame_limit) {
             throw Error(ErrorCode::encode_failed,
                         "writer video packet count does not match submitted frames");

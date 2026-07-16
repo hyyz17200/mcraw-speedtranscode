@@ -38,10 +38,6 @@ public:
             throw Error(ErrorCode::invalid_argument,
                         "Vulkan ProRes encoder dimensions do not match its frame context");
         }
-        if (config.profile != "hq") {
-            throw Error(ErrorCode::unsupported_format,
-                        "Phase 3 Vulkan ProRes supports only the hq profile");
-        }
         if (config.async_depth == 0U ||
             config.async_depth > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
             throw Error(ErrorCode::invalid_argument, "invalid Vulkan ProRes async depth");
@@ -63,7 +59,6 @@ public:
         context->pix_fmt = AV_PIX_FMT_VULKAN;
         context->time_base = config.time_base;
         context->framerate = config.frame_rate;
-        context->profile = AV_PROFILE_PRORES_HQ;
         context->color_range = AVCOL_RANGE_MPEG;
         context->colorspace = AVCOL_SPC_BT2020_NCL;
         context->color_primaries = AVCOL_PRI_UNSPECIFIED;

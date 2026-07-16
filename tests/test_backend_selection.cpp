@@ -82,6 +82,19 @@ TEST_CASE("GPU performance modes have stable serialized identities") {
     CHECK(mcraw::config_to_json(config).at("gpu_performance_mode") == "fast");
 }
 
+TEST_CASE("all FFmpeg ProRes profiles are accepted and serialized") {
+    for (const auto* profile : {"proxy", "lt", "standard", "hq", "4444", "4444xq"}) {
+        mcraw::EffectiveConfig config;
+        config.prores_profile = profile;
+        CHECK_NOTHROW(config.validate());
+        CHECK(mcraw::config_to_json(config).at("prores_profile") == profile);
+    }
+
+    mcraw::EffectiveConfig invalid;
+    invalid.prores_profile = "unknown";
+    CHECK_THROWS_AS(invalid.validate(), mcraw::Error);
+}
+
 TEST_CASE("device loss has a stable machine-readable error taxonomy") {
     CHECK(std::string_view(mcraw::error_code_name(mcraw::ErrorCode::device_lost)) ==
           "device_lost");
