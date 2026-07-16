@@ -29,6 +29,7 @@
 
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/error.hpp>
+#include <mcraw/core/execution_plan.hpp>
 #include <mcraw/core/timing.hpp>
 #include <mcraw/core/worker_pool.hpp>
 #include <mcraw/io/mcraw_reader.hpp>
@@ -148,7 +149,8 @@ CpuExecutionPlan resolve_execution_plan(mcraw::EffectiveConfig& config,
         : std::max<std::size_t>(1U, static_cast<std::size_t>(
             available_memory / 4U / estimated_frame_bytes));
     const auto automatic_frames = std::max<std::size_t>(1U, std::min({
-        static_cast<std::size_t>(6U), std::max<std::size_t>(1U, total_threads / 2U),
+        mcraw::automatic_frame_worker_limit(config),
+        std::max<std::size_t>(1U, total_threads / 2U),
         memory_frames
     }));
     const auto requested_frames = config.max_parallel_frames == 0U

@@ -101,6 +101,11 @@ than the shared GPU pipeline consumes frames.
 - Compression 6 fast optimization is **no-go** without a real compression 6
   corpus, as required by Batch E-E.
 
+The automatic execution plan implements those measured defaults: six frame
+workers for precise (and the CPU reference), two for a requested Vulkan/auto
+fast mode. An explicit `max_parallel_frames` still overrides the recommendation
+for capacity testing and different hardware.
+
 ## Remaining format gate
 
 Both local real samples are compression 7. There is no real compression 6 file

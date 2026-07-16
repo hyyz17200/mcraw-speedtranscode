@@ -80,6 +80,7 @@ endif()
 
 add_library(mcraw_core
   src/core/config.cpp
+  src/core/execution_plan.cpp
   src/core/metadata.cpp
   src/core/pixel_types.cpp
   src/core/timing.cpp
@@ -401,6 +402,7 @@ if(MCRAW_BUILD_TESTS)
     tests/test_calibration.cpp
     tests/test_color.cpp
     tests/test_demosaic.cpp
+    tests/test_execution_plan.cpp
     tests/test_log_curve.cpp
     tests/test_metadata.cpp
     tests/test_timing.cpp
