@@ -19,6 +19,7 @@
 | 013 FCS removal | 不实现独立伪色抑制 | 当前全帧中值实现收益不足且占原耗时约 60%；依赖 demosaic 本身质量 |
 | 014 CPU execution | 总线程预算 + RAM 感知的有界多帧并行 | 默认 `0=auto`；有序收集后再按源时间戳 mux，避免乱序输出 |
 | 015 Detail processing boundary | 线性 DWG Capture Sharpening 默认 `0.4`；转码器不做降噪 | 锐化补偿采集与解码链路的细节损失；噪声处理留给后期调色 |
+| 016 FFmpeg ProRes GPU-AV waiver | 对 pinned FFmpeg 8.1.2 `dct.glsl` 的同 invocation shared-memory race 诊断给予受限发布豁免 | 仅覆盖已记录的 143/167 行诊断；core VUID、应用 shader 诊断或输出失败不在豁免内；升级 FFmpeg/validation layer 时必须复测 |
 
 ## MotionCam 缺失 illuminant 的兼容规则
 

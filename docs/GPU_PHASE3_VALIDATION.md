@@ -53,4 +53,7 @@ libavcodec/vulkan/dct.glsl:167  write blocks[block][7*stride + offset]
 
 Minimal reproduction: encode two 4K frames with `config/vulkan-upload-bridge.json` and `--validation`. The report identifies the same local invocation's read-before-write inside `fdct8`; the caller has workgroup barriers between the row and column passes. No application-owned shader is involved in Phase 3, and no core Vulkan VUID, invalid lifetime, or FFmpeg failure was emitted.
 
-This is recorded as an unresolved upstream GPU-assisted-validation finding, not hidden or counted as a clean validation run. It must be resolved or formally waived against the pinned FFmpeg shader before production Definition of Done. The functional Phase 3 bridge remains usable without claiming validation-clean or GPU-resident status.
+This is not hidden or counted as a clean validation run. Batch F reproduced the
+same source locations on driver 610.62 and validation layer 1.4.350, then accepted
+the narrowly scoped release waiver in `GPU_BATCH_F_VALIDATION_RACE_WAIVER.md`.
+Any other validation diagnostic remains release-blocking.
