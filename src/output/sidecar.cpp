@@ -26,6 +26,7 @@ void write_sidecar(const std::filesystem::path& path,
                    std::size_t frames_written,
                    const AvSyncReport& av_sync,
                    const PipelineBackendReport& pipeline,
+                   const WorkerPoolTelemetry& worker_pool,
                    const std::vector<std::string>& runtime_warnings) {
     if (pipeline.gpu_resident &&
         (pipeline.upload_frames != 0U || pipeline.readback_frames != 0U)) {
@@ -59,6 +60,16 @@ void write_sidecar(const std::filesystem::path& path,
             {"manual_input_color_space", "DaVinci Wide Gamut / DaVinci Intermediate"}
         }},
         {"timings", timings.to_json()},
+        {"frame_workers", {
+            {"workers", worker_pool.workers},
+            {"queue_capacity", worker_pool.queue_capacity},
+            {"max_queue_depth", worker_pool.max_queue_depth},
+            {"submit_waits", worker_pool.submit_waits},
+            {"submit_wait_ms", worker_pool.submit_wait_ms},
+            {"tasks_started", worker_pool.tasks_started},
+            {"tasks_completed", worker_pool.tasks_completed},
+            {"tasks_cancelled", worker_pool.tasks_cancelled}
+        }},
         {"av_sync", {
             {"audio_present", av_sync.audio_present},
             {"audio_chunks", av_sync.audio_chunks},

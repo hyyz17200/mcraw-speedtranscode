@@ -9,6 +9,7 @@
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/metadata.hpp>
 #include <mcraw/core/timing.hpp>
+#include <mcraw/core/worker_pool.hpp>
 #include <mcraw/processing/color.hpp>
 
 namespace mcraw {
@@ -165,6 +166,7 @@ void write_sidecar(const std::filesystem::path& path,
                    std::size_t frames_written,
                    const AvSyncReport& av_sync,
                    const PipelineBackendReport& pipeline,
+                   const WorkerPoolTelemetry& worker_pool,
                    const std::vector<std::string>& runtime_warnings);
 
 } // namespace mcraw

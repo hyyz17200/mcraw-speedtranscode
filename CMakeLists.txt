@@ -393,6 +393,7 @@ if(MCRAW_BUILD_TESTS)
     tests/test_log_curve.cpp
     tests/test_metadata.cpp
     tests/test_timing.cpp
+    tests/test_worker_pool.cpp
     tests/test_yuv.cpp
     tests/test_backend_selection.cpp
   )

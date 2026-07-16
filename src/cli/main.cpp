@@ -30,6 +30,7 @@
 #include <mcraw/core/config.hpp>
 #include <mcraw/core/error.hpp>
 #include <mcraw/core/timing.hpp>
+#include <mcraw/core/worker_pool.hpp>
 #include <mcraw/io/mcraw_reader.hpp>
 #include <mcraw/output/sidecar.hpp>
 #include <mcraw/output/backend_selection.hpp>
@@ -147,7 +148,7 @@ CpuExecutionPlan resolve_execution_plan(mcraw::EffectiveConfig& config,
         : std::max<std::size_t>(1U, static_cast<std::size_t>(
             available_memory / 4U / estimated_frame_bytes));
     const auto automatic_frames = std::max<std::size_t>(1U, std::min({
-        static_cast<std::size_t>(8U), std::max<std::size_t>(1U, total_threads / 2U),
+        static_cast<std::size_t>(6U), std::max<std::size_t>(1U, total_threads / 2U),
         memory_frames
     }));
     const auto requested_frames = config.max_parallel_frames == 0U
@@ -179,10 +180,11 @@ struct FrameTaskResult {
     mcraw::StageTimings timings;
 };
 
-std::future<FrameTaskResult> launch_frame_task(const mcraw::McrawReader& reader,
+std::future<FrameTaskResult> submit_frame_task(mcraw::PersistentWorkerPool& workers,
+                                               const mcraw::McrawReader& reader,
                                                const mcraw::CpuPipeline& pipeline,
                                                std::size_t frame_index) {
-    return std::async(std::launch::async, [&reader, &pipeline, frame_index] {
+    return workers.submit([&reader, &pipeline, frame_index] {
         FrameTaskResult result;
         result.frame = pipeline.process(reader, frame_index, result.timings);
         return result;
@@ -583,10 +585,12 @@ int command_benchmark(const Arguments& args) {
     const auto execution = resolve_execution_plan(config, frames);
     mcraw::CpuPipeline pipeline(config, execution.threads_per_frame);
     mcraw::StageTimings timings;
+    mcraw::PersistentWorkerPool workers(execution.parallel_frames,
+                                        execution.parallel_frames);
     std::deque<std::future<FrameTaskResult>> pending;
     const auto start = std::chrono::steady_clock::now();
     for (std::size_t i = 0; i < frames; ++i) {
-        pending.push_back(launch_frame_task(reader, pipeline, i));
+        pending.push_back(submit_frame_task(workers, reader, pipeline, i));
         if (pending.size() >= execution.parallel_frames) {
             auto completed = pending.front().get();
             pending.pop_front();
@@ -600,6 +604,7 @@ int command_benchmark(const Arguments& args) {
     }
     const auto wall_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - start).count();
+    const auto worker_telemetry = workers.telemetry();
     std::cout << nlohmann::json{{"mode", "compute-only"}, {"frames", frames},
                                 {"wall_ms", wall_ms},
                                 {"throughput_fps", static_cast<double>(frames) * 1000.0 / wall_ms},
@@ -608,7 +613,13 @@ int command_benchmark(const Arguments& args) {
                                     {"parallel_frames", execution.parallel_frames},
                                     {"threads_per_frame", execution.threads_per_frame},
                                     {"encode_contexts", execution.encode_contexts},
-                                    {"encode_threads_per_context", execution.encode_threads_per_context}
+                                    {"encode_threads_per_context", execution.encode_threads_per_context},
+                                    {"worker_queue_capacity", worker_telemetry.queue_capacity},
+                                    {"worker_queue_max_depth", worker_telemetry.max_queue_depth},
+                                    {"worker_submit_waits", worker_telemetry.submit_waits},
+                                    {"worker_submit_wait_ms", worker_telemetry.submit_wait_ms},
+                                    {"worker_tasks_started", worker_telemetry.tasks_started},
+                                    {"worker_tasks_completed", worker_telemetry.tasks_completed}
                                 }},
                                 {"stages", timings.to_json()}}.dump(2) << '\n';
     return 0;
@@ -754,6 +765,7 @@ int command_convert(const Arguments& args) {
         reader.frames().front().timestamp_ns, video_end_ns);
     std::size_t audio_index = 0;
     mcraw::FfmpegWriterTelemetry writer_telemetry;
+    mcraw::WorkerPoolTelemetry worker_telemetry;
     const auto conversion_start = std::chrono::steady_clock::now();
     {
         mcraw::FfmpegWriter writer(partial, first_metadata.width, first_metadata.height, origin,
@@ -772,6 +784,8 @@ int command_convert(const Arguments& args) {
                                            : mcraw::GpuPrecision::fp16,
                                        config.gpu_performance_mode,
                                        config.prores_profile});
+        mcraw::PersistentWorkerPool workers(execution.parallel_frames,
+                                            execution.parallel_frames);
         std::deque<std::future<FrameTaskResult>> pending;
         std::size_t frames_completed = 0;
         const auto consume_front = [&] {
@@ -813,7 +827,7 @@ int command_convert(const Arguments& args) {
             std::cerr << "frame " << frames_completed << '/' << frame_limit << "\r" << std::flush;
         };
         for (std::size_t i = 0; i < frame_limit; ++i) {
-            pending.push_back(launch_frame_task(reader, pipeline, i));
+            pending.push_back(submit_frame_task(workers, reader, pipeline, i));
             if (pending.size() >= execution.parallel_frames) consume_front();
         }
         while (!pending.empty()) consume_front();
@@ -823,6 +837,7 @@ int command_convert(const Arguments& args) {
         }
         writer.finish();
         writer_telemetry = writer.telemetry();
+        worker_telemetry = workers.telemetry();
     }
     const auto conversion_core_ms = std::chrono::duration<double, std::milli>(
         std::chrono::steady_clock::now() - conversion_start).count();
@@ -1034,7 +1049,8 @@ int command_convert(const Arguments& args) {
         std::chrono::steady_clock::now() - process_start).count();
     timings.add("process_wall", process_wall_ms);
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
-                         timings, frame_limit, sync_report, pipeline_report, warnings);
+                         timings, frame_limit, sync_report, pipeline_report,
+                         worker_telemetry, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
                                 {"sidecar", sidecar.string()}, {"frames", frame_limit},
                                 {"wall_ms", process_wall_ms},
@@ -1158,7 +1174,14 @@ int command_convert(const Arguments& args) {
                                     {"parallel_frames", execution.parallel_frames},
                                     {"threads_per_frame", execution.threads_per_frame},
                                     {"encode_contexts", execution.encode_contexts},
-                                    {"encode_threads_per_context", execution.encode_threads_per_context}
+                                    {"encode_threads_per_context", execution.encode_threads_per_context},
+                                    {"worker_queue_capacity", worker_telemetry.queue_capacity},
+                                    {"worker_queue_max_depth", worker_telemetry.max_queue_depth},
+                                    {"worker_submit_waits", worker_telemetry.submit_waits},
+                                    {"worker_submit_wait_ms", worker_telemetry.submit_wait_ms},
+                                    {"worker_tasks_started", worker_telemetry.tasks_started},
+                                    {"worker_tasks_completed", worker_telemetry.tasks_completed},
+                                    {"worker_tasks_cancelled", worker_telemetry.tasks_cancelled}
                                 }},
                                 {"timings", timings.to_json()}}.dump(2) << '\n';
     return 0;
