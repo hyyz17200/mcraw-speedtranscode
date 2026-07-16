@@ -57,13 +57,13 @@ Blank claims are intentionally not inferred from FFmpeg compatibility.
 
 | Reader/NLE | Decode | Seek | Color | Duration | Audio sync |
 |---|---:|---:|---:|---:|---:|
-| ffmpeg/ffprobe | Pass | Pass* | Metadata inspected | Pass | Pass |
-| DaVinci Resolve | Not tested | Not tested | Not tested | Not tested | Not tested |
+| ffmpeg/ffprobe | Pass | Pass | Metadata inspected | Pass | Pass |
+| DaVinci Resolve | Blocked: scripting disabled | Not tested | Not tested | Not tested | Not tested |
 | Adobe Premiere Pro | Not tested | Not tested | Not tested | Not tested | Not tested |
-| VLC/mpv | Not tested | Not tested | Not tested | Not tested | Not tested |
+| VLC | Pass | MOV-index playback pass | Not visually tested | Pass | Not monitored |
 
-`*` FFmpeg random-access decode succeeds through the MOV index; interactive
-scrubbing behavior was not evaluated.
+The current Batch F candidate and exact evidence are recorded in
+`GPU_BATCH_F_COMPATIBILITY.md`. NLE claims remain intentionally open.
 
 ## Definition-of-Done status
 
