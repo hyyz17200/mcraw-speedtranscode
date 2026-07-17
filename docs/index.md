@@ -36,6 +36,8 @@ Start here to understand the project.
 | [GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md](GPU_STAGE2_U16_RAW_TECHNICAL_DESIGN.md) | 2026-07-15 | Stage 2: U16 RAW technical design |
 | [GPU_STAGE3_PERFORMANCE_MODES_TECHNICAL_DESIGN.md](GPU_STAGE3_PERFORMANCE_MODES_TECHNICAL_DESIGN.md) | 2026-07-15 | Stage 3: performance modes technical design |
 | [GPU_PIPELINE_SERIALIZATION_ANALYSIS_2026-07-15.md](GPU_PIPELINE_SERIALIZATION_ANALYSIS_2026-07-15.md) | 2026-07-15 | Pipeline serialization analysis and fix plan |
+| [MCRAW_AUDIO_TIMESTAMP_ANALYSIS.md](MCRAW_AUDIO_TIMESTAMP_ANALYSIS.md) | 2026-07-17 | Evidence and root-cause analysis for jittered and non-monotonic MCRAW audio timestamps |
+| [MCRAW_AUDIO_TIMESTAMP_NORMALIZATION_TECHNICAL_DESIGN.md](MCRAW_AUDIO_TIMESTAMP_NORMALIZATION_TECHNICAL_DESIGN.md) | 2026-07-17 | Agent-ready PCM sample-clock normalization contract, diagnostics, and tests |
 
 ## 4. Phase Validation Reports (Phases 1–8)
 
