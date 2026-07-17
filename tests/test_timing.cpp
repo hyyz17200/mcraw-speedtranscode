@@ -1,6 +1,8 @@
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 
+#include <nlohmann/json.hpp>
+
 #include <mcraw/core/timing.hpp>
 #include <mcraw/core/audio_timing.hpp>
 #include <mcraw/core/error.hpp>
@@ -35,6 +37,21 @@ TEST_CASE("audio integer rescale uses nearest and floor at sample boundaries") {
     REQUIRE(mcraw::ns_to_samples_floor(20'833'333, rate) == 999);
     REQUIRE(mcraw::ns_to_samples_floor(20'833'334, rate) == 1'000);
     REQUIRE(mcraw::ns_to_samples_nearest(10'417, rate) == 1);
+}
+
+TEST_CASE("single anchor rescale stays gapless near a half-sample boundary") {
+    constexpr int rate = 48'000;
+    constexpr std::int64_t anchor_minus_origin_ns = 10'417;
+    mcraw::AudioPtsClock clock(anchor_minus_origin_ns, 0, rate);
+    REQUIRE(clock.current_pts() == 1);
+    REQUIRE(clock.samples_written() == 0);
+    std::int64_t cumulative_samples = 0;
+    for (const std::int64_t chunk_samples : {917, 981, 1'024, 17, 2'048}) {
+        clock.advance(chunk_samples);
+        cumulative_samples += chunk_samples;
+        REQUIRE(clock.current_pts() == 1 + cumulative_samples);
+        REQUIRE(clock.samples_written() == cumulative_samples);
+    }
 }
 
 TEST_CASE("audio timing normalizes routine jitter without warning") {
@@ -112,4 +129,19 @@ TEST_CASE("audio end uses the integer sample clock") {
         audio_chunk(1'021'333'333, 1'024)
     };
     REQUIRE(mcraw::audio_end_timestamp_ns(chunks, 48'000, 2) == 1'042'666'666);
+}
+
+TEST_CASE("audio timing JSON exposes stable structured diagnostics") {
+    mcraw::AudioInfo audio{48'000, 2, {
+        audio_chunk(1'000'000'000, 1'024),
+        audio_chunk(999'999'666, 1'024)
+    }};
+    const auto document = mcraw::audio_timing_to_json(
+        mcraw::analyze_and_normalize_audio(audio));
+    REQUIRE(document.at("mode") == "sample_clock_from_first_source_anchor");
+    REQUIRE(document.at("normalized") == true);
+    REQUIRE(document.at("source_non_monotonic_steps") == 1);
+    REQUIRE(document.at("source_max_backward_step_ns") == 334);
+    REQUIRE(document.at("warning_reasons") ==
+            std::vector<std::string>{"source_non_monotonic"});
 }

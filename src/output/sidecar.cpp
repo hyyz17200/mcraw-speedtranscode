@@ -27,6 +27,7 @@ void write_sidecar(const std::filesystem::path& path,
                    const AvSyncReport& av_sync,
                    const PipelineBackendReport& pipeline,
                    const WorkerPoolTelemetry& worker_pool,
+                   const std::optional<AudioTimingResult>& audio_timing,
                    const std::vector<std::string>& runtime_warnings) {
     if (pipeline.gpu_resident &&
         (pipeline.upload_frames != 0U || pipeline.readback_frames != 0U)) {
@@ -77,6 +78,9 @@ void write_sidecar(const std::filesystem::path& path,
             {"audio_minus_video_start_ms", av_sync.start_delta_ms},
             {"audio_minus_video_end_ms", av_sync.end_delta_ms}
         }},
+        {"audio_timing", audio_timing
+            ? audio_timing_to_json(*audio_timing)
+            : nlohmann::json(nullptr)},
         {"pipeline", {
             {"requested_backend", pipeline.requested_backend},
             {"backend", pipeline.backend},

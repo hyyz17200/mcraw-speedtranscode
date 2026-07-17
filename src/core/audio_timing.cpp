@@ -84,6 +84,22 @@ std::int64_t ns_to_samples_floor(std::int64_t nanoseconds, int sample_rate) {
     return checked_add(whole, (remainder * rate) / nanoseconds_per_second);
 }
 
+AudioPtsClock::AudioPtsClock(std::int64_t first_anchor_ns,
+                             std::int64_t origin_ns,
+                             int sample_rate) {
+    if (first_anchor_ns < origin_ns) {
+        invalid_timing("audio timestamp precedes the output timeline origin");
+    }
+    current_pts_ = ns_to_samples_nearest(
+        checked_subtract(first_anchor_ns, origin_ns), sample_rate);
+}
+
+void AudioPtsClock::advance(std::int64_t samples) {
+    if (samples < 0) invalid_timing("audio sample count must not be negative");
+    current_pts_ = checked_add(current_pts_, samples);
+    samples_written_ = checked_add(samples_written_, samples);
+}
+
 AudioTimingResult analyze_and_normalize_audio(const AudioInfo& audio) {
     if (audio.sample_rate <= 0) invalid_timing("audio sample rate must be positive");
     if (audio.channels != 1 && audio.channels != 2) {

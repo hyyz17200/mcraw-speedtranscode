@@ -10,8 +10,10 @@
 #include <cstring>
 #include <deque>
 #include <exception>
+#include <limits>
 #include <map>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -32,6 +34,7 @@ extern "C" {
 }
 
 #include <mcraw/core/error.hpp>
+#include <mcraw/core/audio_timing.hpp>
 #include <mcraw/output/ffmpeg_raii.hpp>
 #if defined(MCRAW_HAS_VULKAN) && MCRAW_HAS_VULKAN
 #include <mcraw/output/ffmpeg_vulkan_context.hpp>
@@ -60,6 +63,15 @@ std::int64_t pts_from_ns(std::int64_t timestamp_ns,
         throw Error(ErrorCode::encode_failed, "timestamp precedes the output timeline origin");
     }
     return av_rescale_q(timestamp_ns - origin_ns, AVRational{1, 1'000'000'000}, time_base);
+}
+
+std::int64_t checked_audio_add(std::int64_t left, std::int64_t right) {
+    if ((right > 0 && left > std::numeric_limits<std::int64_t>::max() - right) ||
+        (right < 0 && left < std::numeric_limits<std::int64_t>::min() - right)) {
+        throw Error(ErrorCode::encode_failed,
+                    "audio timeline exceeds the supported integer range");
+    }
+    return left + right;
 }
 
 void free_vector_plane(void* opaque, std::uint8_t*) {
@@ -430,6 +442,9 @@ public:
         if (channels == 0U || chunk.interleaved_samples.size() % channels != 0U) {
             throw Error(ErrorCode::invalid_argument, "audio chunk is not channel-aligned");
         }
+        if (chunk.interleaved_samples.empty()) {
+            throw Error(ErrorCode::invalid_argument, "audio chunk is empty");
+        }
         AVFrame* frame = av_frame_alloc();
         if (frame == nullptr) throw Error(ErrorCode::encode_failed, "cannot allocate audio frame");
         frame->format = audio_codec->sample_fmt;
@@ -442,15 +457,28 @@ public:
             require_ffmpeg(av_frame_make_writable(frame), "make audio frame writable");
             std::memcpy(frame->data[0], chunk.interleaved_samples.data(),
                         chunk.interleaved_samples.size() * sizeof(std::int16_t));
-            if (chunk.timestamp_ns >= 0) {
-                frame->pts = pts_from_ns(chunk.timestamp_ns, origin_ns, audio_codec->time_base);
-            } else {
-                frame->pts = next_audio_pts;
+            if (!audio_started) {
+                first_audio_anchor_ns = chunk.timestamp_ns;
+                audio_pts_clock.emplace(
+                    chunk.timestamp_ns, origin_ns, audio_codec->sample_rate);
+                next_audio_pts = audio_pts_clock->current_pts();
+                audio_started = true;
             }
-            if (frame->pts < next_audio_pts) {
-                throw Error(ErrorCode::encode_failed, "audio timestamps overlap or move backward");
+            const auto expected_timestamp = checked_audio_add(
+                first_audio_anchor_ns,
+                samples_to_ns_nearest(audio_pts_clock->samples_written(),
+                                      audio_codec->sample_rate));
+            if (chunk.timestamp_ns != expected_timestamp) {
+                throw Error(ErrorCode::encode_failed,
+                            "normalized audio timestamps contain a gap or overlap");
             }
-            next_audio_pts = frame->pts + frame->nb_samples;
+            frame->pts = audio_pts_clock->current_pts();
+            if (frame->pts != next_audio_pts) {
+                throw Error(ErrorCode::encode_failed,
+                            "audio PTS contain a gap or overlap");
+            }
+            audio_pts_clock->advance(frame->nb_samples);
+            next_audio_pts = audio_pts_clock->current_pts();
             write_packet(audio_codec, audio_stream, frame);
         } catch (...) {
             av_frame_free(&frame);
@@ -1330,7 +1358,10 @@ public:
     AVStream* video_stream{};
     AVStream* audio_stream{};
     std::int64_t last_video_pts{AV_NOPTS_VALUE};
+    std::int64_t first_audio_anchor_ns{};
+    std::optional<AudioPtsClock> audio_pts_clock;
     std::int64_t next_audio_pts{};
+    bool audio_started{};
     bool header_written{};
     bool finished{};
 

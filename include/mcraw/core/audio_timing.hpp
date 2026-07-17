@@ -36,6 +36,23 @@ struct AudioTimingResult {
     }
 };
 
+class AudioPtsClock {
+public:
+    AudioPtsClock(std::int64_t first_anchor_ns,
+                  std::int64_t origin_ns,
+                  int sample_rate);
+
+    [[nodiscard]] std::int64_t current_pts() const noexcept { return current_pts_; }
+    [[nodiscard]] std::int64_t samples_written() const noexcept {
+        return samples_written_;
+    }
+    void advance(std::int64_t samples);
+
+private:
+    std::int64_t current_pts_{};
+    std::int64_t samples_written_{};
+};
+
 [[nodiscard]] std::int64_t samples_to_ns_nearest(std::int64_t samples,
                                                  int sample_rate);
 [[nodiscard]] std::int64_t ns_to_samples_nearest(std::int64_t nanoseconds,

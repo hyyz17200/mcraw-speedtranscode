@@ -3,10 +3,12 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <vector>
 
 #include <mcraw/core/config.hpp>
+#include <mcraw/core/audio_timing.hpp>
 #include <mcraw/core/metadata.hpp>
 #include <mcraw/core/timing.hpp>
 #include <mcraw/core/worker_pool.hpp>
@@ -167,6 +169,7 @@ void write_sidecar(const std::filesystem::path& path,
                    const AvSyncReport& av_sync,
                    const PipelineBackendReport& pipeline,
                    const WorkerPoolTelemetry& worker_pool,
+                   const std::optional<AudioTimingResult>& audio_timing,
                    const std::vector<std::string>& runtime_warnings);
 
 } // namespace mcraw

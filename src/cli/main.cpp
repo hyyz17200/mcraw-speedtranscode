@@ -28,6 +28,7 @@
 #include <nlohmann/json.hpp>
 
 #include <mcraw/core/config.hpp>
+#include <mcraw/core/audio_timing.hpp>
 #include <mcraw/core/error.hpp>
 #include <mcraw/core/execution_plan.hpp>
 #include <mcraw/core/timing.hpp>
@@ -207,6 +208,10 @@ nlohmann::json inspect_document(mcraw::McrawReader& reader, bool include_raw) {
     const auto last_raw = reader.frame_metadata(reader.frames().size() - 1U);
     const auto last = mcraw::normalize_metadata(reader.container_metadata(), last_raw);
     const auto audio = reader.load_audio();
+    const auto audio_timing = audio.chunks.empty()
+        ? std::optional<mcraw::AudioTimingResult>{}
+        : std::optional<mcraw::AudioTimingResult>{
+              mcraw::analyze_and_normalize_audio(audio)};
 
     nlohmann::json result = {
         {"path", reader.path().string()},
@@ -221,7 +226,10 @@ nlohmann::json inspect_document(mcraw::McrawReader& reader, bool include_raw) {
         {"first_frame", mcraw::metadata_to_json(first)},
         {"last_frame", mcraw::metadata_to_json(last)},
         {"audio", {{"sample_rate", audio.sample_rate}, {"channels", audio.channels},
-                    {"chunks", audio.chunks.size()}}}
+                    {"chunks", audio.chunks.size()}}},
+        {"audio_timing", audio_timing
+            ? mcraw::audio_timing_to_json(*audio_timing)
+            : nlohmann::json(nullptr)}
     };
     if (include_raw) {
         result["raw_container_metadata"] = reader.container_metadata();
@@ -627,38 +635,6 @@ int command_benchmark(const Arguments& args) {
     return 0;
 }
 
-std::vector<mcraw::AudioChunk> normalize_audio_timestamps(const mcraw::AudioInfo& audio,
-                                                           std::vector<std::string>& warnings) {
-    auto chunks = audio.chunks;
-    if (chunks.empty()) return chunks;
-    std::int64_t previous = -1;
-    std::int64_t cursor = chunks.front().timestamp_ns;
-    std::int64_t maximum_correction_ns = 0;
-    for (auto& chunk : chunks) {
-        if (chunk.timestamp_ns < 0) {
-            throw Error(ErrorCode::invalid_container,
-                        "audio source timestamp is required by the v0.1 contract");
-        }
-        if (previous >= 0 && chunk.timestamp_ns <= previous) {
-            throw Error(ErrorCode::invalid_container, "audio source timestamps are not strictly increasing");
-        }
-        previous = chunk.timestamp_ns;
-        maximum_correction_ns = std::max(maximum_correction_ns,
-                                         std::abs(chunk.timestamp_ns - cursor));
-        chunk.timestamp_ns = cursor;
-        const auto samples_per_channel = chunk.interleaved_samples.size() /
-                                         static_cast<std::size_t>(audio.channels);
-        cursor += static_cast<std::int64_t>(std::llround(
-            static_cast<double>(samples_per_channel) * 1.0e9 / audio.sample_rate));
-    }
-    if (maximum_correction_ns > 0) {
-        warnings.emplace_back("audio capture timestamp jitter normalized to a continuous PCM clock; "
-                              "maximum correction ms=" +
-                              std::to_string(static_cast<double>(maximum_correction_ns) / 1.0e6));
-    }
-    return chunks;
-}
-
 mcraw::AvSyncReport av_sync_report(const std::vector<mcraw::AudioChunk>& chunks,
                                    int sample_rate,
                                    int channels,
@@ -668,10 +644,8 @@ mcraw::AvSyncReport av_sync_report(const std::vector<mcraw::AudioChunk>& chunks,
     result.audio_present = !chunks.empty();
     result.audio_chunks = chunks.size();
     if (chunks.empty()) return result;
-    const auto& last = chunks.back();
-    const auto samples = last.interleaved_samples.size() / static_cast<std::size_t>(channels);
-    const auto audio_end_ns = last.timestamp_ns + static_cast<std::int64_t>(std::llround(
-        static_cast<double>(samples) * 1.0e9 / sample_rate));
+    const auto audio_end_ns = mcraw::audio_end_timestamp_ns(
+        chunks, sample_rate, channels);
     result.start_delta_ms = static_cast<double>(chunks.front().timestamp_ns - video_start_ns) / 1.0e6;
     result.end_delta_ms = static_cast<double>(audio_end_ns - video_end_ns) / 1.0e6;
     return result;
@@ -718,9 +692,13 @@ int command_convert(const Arguments& args) {
         throw Error(ErrorCode::invalid_container,
                     "audio preservation is required but the source has no readable audio chunks");
     }
-    auto audio_chunks = audio.channels > 0
-        ? normalize_audio_timestamps(audio, warnings)
-        : std::vector<mcraw::AudioChunk>{};
+    std::optional<mcraw::AudioTimingResult> audio_timing;
+    std::vector<mcraw::AudioChunk> audio_chunks;
+    if (!audio.chunks.empty()) {
+        audio_timing.emplace(mcraw::analyze_and_normalize_audio(audio));
+        if (audio_timing->should_warn()) warnings.emplace_back(mcraw::audio_timing_warning);
+        audio_chunks = audio_timing->normalized_chunks;
+    }
     const auto video_end_ns = frame_limit < reader.frames().size()
         ? reader.frames()[frame_limit].timestamp_ns
         : reader.frames().back().timestamp_ns + (reader.frames().size() > 1U
@@ -735,8 +713,8 @@ int command_convert(const Arguments& args) {
             auto& last = audio_chunks.back();
             const auto available_ns = video_end_ns - last.timestamp_ns;
             const auto available_samples = available_ns > 0
-                ? static_cast<std::size_t>(std::floor(
-                    static_cast<double>(available_ns) * audio.sample_rate / 1.0e9))
+                ? static_cast<std::size_t>(
+                    mcraw::ns_to_samples_floor(available_ns, audio.sample_rate))
                 : 0U;
             const auto current_samples = last.interleaved_samples.size() /
                                          static_cast<std::size_t>(audio.channels);
@@ -1050,7 +1028,7 @@ int command_convert(const Arguments& args) {
     timings.add("process_wall", process_wall_ms);
     mcraw::write_sidecar(sidecar, input, output, config, first_metadata, first_solution,
                          timings, frame_limit, sync_report, pipeline_report,
-                         worker_telemetry, warnings);
+                         worker_telemetry, audio_timing, warnings);
     std::cout << nlohmann::json{{"ok", true}, {"output", output.string()},
                                 {"sidecar", sidecar.string()}, {"frames", frame_limit},
                                 {"wall_ms", process_wall_ms},
