@@ -284,7 +284,6 @@ AudioInfo McrawReader::load_audio() const {
     }
 
     result.chunks.reserve(audio_offsets.size());
-    std::int64_t previous_timestamp = -1;
     for (const auto& offset : audio_offsets) {
         if (offset.offset < 0 || static_cast<std::uintmax_t>(offset.offset) + sizeof(motioncam::Item) > file_size) {
             throw Error(ErrorCode::invalid_container, "audio payload offset is out of range");
@@ -312,11 +311,6 @@ AudioInfo McrawReader::load_audio() const {
         motioncam::AudioMetadata timestamp{};
         read_exact(stream, timestamp, "audio source timestamp");
         chunk.timestamp_ns = timestamp.timestampNs;
-        if (chunk.timestamp_ns < 0 ||
-            (previous_timestamp >= 0 && chunk.timestamp_ns <= previous_timestamp)) {
-            throw Error(ErrorCode::invalid_container, "audio timestamps are missing or not strictly increasing");
-        }
-        previous_timestamp = chunk.timestamp_ns;
         if (chunk.interleaved_samples.size() % static_cast<std::size_t>(result.channels) != 0U) {
             throw Error(ErrorCode::invalid_container, "audio chunk is not channel-aligned");
         }

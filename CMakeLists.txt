@@ -80,6 +80,7 @@ endif()
 
 add_library(mcraw_core
   src/core/config.cpp
+  src/core/audio_timing.cpp
   src/core/execution_plan.cpp
   src/core/metadata.cpp
   src/core/pixel_types.cpp
